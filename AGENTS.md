@@ -1,0 +1,18 @@
+# Things agents shoud know/follow
+- steam-audio source code path: "C:\tasks\steam-audio\core"
+- steam-audio ue plugin path: "C:\tasks\steam-audio\unreal\src\SteamAudioUnreal\Plugins\SteamAudio"
+- goal of the project
+  - create a ue plugin that simulates direct sound and indirect sound(reflection and reverb) using hardware ray tracing
+  - the plugin can bake the input audio to spatial audio using impulse response function simulated by hardware ray tracing
+  - the plugin should follow the module structure of steam-audio ue plugin, especially replace SteamAudioSDK module with our own implementation using ue ray tracing RHI
+  - the plugin should follow the architecture of steam-audio source code which will serve as SteamAudioSDK module
+- update the implementation status document "IMPLEMENTATION_STATUS.md" after each major feature implementation
+- update usage document "USAGE.md" after each major feature implementation to demonstrate how to use the plugin in ue editor
+- build and validate the plugin in ue editor after each major feature implementation to ensure there are no compile errors
+  - unreal engine path: "C:\Projects\ZeroEngine", read only
+  - test project path: "C:\Projects\MyProject\MyProject.uproject"
+  - before each build, run `uv run script\build_and_validate.py`
+  - `script\build_and_validate.py` will first sync the plugin repository, then build the test project and the plugin
+  - fix any compile errors in the test project and the plugin
+- if user reports crash, follow `workflow\crash-debugging.md`
+ 
