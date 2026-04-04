@@ -11,9 +11,11 @@
 #include "RayTracingDefinitions.h"
 #include "RayTracingInstanceBufferUtil.h"
 #include "RayTracingPayloadType.h"
+#include "RenderGraphUtils.h"
 #include "RenderUtils.h"
 #include "Scene/UERayTracingAudioScene.h"
 #include "ShaderParameterStruct.h"
+#include "Simulation/UERayTracingAudioEnergyFieldShaders.h"
 #include "UERayTracingAudioSDKModule.h"
 
 #if RHI_RAYTRACING
@@ -73,6 +75,8 @@ IMPLEMENT_GLOBAL_SHADER(FUERayTracingAudioIntersectionRGS, "/Engine/Private/RayT
 
 namespace
 {
+    constexpr uint32 EnergyQuantizationScale = 1000000u;
+
     bool GHasLoggedHardwareRayTracingPath = false;
     bool GHasLoggedPhysicsFallbackPath = false;
     bool GHasLoggedIndirectHardwareRayTracingPath = false;
@@ -110,6 +114,16 @@ namespace
         float TravelDistance = 0.0f;
     };
 
+    struct FHardwareShadedBounceState
+    {
+        FHardwareReflectionPathState NextPath;
+        FUERayTracingAudioRay ShadowRay;
+        int32 BounceIndex = 0;
+        bool bHasHit = false;
+        bool bHasShadowRay = false;
+        int32 GeometryIndex = INDEX_NONE;
+    };
+
     float RayTracingDeviceRadicalInverse(int32 Base, int32 Index)
     {
         float InverseBase = 1.0f / static_cast<float>(Base);
@@ -137,6 +151,394 @@ namespace
             SinTheta * FMath::Cos(Phi),
             SinTheta * FMath::Sin(Phi),
             CosTheta).GetSafeNormal();
+    }
+
+    void GenerateListenerReflectionPaths(
+        const FUERayTracingAudioEnergyFieldTraceRequest& Request,
+        TArray<FHardwareReflectionPathState>& OutPaths)
+    {
+        OutPaths.Reset();
+        OutPaths.Reserve(Request.NumReflectionRays);
+
+        const FVector ListenerOffset = Request.ListenerForward.GetSafeNormal().IsNearlyZero()
+            ? FVector::UpVector
+            : Request.ListenerForward.GetSafeNormal();
+
+        for (int32 RayIndex = 0; RayIndex < Request.NumReflectionRays; ++RayIndex)
+        {
+            FHardwareReflectionPathState& Path = OutPaths.AddDefaulted_GetRef();
+            Path.RayDirection = RayTracingDeviceGenerateSphereDirectionSample(RayIndex);
+            Path.RayOrigin = Request.ListenerLocation + (Path.RayDirection + ListenerOffset) * 1.0f;
+        }
+    }
+
+    void BuildBounceRaysFromReflectionPaths(
+        const TArray<FHardwareReflectionPathState>& Paths,
+        float MaxTraceDistance,
+        TArray<FUERayTracingAudioRay>& OutRays)
+    {
+        OutRays.Reset();
+        OutRays.Reserve(Paths.Num());
+
+        for (const FHardwareReflectionPathState& Path : Paths)
+        {
+            OutRays.Add(FUERayTracingAudioRay{ Path.RayOrigin, Path.RayOrigin + (Path.RayDirection * MaxTraceDistance) });
+        }
+    }
+
+    void ShadeAndBounceHardwareReflectionPaths(
+        const TArray<FHardwareReflectionPathState>& ActivePaths,
+        const TArray<FUERayTracingAudioDetailedTraceHit>& BounceHits,
+        const TArray<FUERayTracingAudioGeometryExport>& Geometry,
+        const FUERayTracingAudioEnergyFieldTraceRequest& Request,
+        int32 BounceIndex,
+        TArray<FHardwareShadedBounceState>& OutShadedStates,
+        TArray<FHardwareReflectionPathState>& OutNextPaths)
+    {
+        OutShadedStates.Reset();
+        OutShadedStates.SetNum(ActivePaths.Num());
+        OutNextPaths.Reset();
+        OutNextPaths.Reserve(ActivePaths.Num());
+
+        for (int32 PathIndex = 0; PathIndex < ActivePaths.Num(); ++PathIndex)
+        {
+            FHardwareShadedBounceState& ShadedState = OutShadedStates[PathIndex];
+            ShadedState.BounceIndex = BounceIndex;
+
+            if (!BounceHits.IsValidIndex(PathIndex))
+            {
+                continue;
+            }
+
+            const FUERayTracingAudioDetailedTraceHit& Hit = BounceHits[PathIndex];
+            if (!Hit.bHit || !Geometry.IsValidIndex(Hit.GeometryIndex))
+            {
+                continue;
+            }
+
+            const FVector Absorption = Geometry[Hit.GeometryIndex].Absorption;
+
+            ShadedState.bHasHit = true;
+            ShadedState.GeometryIndex = Hit.GeometryIndex;
+            ShadedState.NextPath = ActivePaths[PathIndex];
+            ShadedState.NextPath.TravelDistance += Hit.Distance;
+            ShadedState.NextPath.Throughput.X *= FMath::Clamp(1.0f - Absorption.X, 0.0f, 1.0f);
+            ShadedState.NextPath.Throughput.Y *= FMath::Clamp(1.0f - Absorption.Y, 0.0f, 1.0f);
+            ShadedState.NextPath.Throughput.Z *= FMath::Clamp(1.0f - Absorption.Z, 0.0f, 1.0f);
+            ShadedState.NextPath.RayOrigin = Hit.Location + (Hit.Normal * 1.0f);
+            ShadedState.NextPath.RayDirection = ActivePaths[PathIndex].RayDirection.MirrorByVector(Hit.Normal).GetSafeNormal();
+
+            ShadedState.bHasShadowRay = true;
+            ShadedState.ShadowRay.Start = ShadedState.NextPath.RayOrigin;
+            ShadedState.ShadowRay.End = Request.SourceLocation;
+
+            if (!ShadedState.NextPath.RayDirection.IsNearlyZero())
+            {
+                OutNextPaths.Add(ShadedState.NextPath);
+            }
+        }
+    }
+
+    void BuildShadowRaysFromShadedStates(
+        const TArray<FHardwareShadedBounceState>& ShadedStates,
+        TArray<FUERayTracingAudioRay>& OutShadowRays,
+        TArray<int32>& OutShadowRayStateIndices)
+    {
+        OutShadowRays.Reset();
+        OutShadowRayStateIndices.Reset();
+        OutShadowRays.Reserve(ShadedStates.Num());
+        OutShadowRayStateIndices.Reserve(ShadedStates.Num());
+
+        for (int32 StateIndex = 0; StateIndex < ShadedStates.Num(); ++StateIndex)
+        {
+            if (!ShadedStates[StateIndex].bHasShadowRay)
+            {
+                continue;
+            }
+
+            OutShadowRays.Add(ShadedStates[StateIndex].ShadowRay);
+            OutShadowRayStateIndices.Add(StateIndex);
+        }
+    }
+
+    void GatherEnergyFieldFromShadowResults(
+        const TArray<FHardwareShadedBounceState>& ShadedStates,
+        const TArray<bool>& ShadowOcclusionHits,
+        const TArray<int32>& ShadowRayStateIndices,
+        const FUERayTracingAudioEnergyFieldTraceRequest& Request,
+        FUERayTracingAudioEnergyFieldTraceResult& OutResult)
+    {
+        const float DelayBinDurationSeconds = Request.DurationSeconds / static_cast<float>(FMath::Max(OutResult.DelayBinEnergy.Num(), 1));
+
+        for (int32 ShadowRayIndex = 0; ShadowRayIndex < ShadowRayStateIndices.Num(); ++ShadowRayIndex)
+        {
+            if (!ShadowOcclusionHits.IsValidIndex(ShadowRayIndex) || ShadowOcclusionHits[ShadowRayIndex])
+            {
+                continue;
+            }
+
+            const int32 StateIndex = ShadowRayStateIndices[ShadowRayIndex];
+            if (!ShadedStates.IsValidIndex(StateIndex))
+            {
+                continue;
+            }
+
+            const FHardwareShadedBounceState& ShadedState = ShadedStates[StateIndex];
+            const float SourceDistance = FVector::Distance(ShadedState.ShadowRay.Start, Request.SourceLocation);
+            if (SourceDistance <= UE_KINDA_SMALL_NUMBER)
+            {
+                continue;
+            }
+
+            const float TotalDistance = ShadedState.NextPath.TravelDistance + SourceDistance;
+            const float DelaySeconds = TotalDistance / FMath::Max(Request.SpeedOfSound, 1.0f);
+            if (DelaySeconds > Request.DurationSeconds)
+            {
+                continue;
+            }
+
+            const float DistanceMeters = TotalDistance / 100.0f;
+            FVector AirAttenuation;
+            AirAttenuation.X = FMath::Exp(-Request.AirAbsorptionPerMeter.X * DistanceMeters);
+            AirAttenuation.Y = FMath::Exp(-Request.AirAbsorptionPerMeter.Y * DistanceMeters);
+            AirAttenuation.Z = FMath::Exp(-Request.AirAbsorptionPerMeter.Z * DistanceMeters);
+
+            const float DistanceRatio = FMath::Max(TotalDistance, Request.ReferenceDistance) / FMath::Max(Request.ReferenceDistance, 1.0f);
+            const float GeometricAttenuation = 1.0f / FMath::Square(DistanceRatio);
+            const float BounceAttenuation = 1.0f / static_cast<float>(ShadedState.BounceIndex + 1);
+            const FVector BandGain = ShadedState.NextPath.Throughput
+                * AirAttenuation
+                * (GeometricAttenuation * BounceAttenuation / static_cast<float>(Request.NumReflectionRays));
+            const float MonoEnergy = (BandGain.X + BandGain.Y + BandGain.Z) / 3.0f;
+            if (MonoEnergy <= KINDA_SMALL_NUMBER)
+            {
+                continue;
+            }
+
+            const int32 DelayBinIndex = FMath::Clamp(
+                FMath::FloorToInt(DelaySeconds / DelayBinDurationSeconds),
+                0,
+                OutResult.DelayBinEnergy.Num() - 1);
+            OutResult.DelayBinEnergy[DelayBinIndex] += BandGain;
+            OutResult.EarliestArrivalSeconds = (OutResult.EarliestArrivalSeconds <= 0.0f)
+                ? DelaySeconds
+                : FMath::Min(OutResult.EarliestArrivalSeconds, DelaySeconds);
+            ++OutResult.NumValidContributions;
+        }
+    }
+
+    bool DispatchGenerateListenerRaysOnGPU_RenderThread(
+        FRHICommandListImmediate& RHICmdList,
+        const FUERayTracingAudioEnergyFieldTraceRequest& Request,
+        TArray<FHardwareReflectionPathState>& OutPaths)
+    {
+        OutPaths.Reset();
+        if (Request.NumReflectionRays <= 0)
+        {
+            return true;
+        }
+
+        const FRHIBufferCreateDesc OutputBufferCreateDesc =
+            FRHIBufferCreateDesc::CreateStructured<FReflectionPathStateGPU>(TEXT("UERayTracingAudioGeneratedPaths"), Request.NumReflectionRays)
+            .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::SourceCopy)
+            .SetInitialState(ERHIAccess::UAVCompute);
+        FBufferRHIRef OutputBuffer = RHICmdList.CreateBuffer(OutputBufferCreateDesc);
+        FUnorderedAccessViewRHIRef OutputBufferUAV = RHICmdList.CreateUnorderedAccessView(
+            OutputBuffer,
+            FRHIViewDesc::CreateBufferUAV()
+                .SetType(FRHIViewDesc::EBufferType::Structured)
+                .SetStride(sizeof(FReflectionPathStateGPU))
+                .SetNumElements(Request.NumReflectionRays));
+
+        TShaderMapRef<FUERayTracingAudioGenerateListenerRaysCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+        FUERayTracingAudioGenerateListenerRaysCS::FParameters Parameters;
+        Parameters.OutPaths = OutputBufferUAV;
+        Parameters.NumPaths = static_cast<uint32>(Request.NumReflectionRays);
+        Parameters.ListenerLocation = FVector3f(Request.ListenerLocation);
+        Parameters.ListenerForward = FVector3f(Request.ListenerForward);
+
+        FComputeShaderUtils::Dispatch(
+            RHICmdList,
+            ComputeShader,
+            Parameters,
+            FIntVector(FMath::DivideAndRoundUp(Request.NumReflectionRays, static_cast<int32>(FUERayTracingAudioGenerateListenerRaysCS::ThreadGroupSizeX)), 1, 1));
+
+        RHICmdList.Transition(FRHITransitionInfo(OutputBuffer, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
+        RHICmdList.BlockUntilGPUIdle();
+
+        const FReflectionPathStateGPU* OutputData = static_cast<const FReflectionPathStateGPU*>(
+            RHICmdList.LockBuffer(OutputBuffer, 0, sizeof(FReflectionPathStateGPU) * Request.NumReflectionRays, RLM_ReadOnly));
+        if (!OutputData)
+        {
+            return false;
+        }
+
+        OutPaths.Reserve(Request.NumReflectionRays);
+        for (int32 PathIndex = 0; PathIndex < Request.NumReflectionRays; ++PathIndex)
+        {
+            const FReflectionPathStateGPU& PathGPU = OutputData[PathIndex];
+            FHardwareReflectionPathState& Path = OutPaths.AddDefaulted_GetRef();
+            Path.RayOrigin = FVector(PathGPU.OriginAndTravelDistance.X, PathGPU.OriginAndTravelDistance.Y, PathGPU.OriginAndTravelDistance.Z);
+            Path.TravelDistance = PathGPU.OriginAndTravelDistance.W;
+            Path.RayDirection = FVector(PathGPU.DirectionAndAlive.X, PathGPU.DirectionAndAlive.Y, PathGPU.DirectionAndAlive.Z).GetSafeNormal();
+            Path.Throughput = FVector(PathGPU.ThroughputAndPadding.X, PathGPU.ThroughputAndPadding.Y, PathGPU.ThroughputAndPadding.Z);
+        }
+
+        RHICmdList.UnlockBuffer(OutputBuffer);
+        return true;
+    }
+
+    bool DispatchShadeAndGatherOnGPU_RenderThread(
+        FRHICommandListImmediate& RHICmdList,
+        const TArray<FShadeAndGatherPathInputGPU>& PathInputs,
+        const FUERayTracingAudioEnergyFieldTraceRequest& Request,
+        TArray<FHardwareReflectionPathState>& OutNextPaths,
+        TArray<FVector>& OutEnergyBins,
+        int32& OutContributionCount)
+    {
+        OutNextPaths.Reset();
+        OutEnergyBins.Init(FVector::ZeroVector, FMath::Max(Request.NumDelayBins, 1));
+        OutContributionCount = 0;
+
+        if (PathInputs.IsEmpty())
+        {
+            return true;
+        }
+
+        FBufferRHIRef InputBuffer = UE::RHIResourceUtils::CreateBufferFromArray(
+            RHICmdList,
+            TEXT("UERayTracingAudioShadeAndGatherInput"),
+            BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer,
+            ERHIAccess::SRVMask,
+            MakeConstArrayView(PathInputs));
+
+        FShaderResourceViewRHIRef InputBufferView = RHICmdList.CreateShaderResourceView(
+            InputBuffer,
+            FRHIViewDesc::CreateBufferSRV()
+                .SetType(FRHIViewDesc::EBufferType::Structured)
+                .SetStride(sizeof(FShadeAndGatherPathInputGPU))
+                .SetNumElements(PathInputs.Num()));
+
+        const FRHIBufferCreateDesc OutputBufferCreateDesc =
+            FRHIBufferCreateDesc::CreateStructured<FShadeAndGatherPathOutputGPU>(TEXT("UERayTracingAudioShadeAndGatherOutput"), PathInputs.Num())
+            .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::SourceCopy)
+            .SetInitialState(ERHIAccess::UAVCompute);
+        FBufferRHIRef OutputBuffer = RHICmdList.CreateBuffer(OutputBufferCreateDesc);
+        FUnorderedAccessViewRHIRef OutputBufferUAV = RHICmdList.CreateUnorderedAccessView(
+            OutputBuffer,
+            FRHIViewDesc::CreateBufferUAV()
+                .SetType(FRHIViewDesc::EBufferType::Structured)
+                .SetStride(sizeof(FShadeAndGatherPathOutputGPU))
+                .SetNumElements(PathInputs.Num()));
+
+        const uint32 NumEnergyValues = static_cast<uint32>(OutEnergyBins.Num() * 3);
+        const FRHIBufferCreateDesc EnergyBufferCreateDesc =
+            FRHIBufferCreateDesc::CreateStructured<uint32>(TEXT("UERayTracingAudioEnergyBins"), NumEnergyValues)
+            .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::SourceCopy)
+            .SetInitialState(ERHIAccess::UAVCompute);
+        FBufferRHIRef EnergyBuffer = RHICmdList.CreateBuffer(EnergyBufferCreateDesc);
+        FUnorderedAccessViewRHIRef EnergyBufferUAV = RHICmdList.CreateUnorderedAccessView(
+            EnergyBuffer,
+            FRHIViewDesc::CreateBufferUAV()
+                .SetType(FRHIViewDesc::EBufferType::Structured)
+                .SetStride(sizeof(uint32))
+                .SetNumElements(NumEnergyValues));
+
+        const FRHIBufferCreateDesc CounterBufferCreateDesc =
+            FRHIBufferCreateDesc::CreateStructured<uint32>(TEXT("UERayTracingAudioContributionCounter"), 1)
+            .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::SourceCopy)
+            .SetInitialState(ERHIAccess::UAVCompute);
+        FBufferRHIRef CounterBuffer = RHICmdList.CreateBuffer(CounterBufferCreateDesc);
+        FUnorderedAccessViewRHIRef CounterBufferUAV = RHICmdList.CreateUnorderedAccessView(
+            CounterBuffer,
+            FRHIViewDesc::CreateBufferUAV()
+                .SetType(FRHIViewDesc::EBufferType::Structured)
+                .SetStride(sizeof(uint32))
+                .SetNumElements(1));
+
+        RHICmdList.ClearUAVUint(EnergyBufferUAV, FUintVector4(0u, 0u, 0u, 0u));
+        RHICmdList.ClearUAVUint(CounterBufferUAV, FUintVector4(0u, 0u, 0u, 0u));
+
+        TShaderMapRef<FUERayTracingAudioShadeAndGatherCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+        FUERayTracingAudioShadeAndGatherCS::FParameters Parameters;
+        Parameters.PathInputs = InputBufferView;
+        Parameters.PathOutputs = OutputBufferUAV;
+        Parameters.EnergyBins = EnergyBufferUAV;
+        Parameters.ContributionCounter = CounterBufferUAV;
+        Parameters.NumPaths = static_cast<uint32>(PathInputs.Num());
+        Parameters.NumDelayBins = static_cast<uint32>(OutEnergyBins.Num());
+        Parameters.NumReflectionRays = static_cast<uint32>(Request.NumReflectionRays);
+        Parameters.SpeedOfSound = Request.SpeedOfSound;
+        Parameters.ReferenceDistance = Request.ReferenceDistance;
+        Parameters.DurationSeconds = Request.DurationSeconds;
+        Parameters.DelayBinDurationSeconds = Request.DurationSeconds / static_cast<float>(OutEnergyBins.Num());
+        Parameters.EnergyQuantizationScale = static_cast<float>(EnergyQuantizationScale);
+        Parameters.SourceLocation = FVector3f(Request.SourceLocation);
+        Parameters.AirAbsorptionPerMeter = FVector3f(Request.AirAbsorptionPerMeter);
+
+        FComputeShaderUtils::Dispatch(
+            RHICmdList,
+            ComputeShader,
+            Parameters,
+            FIntVector(FMath::DivideAndRoundUp(PathInputs.Num(), static_cast<int32>(FUERayTracingAudioShadeAndGatherCS::ThreadGroupSizeX)), 1, 1));
+
+        RHICmdList.Transition(FRHITransitionInfo(OutputBuffer, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
+        RHICmdList.Transition(FRHITransitionInfo(EnergyBuffer, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
+        RHICmdList.Transition(FRHITransitionInfo(CounterBuffer, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
+        RHICmdList.BlockUntilGPUIdle();
+
+        const FShadeAndGatherPathOutputGPU* OutputData = static_cast<const FShadeAndGatherPathOutputGPU*>(
+            RHICmdList.LockBuffer(OutputBuffer, 0, sizeof(FShadeAndGatherPathOutputGPU) * PathInputs.Num(), RLM_ReadOnly));
+        const uint32* EnergyData = static_cast<const uint32*>(
+            RHICmdList.LockBuffer(EnergyBuffer, 0, sizeof(uint32) * NumEnergyValues, RLM_ReadOnly));
+        const uint32* CounterData = static_cast<const uint32*>(
+            RHICmdList.LockBuffer(CounterBuffer, 0, sizeof(uint32), RLM_ReadOnly));
+        if (!OutputData || !EnergyData || !CounterData)
+        {
+            if (OutputData)
+            {
+                RHICmdList.UnlockBuffer(OutputBuffer);
+            }
+            if (EnergyData)
+            {
+                RHICmdList.UnlockBuffer(EnergyBuffer);
+            }
+            if (CounterData)
+            {
+                RHICmdList.UnlockBuffer(CounterBuffer);
+            }
+            return false;
+        }
+
+        OutContributionCount = static_cast<int32>(CounterData[0]);
+        for (int32 BinIndex = 0; BinIndex < OutEnergyBins.Num(); ++BinIndex)
+        {
+            const int32 BaseIndex = BinIndex * 3;
+            OutEnergyBins[BinIndex].X = static_cast<float>(EnergyData[BaseIndex]) / static_cast<float>(EnergyQuantizationScale);
+            OutEnergyBins[BinIndex].Y = static_cast<float>(EnergyData[BaseIndex + 1]) / static_cast<float>(EnergyQuantizationScale);
+            OutEnergyBins[BinIndex].Z = static_cast<float>(EnergyData[BaseIndex + 2]) / static_cast<float>(EnergyQuantizationScale);
+        }
+
+        OutNextPaths.Reserve(PathInputs.Num());
+        for (int32 PathIndex = 0; PathIndex < PathInputs.Num(); ++PathIndex)
+        {
+            const FShadeAndGatherPathOutputGPU& Output = OutputData[PathIndex];
+            if (Output.NextDirectionAndAlive.W < 0.5f)
+            {
+                continue;
+            }
+
+            FHardwareReflectionPathState& NextPath = OutNextPaths.AddDefaulted_GetRef();
+            NextPath.RayOrigin = FVector(Output.NextOriginAndTravelDistance.X, Output.NextOriginAndTravelDistance.Y, Output.NextOriginAndTravelDistance.Z);
+            NextPath.TravelDistance = Output.NextOriginAndTravelDistance.W;
+            NextPath.RayDirection = FVector(Output.NextDirectionAndAlive.X, Output.NextDirectionAndAlive.Y, Output.NextDirectionAndAlive.Z).GetSafeNormal();
+            NextPath.Throughput = FVector(Output.ThroughputAndPadding.X, Output.ThroughputAndPadding.Y, Output.ThroughputAndPadding.Z);
+        }
+
+        RHICmdList.UnlockBuffer(OutputBuffer);
+        RHICmdList.UnlockBuffer(EnergyBuffer);
+        RHICmdList.UnlockBuffer(CounterBuffer);
+        return true;
     }
 
     bool TraceRaysWithPhysics(const FUERayTracingAudioTraceRequest& Request, const TArray<FUERayTracingAudioRay>& Rays, TArray<bool>& OutHits)
@@ -901,10 +1303,6 @@ namespace
             return true;
         }
 
-        const FVector ListenerOffset = Request.ListenerForward.GetSafeNormal().IsNearlyZero()
-            ? FVector::UpVector
-            : Request.ListenerForward.GetSafeNormal();
-
         TArray<FBufferRHIRef> VertexBuffers;
         TArray<FBufferRHIRef> IndexBuffers;
         TArray<FRayTracingGeometryRHIRef> RayTracingGeometries;
@@ -939,23 +1337,17 @@ namespace
             return true;
         }
 
-        TArray<FHardwareReflectionPathState> ActivePaths;
-        ActivePaths.Reserve(Request.NumReflectionRays);
-        for (int32 RayIndex = 0; RayIndex < Request.NumReflectionRays; ++RayIndex)
+        TArray<FHardwareReflectionPathState> ReflectionPathBuffers[2];
+        if (!DispatchGenerateListenerRaysOnGPU_RenderThread(RHICmdList, Request, ReflectionPathBuffers[0]))
         {
-            FHardwareReflectionPathState& Path = ActivePaths.AddDefaulted_GetRef();
-            Path.RayDirection = RayTracingDeviceGenerateSphereDirectionSample(RayIndex);
-            Path.RayOrigin = Request.ListenerLocation + (Path.RayDirection + ListenerOffset) * 1.0f;
+            GenerateListenerReflectionPaths(Request, ReflectionPathBuffers[0]);
         }
+        int32 CurrentPathBufferIndex = 0;
 
-        for (int32 BounceIndex = 0; BounceIndex < Request.MaxReflectionBounces && ActivePaths.Num() > 0; ++BounceIndex)
+        for (int32 BounceIndex = 0; BounceIndex < Request.MaxReflectionBounces && ReflectionPathBuffers[CurrentPathBufferIndex].Num() > 0; ++BounceIndex)
         {
             TArray<FUERayTracingAudioRay> BounceRays;
-            BounceRays.Reserve(ActivePaths.Num());
-            for (const FHardwareReflectionPathState& Path : ActivePaths)
-            {
-                BounceRays.Add(FUERayTracingAudioRay{ Path.RayOrigin, Path.RayOrigin + (Path.RayDirection * Request.MaxTraceDistance) });
-            }
+            BuildBounceRaysFromReflectionPaths(ReflectionPathBuffers[CurrentPathBufferIndex], Request.MaxTraceDistance, BounceRays);
 
             TArray<FUERayTracingAudioDetailedTraceHit> BounceHits;
             if (!TraceDetailedRaysWithHardwareRayTracing_RenderThread(RHICmdList, SceneView, Geometry, InstanceToGeometryIndex, BounceRays, BounceHits))
@@ -963,111 +1355,100 @@ namespace
                 return false;
             }
 
-            TArray<FUERayTracingAudioRay> SourceRays;
-            TArray<int32> SourceRayPathIndices;
-            SourceRays.Reserve(ActivePaths.Num());
-            SourceRayPathIndices.Reserve(ActivePaths.Num());
+            TArray<FUERayTracingAudioRay> ShadowRays;
+            TArray<int32> ShadowRayPathIndices;
+            ShadowRays.Reserve(ReflectionPathBuffers[CurrentPathBufferIndex].Num());
+            ShadowRayPathIndices.Reserve(ReflectionPathBuffers[CurrentPathBufferIndex].Num());
 
-            for (int32 PathIndex = 0; PathIndex < ActivePaths.Num(); ++PathIndex)
+            for (int32 PathIndex = 0; PathIndex < ReflectionPathBuffers[CurrentPathBufferIndex].Num(); ++PathIndex)
             {
                 if (!BounceHits.IsValidIndex(PathIndex) || !BounceHits[PathIndex].bHit)
                 {
                     continue;
                 }
 
-                const FVector VisibilityStart = BounceHits[PathIndex].Location + (BounceHits[PathIndex].Normal * 1.0f);
-                SourceRays.Add(FUERayTracingAudioRay{ VisibilityStart, Request.SourceLocation });
-                SourceRayPathIndices.Add(PathIndex);
+                const FVector ShadowRayStart = BounceHits[PathIndex].Location + (BounceHits[PathIndex].Normal * 1.0f);
+                ShadowRays.Add(FUERayTracingAudioRay{ ShadowRayStart, Request.SourceLocation });
+                ShadowRayPathIndices.Add(PathIndex);
             }
 
-            TArray<bool> SourceOcclusionHits;
-            if (!TraceRaysWithHardwareRayTracing_RenderThread(RHICmdList, SceneView, SourceRays, SourceOcclusionHits))
+            TArray<bool> ShadowOcclusionHits;
+            if (!TraceRaysWithHardwareRayTracing_RenderThread(RHICmdList, SceneView, ShadowRays, ShadowOcclusionHits))
             {
                 return false;
             }
 
             TArray<bool> OccludedResults;
-            OccludedResults.Init(true, ActivePaths.Num());
-            for (int32 SourceRayIndex = 0; SourceRayIndex < SourceRayPathIndices.Num(); ++SourceRayIndex)
+            OccludedResults.Init(true, ReflectionPathBuffers[CurrentPathBufferIndex].Num());
+            for (int32 ShadowRayIndex = 0; ShadowRayIndex < ShadowRayPathIndices.Num(); ++ShadowRayIndex)
             {
-                OccludedResults[SourceRayPathIndices[SourceRayIndex]] = SourceOcclusionHits.IsValidIndex(SourceRayIndex)
-                    ? SourceOcclusionHits[SourceRayIndex]
+                OccludedResults[ShadowRayPathIndices[ShadowRayIndex]] = ShadowOcclusionHits.IsValidIndex(ShadowRayIndex)
+                    ? ShadowOcclusionHits[ShadowRayIndex]
                     : true;
             }
 
-            TArray<FHardwareReflectionPathState> NextPaths;
-            NextPaths.Reserve(ActivePaths.Num());
-
-            for (int32 PathIndex = 0; PathIndex < ActivePaths.Num(); ++PathIndex)
+            const int32 NextPathBufferIndex = 1 - CurrentPathBufferIndex;
+            TArray<FShadeAndGatherPathInputGPU> PathInputs;
+            PathInputs.Reserve(ReflectionPathBuffers[CurrentPathBufferIndex].Num());
+            for (int32 PathIndex = 0; PathIndex < ReflectionPathBuffers[CurrentPathBufferIndex].Num(); ++PathIndex)
             {
-                if (!BounceHits.IsValidIndex(PathIndex))
-                {
-                    continue;
-                }
-
-                const FUERayTracingAudioDetailedTraceHit& Hit = BounceHits[PathIndex];
-                if (!Hit.bHit || !Geometry.IsValidIndex(Hit.GeometryIndex))
-                {
-                    continue;
-                }
-
-                FHardwareReflectionPathState NextPath = ActivePaths[PathIndex];
-                NextPath.TravelDistance += Hit.Distance;
-
-                const FVector Absorption = Geometry[Hit.GeometryIndex].Absorption;
-                NextPath.Throughput.X *= FMath::Clamp(1.0f - Absorption.X, 0.0f, 1.0f);
-                NextPath.Throughput.Y *= FMath::Clamp(1.0f - Absorption.Y, 0.0f, 1.0f);
-                NextPath.Throughput.Z *= FMath::Clamp(1.0f - Absorption.Z, 0.0f, 1.0f);
-
-                const FVector VisibilityStart = Hit.Location + (Hit.Normal * 1.0f);
+                const FHardwareReflectionPathState& Path = ReflectionPathBuffers[CurrentPathBufferIndex][PathIndex];
+                const bool bHasHit = BounceHits.IsValidIndex(PathIndex) && BounceHits[PathIndex].bHit;
                 const bool bOccluded = OccludedResults.IsValidIndex(PathIndex) ? OccludedResults[PathIndex] : true;
-                if (!bOccluded)
-                {
-                    const float SourceDistance = FVector::Distance(VisibilityStart, Request.SourceLocation);
-                    if (SourceDistance > UE_KINDA_SMALL_NUMBER)
-                    {
-                        const float TotalDistance = NextPath.TravelDistance + SourceDistance;
-                        const float DelaySeconds = TotalDistance / FMath::Max(Request.SpeedOfSound, 1.0f);
-                        if (DelaySeconds <= Request.DurationSeconds)
-                        {
-                            const float DistanceMeters = TotalDistance / 100.0f;
-                            FVector AirAttenuation;
-                            AirAttenuation.X = FMath::Exp(-Request.AirAbsorptionPerMeter.X * DistanceMeters);
-                            AirAttenuation.Y = FMath::Exp(-Request.AirAbsorptionPerMeter.Y * DistanceMeters);
-                            AirAttenuation.Z = FMath::Exp(-Request.AirAbsorptionPerMeter.Z * DistanceMeters);
+                const FVector Absorption = (bHasHit && Geometry.IsValidIndex(BounceHits[PathIndex].GeometryIndex))
+                    ? Geometry[BounceHits[PathIndex].GeometryIndex].Absorption
+                    : FVector::ZeroVector;
 
-                            const float DistanceRatio = FMath::Max(TotalDistance, Request.ReferenceDistance) / FMath::Max(Request.ReferenceDistance, 1.0f);
-                            const float GeometricAttenuation = 1.0f / FMath::Square(DistanceRatio);
-                            const float BounceAttenuation = 1.0f / static_cast<float>(BounceIndex + 1);
-                            const FVector BandGain = NextPath.Throughput
-                                * AirAttenuation
-                                * (GeometricAttenuation * BounceAttenuation / static_cast<float>(Request.NumReflectionRays));
-                            const float MonoEnergy = (BandGain.X + BandGain.Y + BandGain.Z) / 3.0f;
-                            if (MonoEnergy > KINDA_SMALL_NUMBER)
-                            {
-                                const int32 DelayBinIndex = FMath::Clamp(
-                                    FMath::FloorToInt(DelaySeconds / (Request.DurationSeconds / static_cast<float>(OutResult.DelayBinEnergy.Num()))),
-                                    0,
-                                    OutResult.DelayBinEnergy.Num() - 1);
-                                OutResult.DelayBinEnergy[DelayBinIndex] += BandGain;
-                                OutResult.EarliestArrivalSeconds = (OutResult.EarliestArrivalSeconds <= 0.0f)
-                                    ? DelaySeconds
-                                    : FMath::Min(OutResult.EarliestArrivalSeconds, DelaySeconds);
-                                ++OutResult.NumValidContributions;
-                            }
-                        }
+                FShadeAndGatherPathInputGPU& PathInput = PathInputs.AddDefaulted_GetRef();
+                PathInput.RayOriginAndTravelDistance = FVector4f(FVector3f(Path.RayOrigin), Path.TravelDistance);
+                PathInput.RayDirectionAndBounceIndex = FVector4f(FVector3f(Path.RayDirection), static_cast<float>(BounceIndex));
+                PathInput.ThroughputAndHitDistance = FVector4f(FVector3f(Path.Throughput), bHasHit ? BounceHits[PathIndex].Distance : 0.0f);
+                PathInput.HitLocationAndHitValid = FVector4f(bHasHit ? FVector3f(BounceHits[PathIndex].Location) : FVector3f::ZeroVector, bHasHit ? 1.0f : 0.0f);
+                PathInput.HitNormalAndOccluded = FVector4f(bHasHit ? FVector3f(BounceHits[PathIndex].Normal) : FVector3f::ZeroVector, bOccluded ? 1.0f : 0.0f);
+                PathInput.AbsorptionAndPadding = FVector4f(FVector3f(Absorption), 0.0f);
+            }
+
+            TArray<FVector> BounceEnergyBins;
+            int32 BounceContributionCount = 0;
+            if (DispatchShadeAndGatherOnGPU_RenderThread(
+                RHICmdList,
+                PathInputs,
+                Request,
+                ReflectionPathBuffers[NextPathBufferIndex],
+                BounceEnergyBins,
+                BounceContributionCount))
+            {
+                for (int32 BinIndex = 0; BinIndex < OutResult.DelayBinEnergy.Num() && BinIndex < BounceEnergyBins.Num(); ++BinIndex)
+                {
+                    OutResult.DelayBinEnergy[BinIndex] += BounceEnergyBins[BinIndex];
+                    if (OutResult.EarliestArrivalSeconds <= 0.0f && !BounceEnergyBins[BinIndex].IsNearlyZero())
+                    {
+                        OutResult.EarliestArrivalSeconds = (static_cast<float>(BinIndex) + 0.5f) * (Request.DurationSeconds / static_cast<float>(OutResult.DelayBinEnergy.Num()));
                     }
                 }
 
-                NextPath.RayOrigin = VisibilityStart;
-                NextPath.RayDirection = ActivePaths[PathIndex].RayDirection.MirrorByVector(Hit.Normal).GetSafeNormal();
-                if (!NextPath.RayDirection.IsNearlyZero())
-                {
-                    NextPaths.Add(NextPath);
-                }
+                OutResult.NumValidContributions += BounceContributionCount;
+            }
+            else
+            {
+                TArray<FHardwareShadedBounceState> ShadedStates;
+                ShadeAndBounceHardwareReflectionPaths(
+                    ReflectionPathBuffers[CurrentPathBufferIndex],
+                    BounceHits,
+                    Geometry,
+                    Request,
+                    BounceIndex,
+                    ShadedStates,
+                    ReflectionPathBuffers[NextPathBufferIndex]);
+
+                GatherEnergyFieldFromShadowResults(ShadedStates, ShadowOcclusionHits, ShadowRayPathIndices, Request, OutResult);
             }
 
-            ActivePaths = MoveTemp(NextPaths);
+            if (BounceIndex < Request.MaxReflectionBounces - 1)
+            {
+                CurrentPathBufferIndex = NextPathBufferIndex;
+                ReflectionPathBuffers[1 - CurrentPathBufferIndex].Reset();
+            }
         }
 
         return true;

@@ -1,5 +1,12 @@
 #include "/Engine/Private/Common.ush"
 
+struct FReflectionPathStateGPU
+{
+    float4 OriginAndTravelDistance;
+    float4 DirectionAndAlive;
+    float4 ThroughputAndPadding;
+};
+
 struct FShadeAndGatherPathInputGPU
 {
     float4 RayOriginAndTravelDistance;
@@ -17,6 +24,7 @@ struct FShadeAndGatherPathOutputGPU
     float4 ThroughputAndPadding;
 };
 
+RWStructuredBuffer<FReflectionPathStateGPU> OutPaths;
 StructuredBuffer<FShadeAndGatherPathInputGPU> PathInputs;
 RWStructuredBuffer<FShadeAndGatherPathOutputGPU> PathOutputs;
 RWStructuredBuffer<uint> EnergyBins;
@@ -30,8 +38,37 @@ float ReferenceDistance;
 float DurationSeconds;
 float DelayBinDurationSeconds;
 float EnergyQuantizationScale;
+float3 ListenerLocation;
+float3 ListenerForward;
 float3 SourceLocation;
 float3 AirAbsorptionPerMeter;
+
+[numthreads(THREADGROUP_SIZE_X, 1, 1)]
+void GenerateListenerRaysCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    const uint PathIndex = DispatchThreadId.x;
+    if (PathIndex >= NumPaths)
+    {
+        return;
+    }
+
+    const float U = (PathIndex + 0.5f) / max((float) NumPaths, 1.0f);
+    const float V = frac((PathIndex + 0.5f) * 0.61803398875f);
+    const float CosTheta = 1.0f - 2.0f * U;
+    const float SinTheta = sqrt(max(0.0f, 1.0f - CosTheta * CosTheta));
+    const float Phi = 2.0f * PI * V;
+    const float3 Direction = normalize(float3(
+        SinTheta * cos(Phi),
+        SinTheta * sin(Phi),
+        CosTheta));
+
+    const float3 Forward = length(ListenerForward) > 1e-4f ? normalize(ListenerForward) : float3(0.0f, 0.0f, 1.0f);
+    FReflectionPathStateGPU Path;
+    Path.OriginAndTravelDistance = float4(ListenerLocation + (Direction + Forward) * 1.0f, 0.0f);
+    Path.DirectionAndAlive = float4(Direction, 1.0f);
+    Path.ThroughputAndPadding = float4(1.0f, 1.0f, 1.0f, 0.0f);
+    OutPaths[PathIndex] = Path;
+}
 
 [numthreads(THREADGROUP_SIZE_X, 1, 1)]
 void ShadeAndGatherCS(uint3 DispatchThreadId : SV_DispatchThreadID)

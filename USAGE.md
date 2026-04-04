@@ -174,6 +174,14 @@
   - `SimulateIndirectEnergyField(...)`
   - 这样不会每个 bounce 都回到 game thread 拿 `TArray` 结果
   - 并且会在该设备级路径中复用单次构建的声学场景，而不是每个 bounce 重建一次
+  - 当前设备级路径内部已经进一步按 Radeon Rays 循环组织成：
+    - generateListenerRays
+    - QueryIntersection
+    - shadeAndBounce
+    - QueryOcclusion
+    - gatherEnergyField
+    - swap buffers
+  - 其中 `generateListenerRays` 与 `shadeAndBounce + gatherEnergyField` 当前已经有 shader 实现
 
 `UUERayTracingAudioSourceComponent` 的 `IndirectMode` 当前支持三种模式：
 

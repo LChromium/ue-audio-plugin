@@ -62,6 +62,8 @@
   - 当前新增了设备级 `SimulateIndirectEnergyField(...)` 硬件路径。
   - 当前会把硬件反射模拟收拢到单次 render command 中执行，避免每个 bounce 都往 game thread 返回 `TArray`。
   - 当前在设备级硬件路径中会复用单次构建的声学 TLAS / BLAS，而不是每个 bounce 重建一次场景。
+  - 当前设备级硬件路径已经进一步按 Radeon Rays 循环拆成：`generateListenerRays -> QueryIntersection -> shadeAndBounce -> QueryOcclusion -> gatherEnergyField -> swap buffers`。
+  - 当前 `generateListenerRays` 和 `shadeAndBounce + gatherEnergyField` 已经有对应的 UE compute shader 实现。
 - `FUERayTracingAudioSerializedObject`
   - 提供后续烘焙 / Probe / IR 数据序列化的占位类型。
 
@@ -354,7 +356,7 @@
 
 当前 Phase 3 虽然已经实现，但仍有明显限制：
 
-- 当前虽然已经把流程拆成更接近 Steam Audio 的 ReflectionSimulator 结构，并新增设备级单次 render command 硬件路径，但 render-thread 内部仍有每 bounce 的结果回读，尚未做到完整 GPU buffer 持续链路
+- 当前虽然已经把设备级硬件路径对齐到 Radeon Rays 的 for 循环步骤，但 render-thread 内部仍有每 bounce 的 trace 结果回读，尚未做到完整 GPU buffer 持续链路
 - 当前没有完整的 Steam Audio `EnergyField` 数据结构
 - 当前还没有完整方向场 / 高阶球谐版本的 EnergyField
 - 当前参数化混响仍是简化模型，不是完整 Steam Audio 级 RT60 / EQ / delay 拟合实现
