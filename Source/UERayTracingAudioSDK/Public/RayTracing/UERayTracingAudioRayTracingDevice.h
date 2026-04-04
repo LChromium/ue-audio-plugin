@@ -41,6 +41,32 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioDetailedTraceHit
     int32 GeometryIndex = INDEX_NONE;
 };
 
+struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioEnergyFieldTraceRequest
+{
+    UWorld* World = nullptr;
+    const FUERayTracingAudioScene* Scene = nullptr;
+    FVector ListenerLocation = FVector::ZeroVector;
+    FVector ListenerForward = FVector::ForwardVector;
+    FVector SourceLocation = FVector::ZeroVector;
+    FVector AirAbsorptionPerMeter = FVector(0.0002f, 0.0006f, 0.0012f);
+    const AActor* ListenerActor = nullptr;
+    const AActor* SourceActor = nullptr;
+    int32 NumReflectionRays = 64;
+    int32 MaxReflectionBounces = 3;
+    int32 NumDelayBins = 96;
+    float DurationSeconds = 1.0f;
+    float ReferenceDistance = 100.0f;
+    float SpeedOfSound = 34300.0f;
+    float MaxTraceDistance = 100000.0f;
+};
+
+struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioEnergyFieldTraceResult
+{
+    TArray<FVector> DelayBinEnergy;
+    int32 NumValidContributions = 0;
+    float EarliestArrivalSeconds = 0.0f;
+};
+
 class UERAYTRACINGAUDIOSDK_API FUERayTracingAudioRayTracingDevice
 {
 public:
@@ -51,4 +77,7 @@ public:
         const FUERayTracingAudioTraceRequest& Request,
         const TArray<FUERayTracingAudioRay>& Rays,
         TArray<FUERayTracingAudioDetailedTraceHit>& OutHits) const;
+    bool SimulateIndirectEnergyField(
+        const FUERayTracingAudioEnergyFieldTraceRequest& Request,
+        FUERayTracingAudioEnergyFieldTraceResult& OutResult) const;
 };

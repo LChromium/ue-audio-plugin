@@ -15,6 +15,7 @@ public class UERayTracingAudioSDK : ModuleRules
         {
             "CoreUObject",
             "Engine",
+            "Projects",
             "Renderer",
             "RenderCore",
             "RHI"

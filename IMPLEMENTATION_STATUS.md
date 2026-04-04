@@ -53,6 +53,15 @@
   - 当前在硬件光追可用时会优先使用 UE Ray Tracing RHI 做多跳命中查询，不可用时回退到 CPU 声学场景求交。
   - 当前已实现 Minimal EnergyField：delay bins、3-band energy accumulation、earliest/latest split 和 temporal smoothing。
   - 当前已实现从 Minimal EnergyField 重建第一版 IR，并导出 Parametric / Hybrid 参数。
+- `FUERayTracingAudioReflectionSimulator`
+  - 已按 Steam Audio `generate rays -> QueryIntersection -> QueryOcclusion -> shadeAndBounce -> gatherEnergyField` 的思路拆出第一阶段流程。
+  - 当前已经改为从 listener 侧生成反射射线，再向 source 做可见性 / occlusion 检查。
+  - 当前第二阶段已经把 `shadeAndBounce + gatherEnergyField` 迁到 UE compute shader 路径。
+  - 当前是 RHI / compute / CPU 混合路径：RHI 返回 hit，compute 负责单 bounce 的 shadeAndBounce 与 gatherEnergyField，CPU 继续负责 bounce 调度与后续导出。
+- `FUERayTracingAudioRayTracingDevice`
+  - 当前新增了设备级 `SimulateIndirectEnergyField(...)` 硬件路径。
+  - 当前会把硬件反射模拟收拢到单次 render command 中执行，避免每个 bounce 都往 game thread 返回 `TArray`。
+  - 当前在设备级硬件路径中会复用单次构建的声学 TLAS / BLAS，而不是每个 bounce 重建一次场景。
 - `FUERayTracingAudioSerializedObject`
   - 提供后续烘焙 / Probe / IR 数据序列化的占位类型。
 
@@ -181,9 +190,11 @@
 
 当前已经实现一版参考 Steam Audio 思路的间接声实时链路：
 
-- 从声源发射多条反射采样射线。
-- 在导出的声学场景中做多次反射查询。
-- 对有效路径写入 Minimal EnergyField 的 delay bins。
+- 从 listener 侧生成多条反射采样射线。
+- 对 bounce rays 做 `QueryIntersection`。
+- 对 hit 后的 source 可见性做 `QueryOcclusion`。
+- 在 UE compute shader 路径执行单 bounce 的 `shadeAndBounce`。
+- 在 UE compute shader 路径执行 `gatherEnergyField`，把有效路径写入 Minimal EnergyField 的 delay bins。
 - 对 3 个频段做能量累计。
 - 对 EnergyField 做 earliest/latest split 和 temporal smoothing。
 - 从 Minimal EnergyField 重建第一版 impulse response。
@@ -197,7 +208,9 @@
 
 - 当硬件光追可用时：
   - 使用 UE Ray Tracing RHI shader 返回命中距离、法线和几何索引
-  - CPU 侧负责组织 bounce、累计路径贡献并生成间接声输出
+  - UE compute shader 负责单 bounce 的 `shadeAndBounce` 与 `gatherEnergyField`
+  - 设备级硬件路径会在单次 render command 中推进多 bounce，减少每 bounce 的 game-thread readback
+  - CPU 侧负责 temporal smoothing、IR / Parametric / Hybrid 导出，以及 CPU fallback
 - 当硬件光追不可用时：
   - 回退到 CPU 场景求交实现
 
@@ -341,7 +354,7 @@
 
 当前 Phase 3 虽然已经实现，但仍有明显限制：
 
-- 当前虽然已经把多跳命中查询优先切到 UE Ray Tracing RHI，但 bounce 调度、EnergyField 累积、IR 重建和 Parametric / Hybrid 导出仍在 CPU 上完成
+- 当前虽然已经把流程拆成更接近 Steam Audio 的 ReflectionSimulator 结构，并新增设备级单次 render command 硬件路径，但 render-thread 内部仍有每 bounce 的结果回读，尚未做到完整 GPU buffer 持续链路
 - 当前没有完整的 Steam Audio `EnergyField` 数据结构
 - 当前还没有完整方向场 / 高阶球谐版本的 EnergyField
 - 当前参数化混响仍是简化模型，不是完整 Steam Audio 级 RT60 / EQ / delay 拟合实现

@@ -1,0 +1,99 @@
+#include "/Engine/Private/Common.ush"
+
+struct FShadeAndGatherPathInputGPU
+{
+    float4 RayOriginAndTravelDistance;
+    float4 RayDirectionAndBounceIndex;
+    float4 ThroughputAndHitDistance;
+    float4 HitLocationAndHitValid;
+    float4 HitNormalAndOccluded;
+    float4 AbsorptionAndPadding;
+};
+
+struct FShadeAndGatherPathOutputGPU
+{
+    float4 NextOriginAndTravelDistance;
+    float4 NextDirectionAndAlive;
+    float4 ThroughputAndPadding;
+};
+
+StructuredBuffer<FShadeAndGatherPathInputGPU> PathInputs;
+RWStructuredBuffer<FShadeAndGatherPathOutputGPU> PathOutputs;
+RWStructuredBuffer<uint> EnergyBins;
+RWStructuredBuffer<uint> ContributionCounter;
+
+uint NumPaths;
+uint NumDelayBins;
+uint NumReflectionRays;
+float SpeedOfSound;
+float ReferenceDistance;
+float DurationSeconds;
+float DelayBinDurationSeconds;
+float EnergyQuantizationScale;
+float3 SourceLocation;
+float3 AirAbsorptionPerMeter;
+
+[numthreads(THREADGROUP_SIZE_X, 1, 1)]
+void ShadeAndGatherCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    const uint PathIndex = DispatchThreadId.x;
+    if (PathIndex >= NumPaths)
+    {
+        return;
+    }
+
+    FShadeAndGatherPathInputGPU Input = PathInputs[PathIndex];
+    FShadeAndGatherPathOutputGPU Output;
+    Output.NextOriginAndTravelDistance = 0.0f;
+    Output.NextDirectionAndAlive = 0.0f;
+    Output.ThroughputAndPadding = 0.0f;
+
+    if (Input.HitLocationAndHitValid.w < 0.5f)
+    {
+        PathOutputs[PathIndex] = Output;
+        return;
+    }
+
+    float3 Throughput = Input.ThroughputAndHitDistance.xyz * saturate(1.0f - Input.AbsorptionAndPadding.xyz);
+    float TravelDistance = Input.RayOriginAndTravelDistance.w + Input.ThroughputAndHitDistance.w;
+    float3 HitNormal = normalize(Input.HitNormalAndOccluded.xyz);
+    float3 NextOrigin = Input.HitLocationAndHitValid.xyz + HitNormal * 1.0f;
+    float3 NextDirection = normalize(reflect(Input.RayDirectionAndBounceIndex.xyz, HitNormal));
+    bool bAlive = any(abs(NextDirection) > 1e-4f);
+
+    Output.NextOriginAndTravelDistance = float4(NextOrigin, TravelDistance);
+    Output.NextDirectionAndAlive = float4(NextDirection, bAlive ? 1.0f : 0.0f);
+    Output.ThroughputAndPadding = float4(Throughput, 0.0f);
+
+    if (Input.HitNormalAndOccluded.w < 0.5f)
+    {
+        float SourceDistance = length(SourceLocation - NextOrigin);
+        if (SourceDistance > 1e-4f)
+        {
+            float TotalDistance = TravelDistance + SourceDistance;
+            float DelaySeconds = TotalDistance / max(SpeedOfSound, 1e-4f);
+            if (DelaySeconds <= DurationSeconds)
+            {
+                float DistanceMeters = TotalDistance / 100.0f;
+                float3 AirAttenuation = exp(-AirAbsorptionPerMeter * DistanceMeters);
+                float DistanceRatio = max(TotalDistance, ReferenceDistance) / max(ReferenceDistance, 1e-4f);
+                float GeometricAttenuation = 1.0f / max(DistanceRatio * DistanceRatio, 1e-4f);
+                float BounceAttenuation = 1.0f / max(Input.RayDirectionAndBounceIndex.w + 1.0f, 1.0f);
+                float3 BandGain = Throughput * AirAttenuation * (GeometricAttenuation * BounceAttenuation / max((float)NumReflectionRays, 1.0f));
+                float MonoEnergy = dot(BandGain, float3(0.33333334f, 0.33333334f, 0.33333334f));
+
+                if (MonoEnergy > 1e-8f)
+                {
+                    uint DelayBinIndex = min((uint)floor(DelaySeconds / max(DelayBinDurationSeconds, 1e-4f)), max(NumDelayBins - 1, 0));
+                    uint BaseIndex = DelayBinIndex * 3;
+                    InterlockedAdd(EnergyBins[BaseIndex + 0], (uint)round(max(BandGain.x, 0.0f) * EnergyQuantizationScale));
+                    InterlockedAdd(EnergyBins[BaseIndex + 1], (uint)round(max(BandGain.y, 0.0f) * EnergyQuantizationScale));
+                    InterlockedAdd(EnergyBins[BaseIndex + 2], (uint)round(max(BandGain.z, 0.0f) * EnergyQuantizationScale));
+                    InterlockedAdd(ContributionCounter[0], 1u);
+                }
+            }
+        }
+    }
+
+    PathOutputs[PathIndex] = Output;
+}

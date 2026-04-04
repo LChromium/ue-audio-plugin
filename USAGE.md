@@ -158,6 +158,23 @@
 - `ParametricDelaySeconds`
 - `ParametricEq`
 
+- 当前第一阶段流程已经按 Steam Audio 风格拆成：
+  - generate listener rays
+  - QueryIntersection
+  - QueryOcclusion
+  - shadeAndBounce
+  - gatherEnergyField
+
+- 当前第二阶段已经把单 bounce 的：
+  - shadeAndBounce
+  - gatherEnergyField
+  迁到了 UE compute shader 路径
+
+- 当前第三阶段已经开始把硬件反射模拟收拢到设备级单次调用：
+  - `SimulateIndirectEnergyField(...)`
+  - 这样不会每个 bounce 都回到 game thread 拿 `TArray` 结果
+  - 并且会在该设备级路径中复用单次构建的声学场景，而不是每个 bounce 重建一次
+
 `UUERayTracingAudioSourceComponent` 的 `IndirectMode` 当前支持三种模式：
 
 - `Minimal Convolution`
@@ -208,7 +225,9 @@
 
 - 硬件光追可用时：
   - 用 UE Ray Tracing RHI shader 返回每条反射射线的命中距离、法线和几何索引
-  - CPU 侧继续负责多 bounce 调度、Minimal EnergyField 累积、IR 重建和 Parametric / Hybrid 参数生成
+  - UE compute shader 负责单 bounce 的 shadeAndBounce、gatherEnergyField
+  - 设备级硬件路径会在单次 render command 中推进多 bounce
+  - CPU 侧继续负责 IR 重建和 Parametric / Hybrid 参数生成，以及 CPU fallback
 - 硬件光追不可用时：
   - 回退到 CPU 声学场景求交
 
@@ -218,7 +237,7 @@
 
 - 直接路径相关增益
 - 基于 Minimal EnergyField 的第一版 IR / Parametric / Hybrid 间接声链路
-- Phase 3 的 RHI 优先命中查询 + CPU 路径累积
+- Phase 3 的 RHI 优先命中查询 + compute 单 bounce 累积 + CPU 后处理
 
 目前还没有：
 
