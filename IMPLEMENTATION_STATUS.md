@@ -2,14 +2,14 @@
 
 ## 1. 已完成范围
 
-当前仓库已经完成了 `ARCHITECTURE.md` 中 Phase 1、Phase 2 以及 Phase 3 第一版代码实现，并且已经完成基于 Unreal Build Tool 的实际编译验证，但还没有达到“完整声学功能闭环已在 Unreal Editor 中试听跑通”的状态。
+当前仓库已经完成了 `ARCHITECTURE.md` 中 Phase 1、Phase 2，以及 Phase 3.1 / 3.2 / 3.3 的当前代码实现，并且已经完成基于 Unreal Build Tool 的实际编译验证，但还没有达到“完整声学功能闭环已在 Unreal Editor 中试听跑通”的状态。
 
 目前完成的内容可以概括为：
 
 - 插件结构已经建立起来。
 - Runtime / Editor / SDK 三层模块已经拆开。
 - 直接声的最小数据链路已经接通。
-- 间接声实时链路已经有第一版可运行实现。
+- 间接声实时链路已经接入 Minimal EnergyField、IR 重建和 Parametric / Hybrid 第一版实现。
 - 编辑器里已经有 Bake 窗口入口骨架。
 - 代码层面的静态检查通过。
 - 插件模块已经在测试工程环境中完成实际编译。
@@ -51,6 +51,8 @@
   - 已实现参考 Steam Audio 的体积遮挡采样逻辑。
   - 已实现基于导出声学场景的实时间接声路径采样、早期反射、参数化混响和 Hybrid 结果生成。
   - 当前在硬件光追可用时会优先使用 UE Ray Tracing RHI 做多跳命中查询，不可用时回退到 CPU 声学场景求交。
+  - 当前已实现 Minimal EnergyField：delay bins、3-band energy accumulation、earliest/latest split 和 temporal smoothing。
+  - 当前已实现从 Minimal EnergyField 重建第一版 IR，并导出 Parametric / Hybrid 参数。
 - `FUERayTracingAudioSerializedObject`
   - 提供后续烘焙 / Probe / IR 数据序列化的占位类型。
 
@@ -87,7 +89,7 @@
   - 从 `UUERayTracingAudioSourceComponent` 读取模拟结果。
   - 把距离衰减、空气吸收、遮挡组合成目标增益。
   - 对输出 buffer 做平滑增益处理。
-  - 已接入第一版早期反射延迟线和参数化尾部混响渲染。
+  - 已接入第一版 IR 重建播放和参数化尾部混响渲染。
 - `FUERayTracingAudioSpatializationPlugin`
   - 目前是占位实现。
   - 已接入 Unreal 插件工厂注册。
@@ -181,7 +183,11 @@
 
 - 从声源发射多条反射采样射线。
 - 在导出的声学场景中做多次反射查询。
-- 对有效路径累计延迟、能量和频段衰减结果。
+- 对有效路径写入 Minimal EnergyField 的 delay bins。
+- 对 3 个频段做能量累计。
+- 对 EnergyField 做 earliest/latest split 和 temporal smoothing。
+- 从 Minimal EnergyField 重建第一版 impulse response。
+- 从 Minimal EnergyField 导出 Parametric delay / EQ / RT60。
 - 根据间接声模式输出：
   - `MinimalConvolution`
   - `ParametricReverb`
@@ -226,6 +232,20 @@
 - `LateReverbGain`
 - `AverageReflectionDelaySeconds`
 - `ReverbTimes`
+
+当前 Minimal EnergyField 已负责导出：
+
+- `IndirectGain`
+- `EarlyReflectionGain`
+- `LateReverbGain`
+- `ReverbTimes`
+
+当前 3.2 / 3.3 额外负责：
+
+- 从 delay bins 重建第一版 `ReconstructedImpulseResponse`
+- 导出 `ParametricDelaySeconds`
+- 导出 `ParametricEq`
+- 让 `HybridReverb` 同时使用 IR 早期部分和参数化尾部
 
 ## 4. 还没有完成的部分
 
@@ -321,10 +341,11 @@
 
 当前 Phase 3 虽然已经实现，但仍有明显限制：
 
-- 当前虽然已经把多跳命中查询优先切到 UE Ray Tracing RHI，但 bounce 调度和路径贡献累积仍在 CPU 上完成
+- 当前虽然已经把多跳命中查询优先切到 UE Ray Tracing RHI，但 bounce 调度、EnergyField 累积、IR 重建和 Parametric / Hybrid 导出仍在 CPU 上完成
 - 当前没有完整的 Steam Audio `EnergyField` 数据结构
-- 当前参数化混响是简化模型，不是完整 RT60 / EQ / delay 拟合实现
-- 当前卷积播放链路是简化版早期反射延迟线，不是完整长 IR 卷积器
+- 当前还没有完整方向场 / 高阶球谐版本的 EnergyField
+- 当前参数化混响仍是简化模型，不是完整 Steam Audio 级 RT60 / EQ / delay 拟合实现
+- 当前 IR 仍是从 Minimal EnergyField 重建的第一版，不是完整长 IR 卷积器
 
 ## 5. 现在能不能跑通直接声和间接声
 
@@ -356,7 +377,7 @@
 
 - 虽然已经完成实际编译，并且已经确认关键直接声参数可在 Unreal Editor 中正确显示，但还没有完成试听验证。
 - 当前虽然已经接入最小 UE Ray Tracing RHI 后端，并且已经支持真实静态网格三角形导出，但材质和更复杂几何类型还没有接入，不是最终生产级实现。
-- 虽然已经实现 Phase 3 第一版间接声链路，并且查询优先切到 UE Ray Tracing RHI，但仍是简化版早反 + 参数尾部渲染，不是完整 Steam Audio 等级的反射系统。
+- 虽然已经实现 Phase 3.1 / 3.2 / 3.3 第一版，并且查询优先切到 UE Ray Tracing RHI，但仍不是完整 Steam Audio 等级的方向场 / IR 重建系统。
 - Spatialization 仍然是占位实现。
 
 所以更准确的判断是：
@@ -427,6 +448,9 @@
 - **Phase 1 全部骨架**
 - **Phase 2 的最小直接声代码链路**
 - **Phase 3 的第一版实时间接声链路**
+- **Phase 3.1 的 Minimal EnergyField**
+- **Phase 3.2 的 IR 重建**
+- **Phase 3.3 的 Parametric / Hybrid 第一版**
 - **测试工程中的实际编译验证**
 - **Unreal Editor 中关键直接声参数显示验证**
 - **基于 RHI 的最小体积遮挡后端**

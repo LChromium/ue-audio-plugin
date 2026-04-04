@@ -30,6 +30,7 @@ public:
 
 private:
     void EnsureDelayCapacity(FUERayTracingAudioOcclusionSource& SourceState, float DurationSeconds);
+    float ReadDelayedSample(const FUERayTracingAudioOcclusionSource& SourceState, int32 DelaySamples) const;
     float RenderIndirectSample(
         FUERayTracingAudioOcclusionSource& SourceState,
         const FUERayTracingAudioIndirectSimulationResult& IndirectResult,

@@ -17,9 +17,17 @@ namespace
     struct FIndirectPathContribution
     {
         float DelaySeconds = 0.0f;
-        float MonoGain = 0.0f;
         FVector BandGain = FVector::ZeroVector;
     };
+
+    struct FMinimalEnergyFieldHistory
+    {
+        TArray<FVector> SmoothedDelayBinEnergy;
+        float DurationSeconds = 0.0f;
+        float DelayBinDurationSeconds = 0.0f;
+    };
+
+    TMap<const AActor*, FMinimalEnergyFieldHistory> GIndirectEnergyFieldHistory;
 
     float RadicalInverse(int32 Base, int32 Index)
     {
@@ -260,6 +268,335 @@ namespace
         FAcousticSceneHit Hit;
         return !TraceAcousticScene(Scene, Start, Segment / Distance, Distance - 1.0f, Hit);
     }
+
+    float GetMonoEnergy(const FVector& BandEnergy)
+    {
+        return (BandEnergy.X + BandEnergy.Y + BandEnergy.Z) / 3.0f;
+    }
+
+    int32 GetDelayBinIndex(const FUERayTracingAudioMinimalEnergyField& EnergyField, float DelaySeconds)
+    {
+        if (EnergyField.DelayBinEnergy.IsEmpty() || EnergyField.DelayBinDurationSeconds <= UE_KINDA_SMALL_NUMBER)
+        {
+            return INDEX_NONE;
+        }
+
+        const int32 RawIndex = FMath::FloorToInt(DelaySeconds / EnergyField.DelayBinDurationSeconds);
+        return FMath::Clamp(RawIndex, 0, EnergyField.DelayBinEnergy.Num() - 1);
+    }
+
+    FUERayTracingAudioMinimalEnergyField BuildMinimalEnergyField(
+        const TArray<FIndirectPathContribution>& Contributions,
+        const FUERayTracingAudioIndirectSimulationInput& Input,
+        float EarlyLateSplitSeconds)
+    {
+        FUERayTracingAudioMinimalEnergyField EnergyField;
+        EnergyField.DurationSeconds = Input.DurationSeconds;
+        EnergyField.EarlyLateSplitSeconds = EarlyLateSplitSeconds;
+        EnergyField.DelayBinEnergy.Init(FVector::ZeroVector, FMath::Max(Input.NumDelayBins, 1));
+        EnergyField.DelayBinDurationSeconds = Input.DurationSeconds / static_cast<float>(EnergyField.DelayBinEnergy.Num());
+        EnergyField.EarliestArrivalSeconds = Input.DurationSeconds;
+
+        for (const FIndirectPathContribution& Contribution : Contributions)
+        {
+            const int32 DelayBinIndex = GetDelayBinIndex(EnergyField, Contribution.DelaySeconds);
+            if (DelayBinIndex == INDEX_NONE)
+            {
+                continue;
+            }
+
+            EnergyField.DelayBinEnergy[DelayBinIndex] += Contribution.BandGain;
+            EnergyField.EarliestArrivalSeconds = FMath::Min(EnergyField.EarliestArrivalSeconds, Contribution.DelaySeconds);
+        }
+
+        if (Contributions.IsEmpty())
+        {
+            EnergyField.EarliestArrivalSeconds = 0.0f;
+        }
+
+        return EnergyField;
+    }
+
+    void ApplyTemporalSmoothing(
+        const FUERayTracingAudioIndirectSimulationInput& Input,
+        FUERayTracingAudioMinimalEnergyField& EnergyField,
+        bool& bOutUsedTemporalSmoothing)
+    {
+        bOutUsedTemporalSmoothing = false;
+
+        if (!Input.SourceActor || EnergyField.DelayBinEnergy.IsEmpty())
+        {
+            return;
+        }
+
+        FMinimalEnergyFieldHistory& History = GIndirectEnergyFieldHistory.FindOrAdd(Input.SourceActor);
+        if (History.SmoothedDelayBinEnergy.Num() != EnergyField.DelayBinEnergy.Num()
+            || !FMath::IsNearlyEqual(History.DurationSeconds, EnergyField.DurationSeconds)
+            || !FMath::IsNearlyEqual(History.DelayBinDurationSeconds, EnergyField.DelayBinDurationSeconds))
+        {
+            History.SmoothedDelayBinEnergy = EnergyField.DelayBinEnergy;
+            History.DurationSeconds = EnergyField.DurationSeconds;
+            History.DelayBinDurationSeconds = EnergyField.DelayBinDurationSeconds;
+            return;
+        }
+
+        const float DeltaTimeSeconds = FMath::Max(Input.DeltaTimeSeconds, 1.0f / 120.0f);
+        const float SmoothingTimeConstant = 0.2f;
+        const float Alpha = FMath::Clamp(1.0f - FMath::Exp(-DeltaTimeSeconds / SmoothingTimeConstant), 0.0f, 1.0f);
+
+        for (int32 BinIndex = 0; BinIndex < EnergyField.DelayBinEnergy.Num(); ++BinIndex)
+        {
+            History.SmoothedDelayBinEnergy[BinIndex] = FMath::Lerp(
+                History.SmoothedDelayBinEnergy[BinIndex],
+                EnergyField.DelayBinEnergy[BinIndex],
+                Alpha);
+        }
+
+        EnergyField.DelayBinEnergy = History.SmoothedDelayBinEnergy;
+        bOutUsedTemporalSmoothing = true;
+    }
+
+    float EstimateBandReverbTime(
+        const FUERayTracingAudioMinimalEnergyField& EnergyField,
+        int32 StartBinIndex,
+        int32 BandIndex)
+    {
+        if (EnergyField.DelayBinEnergy.IsEmpty() || !EnergyField.DelayBinEnergy.IsValidIndex(StartBinIndex))
+        {
+            return 0.0f;
+        }
+
+        float PeakEnergy = 0.0f;
+        for (int32 BinIndex = StartBinIndex; BinIndex < EnergyField.DelayBinEnergy.Num(); ++BinIndex)
+        {
+            PeakEnergy = FMath::Max(PeakEnergy, EnergyField.DelayBinEnergy[BinIndex][BandIndex]);
+        }
+
+        if (PeakEnergy <= KINDA_SMALL_NUMBER)
+        {
+            return 0.0f;
+        }
+
+        const float Threshold = PeakEnergy * 0.001f;
+        int32 LastActiveBinIndex = INDEX_NONE;
+        for (int32 BinIndex = EnergyField.DelayBinEnergy.Num() - 1; BinIndex >= StartBinIndex; --BinIndex)
+        {
+            if (EnergyField.DelayBinEnergy[BinIndex][BandIndex] >= Threshold)
+            {
+                LastActiveBinIndex = BinIndex;
+                break;
+            }
+        }
+
+        if (LastActiveBinIndex == INDEX_NONE)
+        {
+            return 0.0f;
+        }
+
+        const float Duration = static_cast<float>(LastActiveBinIndex - StartBinIndex + 1) * EnergyField.DelayBinDurationSeconds;
+        return FMath::Clamp(Duration, 0.15f, FMath::Max(EnergyField.DurationSeconds * 2.0f, 0.15f));
+    }
+
+    void ExtractEarlyReflectionTaps(
+        const FUERayTracingAudioMinimalEnergyField& EnergyField,
+        int32 EarlyLateSplitBinIndex,
+        int32 MaxEarlyReflectionTaps,
+        TArray<float>& OutDelaySeconds,
+        TArray<float>& OutGains,
+        float& OutEarlyReflectionGain)
+    {
+        struct FEarlyTapCandidate
+        {
+            int32 BinIndex = INDEX_NONE;
+            float MonoEnergy = 0.0f;
+        };
+
+        TArray<FEarlyTapCandidate> Candidates;
+        for (int32 BinIndex = 0; BinIndex < EarlyLateSplitBinIndex && BinIndex < EnergyField.DelayBinEnergy.Num(); ++BinIndex)
+        {
+            const float MonoEnergy = GetMonoEnergy(EnergyField.DelayBinEnergy[BinIndex]);
+            if (MonoEnergy <= KINDA_SMALL_NUMBER)
+            {
+                continue;
+            }
+
+            OutEarlyReflectionGain += MonoEnergy;
+
+            const float Previous = (BinIndex > 0) ? GetMonoEnergy(EnergyField.DelayBinEnergy[BinIndex - 1]) : 0.0f;
+            const float Next = (BinIndex + 1 < EnergyField.DelayBinEnergy.Num()) ? GetMonoEnergy(EnergyField.DelayBinEnergy[BinIndex + 1]) : 0.0f;
+            if (MonoEnergy >= Previous && MonoEnergy >= Next)
+            {
+                FEarlyTapCandidate& Candidate = Candidates.AddDefaulted_GetRef();
+                Candidate.BinIndex = BinIndex;
+                Candidate.MonoEnergy = MonoEnergy;
+            }
+        }
+
+        if (Candidates.IsEmpty())
+        {
+            for (int32 BinIndex = 0; BinIndex < EarlyLateSplitBinIndex && BinIndex < EnergyField.DelayBinEnergy.Num(); ++BinIndex)
+            {
+                const float MonoEnergy = GetMonoEnergy(EnergyField.DelayBinEnergy[BinIndex]);
+                if (MonoEnergy <= KINDA_SMALL_NUMBER)
+                {
+                    continue;
+                }
+
+                FEarlyTapCandidate& Candidate = Candidates.AddDefaulted_GetRef();
+                Candidate.BinIndex = BinIndex;
+                Candidate.MonoEnergy = MonoEnergy;
+            }
+        }
+
+        Candidates.Sort([](const FEarlyTapCandidate& A, const FEarlyTapCandidate& B)
+        {
+            if (!FMath::IsNearlyEqual(A.MonoEnergy, B.MonoEnergy))
+            {
+                return A.MonoEnergy > B.MonoEnergy;
+            }
+            return A.BinIndex < B.BinIndex;
+        });
+
+        const int32 NumTaps = FMath::Min(MaxEarlyReflectionTaps, Candidates.Num());
+        OutDelaySeconds.Reserve(NumTaps);
+        OutGains.Reserve(NumTaps);
+
+        Candidates.SetNum(NumTaps, EAllowShrinking::No);
+        Candidates.Sort([](const FEarlyTapCandidate& A, const FEarlyTapCandidate& B)
+        {
+            return A.BinIndex < B.BinIndex;
+        });
+
+        for (const FEarlyTapCandidate& Candidate : Candidates)
+        {
+            OutDelaySeconds.Add((static_cast<float>(Candidate.BinIndex) + 0.5f) * EnergyField.DelayBinDurationSeconds);
+            OutGains.Add(Candidate.MonoEnergy);
+        }
+    }
+
+    void ReconstructImpulseResponse(
+        const FUERayTracingAudioMinimalEnergyField& EnergyField,
+        int32 EndBinIndexExclusive,
+        TArray<float>& OutImpulseResponse)
+    {
+        OutImpulseResponse.Init(0.0f, EnergyField.DelayBinEnergy.Num());
+
+        const int32 ClampedEndBinIndexExclusive = FMath::Clamp(EndBinIndexExclusive, 0, EnergyField.DelayBinEnergy.Num());
+        for (int32 BinIndex = 0; BinIndex < ClampedEndBinIndexExclusive; ++BinIndex)
+        {
+            const float MonoEnergy = GetMonoEnergy(EnergyField.DelayBinEnergy[BinIndex]);
+            if (MonoEnergy <= KINDA_SMALL_NUMBER)
+            {
+                continue;
+            }
+
+            OutImpulseResponse[BinIndex] = FMath::Sqrt(MonoEnergy);
+        }
+    }
+
+    void DeriveIndirectResultFromEnergyField(
+        const FUERayTracingAudioIndirectSimulationInput& Input,
+        FUERayTracingAudioMinimalEnergyField&& EnergyField,
+        int32 NumValidPaths,
+        bool bUsedTemporalSmoothing,
+        FUERayTracingAudioIndirectSimulationResult& OutResult)
+    {
+        OutResult.EnergyField = MoveTemp(EnergyField);
+        OutResult.NumValidPaths = NumValidPaths;
+        OutResult.bUsedTemporalSmoothing = bUsedTemporalSmoothing;
+        OutResult.EarliestArrivalSeconds = 0.0f;
+
+        const int32 EarlyLateSplitBinIndex = FMath::Clamp(
+            FMath::CeilToInt(OutResult.EnergyField.EarlyLateSplitSeconds / FMath::Max(OutResult.EnergyField.DelayBinDurationSeconds, UE_KINDA_SMALL_NUMBER)),
+            1,
+            OutResult.EnergyField.DelayBinEnergy.Num());
+
+        FVector TotalBandEnergy = FVector::ZeroVector;
+        float WeightedDelay = 0.0f;
+        float TotalMonoEnergy = 0.0f;
+
+        for (int32 BinIndex = 0; BinIndex < OutResult.EnergyField.DelayBinEnergy.Num(); ++BinIndex)
+        {
+            const FVector& BinEnergy = OutResult.EnergyField.DelayBinEnergy[BinIndex];
+            const float MonoEnergy = GetMonoEnergy(BinEnergy);
+            if (MonoEnergy <= KINDA_SMALL_NUMBER)
+            {
+                continue;
+            }
+
+            const float DelaySeconds = (static_cast<float>(BinIndex) + 0.5f) * OutResult.EnergyField.DelayBinDurationSeconds;
+            if (OutResult.EarliestArrivalSeconds <= 0.0f)
+            {
+                OutResult.EarliestArrivalSeconds = DelaySeconds;
+            }
+            TotalBandEnergy += BinEnergy;
+            TotalMonoEnergy += MonoEnergy;
+            WeightedDelay += DelaySeconds * MonoEnergy;
+
+            if (BinIndex >= EarlyLateSplitBinIndex)
+            {
+                OutResult.LateReverbGain += MonoEnergy;
+            }
+        }
+
+        OutResult.IndirectGain = FMath::Clamp(TotalMonoEnergy, 0.0f, 1.0f);
+        OutResult.bHasValidPaths = NumValidPaths > 0 || OutResult.IndirectGain > KINDA_SMALL_NUMBER;
+        OutResult.AverageDelaySeconds = (TotalMonoEnergy > KINDA_SMALL_NUMBER) ? (WeightedDelay / TotalMonoEnergy) : 0.0f;
+        OutResult.ParametricDelaySeconds = OutResult.EarliestArrivalSeconds;
+        OutResult.ImpulseResponseBinDurationSeconds = OutResult.EnergyField.DelayBinDurationSeconds;
+
+        ExtractEarlyReflectionTaps(
+            OutResult.EnergyField,
+            EarlyLateSplitBinIndex,
+            Input.MaxEarlyReflectionTaps,
+            OutResult.EarlyReflectionDelaySeconds,
+            OutResult.EarlyReflectionGains,
+            OutResult.EarlyReflectionGain);
+
+        FVector AverageBandEnergy = FVector::ZeroVector;
+        if (OutResult.EnergyField.DelayBinEnergy.Num() > 0)
+        {
+            AverageBandEnergy = TotalBandEnergy / static_cast<float>(OutResult.EnergyField.DelayBinEnergy.Num());
+        }
+
+        const float AverageEnergy = FMath::Max(GetMonoEnergy(AverageBandEnergy), KINDA_SMALL_NUMBER);
+        OutResult.ParametricEq.X = FMath::Clamp(AverageBandEnergy.X / AverageEnergy, 0.25f, 2.0f);
+        OutResult.ParametricEq.Y = FMath::Clamp(AverageBandEnergy.Y / AverageEnergy, 0.25f, 2.0f);
+        OutResult.ParametricEq.Z = FMath::Clamp(AverageBandEnergy.Z / AverageEnergy, 0.25f, 2.0f);
+
+        const int32 ImpulseResponseEndBinIndexExclusive = OutResult.bUsedHybrid
+            ? EarlyLateSplitBinIndex
+            : OutResult.EnergyField.DelayBinEnergy.Num();
+        ReconstructImpulseResponse(
+            OutResult.EnergyField,
+            ImpulseResponseEndBinIndexExclusive,
+            OutResult.ReconstructedImpulseResponse);
+
+        if (OutResult.bUsedParametricTail)
+        {
+            const int32 LateStartBinIndex = FMath::Clamp(EarlyLateSplitBinIndex - 1, 0, FMath::Max(OutResult.EnergyField.DelayBinEnergy.Num() - 1, 0));
+            OutResult.ReverbTimes.X = EstimateBandReverbTime(OutResult.EnergyField, LateStartBinIndex, 0);
+            OutResult.ReverbTimes.Y = EstimateBandReverbTime(OutResult.EnergyField, LateStartBinIndex, 1);
+            OutResult.ReverbTimes.Z = EstimateBandReverbTime(OutResult.EnergyField, LateStartBinIndex, 2);
+
+            if (OutResult.ReverbTimes.IsNearlyZero())
+            {
+                const float EnergyScaleX = FMath::Clamp(TotalBandEnergy.X * 12.0f, 0.0f, 1.0f);
+                const float EnergyScaleY = FMath::Clamp(TotalBandEnergy.Y * 12.0f, 0.0f, 1.0f);
+                const float EnergyScaleZ = FMath::Clamp(TotalBandEnergy.Z * 12.0f, 0.0f, 1.0f);
+                OutResult.ReverbTimes.X = FMath::Clamp(Input.DurationSeconds * FMath::Lerp(0.35f, 1.5f, EnergyScaleX), 0.15f, Input.DurationSeconds * 2.0f);
+                OutResult.ReverbTimes.Y = FMath::Clamp(Input.DurationSeconds * FMath::Lerp(0.35f, 1.5f, EnergyScaleY), 0.15f, Input.DurationSeconds * 2.0f);
+                OutResult.ReverbTimes.Z = FMath::Clamp(Input.DurationSeconds * FMath::Lerp(0.35f, 1.5f, EnergyScaleZ), 0.15f, Input.DurationSeconds * 2.0f);
+            }
+
+            if (Input.EffectType == EUERayTracingAudioIndirectEffectType::Parametric)
+            {
+                OutResult.EarlyReflectionDelaySeconds.Reset();
+                OutResult.EarlyReflectionGains.Reset();
+                OutResult.EarlyReflectionGain = 0.0f;
+            }
+        }
+    }
 }
 
 FUERayTracingAudioSimulator::FUERayTracingAudioSimulator(const FUERayTracingAudioContext& InContext)
@@ -471,10 +808,6 @@ FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioSimulator::Simulate
     TArray<FIndirectPathContribution> Contributions;
     Contributions.Reserve(Input.NumReflectionRays * Input.MaxReflectionBounces);
 
-    FVector TotalBandEnergy = FVector::ZeroVector;
-    float TotalMonoEnergy = 0.0f;
-    float WeightedDelay = 0.0f;
-
     struct FIndirectPathState
     {
         FVector RayOrigin = FVector::ZeroVector;
@@ -567,12 +900,7 @@ FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioSimulator::Simulate
                     {
                         FIndirectPathContribution& Contribution = Contributions.AddDefaulted_GetRef();
                         Contribution.DelaySeconds = DelaySeconds;
-                        Contribution.MonoGain = MonoGain;
                         Contribution.BandGain = PathBandGain * (GeometricAttenuation * BounceAttenuation / static_cast<float>(Input.NumReflectionRays));
-
-                        TotalMonoEnergy += MonoGain;
-                        TotalBandEnergy += Contribution.BandGain;
-                        WeightedDelay += DelaySeconds * MonoGain;
                     }
                 }
             }
@@ -605,47 +933,9 @@ FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioSimulator::Simulate
         return A.DelaySeconds < B.DelaySeconds;
     });
 
-    Result.NumValidPaths = Contributions.Num();
-    Result.bHasValidPaths = Contributions.Num() > 0;
-    Result.IndirectGain = FMath::Clamp(TotalMonoEnergy, 0.0f, 1.0f);
-    Result.AverageDelaySeconds = (TotalMonoEnergy > KINDA_SMALL_NUMBER) ? (WeightedDelay / TotalMonoEnergy) : 0.0f;
-
-    const int32 NumEarlyTaps = FMath::Min(Input.MaxEarlyReflectionTaps, Contributions.Num());
-    Result.EarlyReflectionDelaySeconds.Reserve(NumEarlyTaps);
-    Result.EarlyReflectionGains.Reserve(NumEarlyTaps);
-
-    for (int32 ContributionIndex = 0; ContributionIndex < Contributions.Num(); ++ContributionIndex)
-    {
-        const FIndirectPathContribution& Contribution = Contributions[ContributionIndex];
-        if (ContributionIndex < NumEarlyTaps)
-        {
-            Result.EarlyReflectionDelaySeconds.Add(Contribution.DelaySeconds);
-            Result.EarlyReflectionGains.Add(Contribution.MonoGain);
-            Result.EarlyReflectionGain += Contribution.MonoGain;
-        }
-
-        if (Contribution.DelaySeconds >= Result.HybridTransitionSeconds)
-        {
-            Result.LateReverbGain += Contribution.MonoGain;
-        }
-    }
-
-    if (Result.bUsedParametricTail)
-    {
-        const float EnergyScaleX = FMath::Clamp(TotalBandEnergy.X * 12.0f, 0.0f, 1.0f);
-        const float EnergyScaleY = FMath::Clamp(TotalBandEnergy.Y * 12.0f, 0.0f, 1.0f);
-        const float EnergyScaleZ = FMath::Clamp(TotalBandEnergy.Z * 12.0f, 0.0f, 1.0f);
-        Result.ReverbTimes.X = FMath::Clamp(Input.DurationSeconds * FMath::Lerp(0.35f, 1.5f, EnergyScaleX), 0.15f, Input.DurationSeconds * 2.0f);
-        Result.ReverbTimes.Y = FMath::Clamp(Input.DurationSeconds * FMath::Lerp(0.35f, 1.5f, EnergyScaleY), 0.15f, Input.DurationSeconds * 2.0f);
-        Result.ReverbTimes.Z = FMath::Clamp(Input.DurationSeconds * FMath::Lerp(0.35f, 1.5f, EnergyScaleZ), 0.15f, Input.DurationSeconds * 2.0f);
-
-        if (Input.EffectType == EUERayTracingAudioIndirectEffectType::Parametric)
-        {
-            Result.EarlyReflectionDelaySeconds.Reset();
-            Result.EarlyReflectionGains.Reset();
-            Result.EarlyReflectionGain = 0.0f;
-        }
-    }
+    FUERayTracingAudioMinimalEnergyField EnergyField = BuildMinimalEnergyField(Contributions, Input, Result.HybridTransitionSeconds);
+    ApplyTemporalSmoothing(Input, EnergyField, Result.bUsedTemporalSmoothing);
+    DeriveIndirectResultFromEnergyField(Input, MoveTemp(EnergyField), Contributions.Num(), Result.bUsedTemporalSmoothing, Result);
 
     return Result;
 }

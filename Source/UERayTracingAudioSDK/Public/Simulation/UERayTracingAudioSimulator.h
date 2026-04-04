@@ -51,7 +51,9 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioIndirectSimulationInput
     int32 NumReflectionRays = 64;
     int32 MaxReflectionBounces = 2;
     float DurationSeconds = 1.0f;
+    float DeltaTimeSeconds = 1.0f / 60.0f;
     int32 MaxEarlyReflectionTaps = 16;
+    int32 NumDelayBins = 96;
     float HybridTransitionRatio = 0.35f;
     FVector AirAbsorptionPerMeter = FVector(0.0002f, 0.0006f, 0.0012f);
     UWorld* World = nullptr;
@@ -61,21 +63,37 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioIndirectSimulationInput
     EUERayTracingAudioIndirectEffectType EffectType = EUERayTracingAudioIndirectEffectType::Convolution;
 };
 
+struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioMinimalEnergyField
+{
+    float DurationSeconds = 0.0f;
+    float DelayBinDurationSeconds = 0.0f;
+    float EarliestArrivalSeconds = 0.0f;
+    float EarlyLateSplitSeconds = 0.0f;
+    TArray<FVector> DelayBinEnergy;
+};
+
 struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioIndirectSimulationResult
 {
     bool bHasListener = false;
     bool bHasValidPaths = false;
     bool bUsedHybrid = false;
     bool bUsedParametricTail = false;
+    bool bUsedTemporalSmoothing = false;
     int32 NumValidPaths = 0;
     float IndirectGain = 0.0f;
     float EarlyReflectionGain = 0.0f;
     float LateReverbGain = 0.0f;
     float AverageDelaySeconds = 0.0f;
     float HybridTransitionSeconds = 0.0f;
+    float EarliestArrivalSeconds = 0.0f;
+    float ImpulseResponseBinDurationSeconds = 0.0f;
+    float ParametricDelaySeconds = 0.0f;
+    FVector ParametricEq = FVector::OneVector;
     FVector ReverbTimes = FVector::ZeroVector;
     TArray<float> EarlyReflectionDelaySeconds;
     TArray<float> EarlyReflectionGains;
+    TArray<float> ReconstructedImpulseResponse;
+    FUERayTracingAudioMinimalEnergyField EnergyField;
 };
 
 class UERAYTRACINGAUDIOSDK_API FUERayTracingAudioSimulator

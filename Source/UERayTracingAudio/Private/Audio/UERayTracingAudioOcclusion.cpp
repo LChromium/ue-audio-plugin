@@ -81,6 +81,23 @@ void FUERayTracingAudioOcclusionPlugin::EnsureDelayCapacity(FUERayTracingAudioOc
     }
 }
 
+float FUERayTracingAudioOcclusionPlugin::ReadDelayedSample(const FUERayTracingAudioOcclusionSource& SourceState, int32 DelaySamples) const
+{
+    if (SourceState.DelayBuffer.IsEmpty())
+    {
+        return 0.0f;
+    }
+
+    const int32 ClampedDelaySamples = FMath::Clamp(DelaySamples, 1, SourceState.DelayBuffer.Num() - 1);
+    int32 ReadIndex = SourceState.DelayWriteIndex - ClampedDelaySamples;
+    if (ReadIndex < 0)
+    {
+        ReadIndex += SourceState.DelayBuffer.Num() * (1 + (-ReadIndex / SourceState.DelayBuffer.Num()));
+    }
+
+    return SourceState.DelayBuffer[ReadIndex % SourceState.DelayBuffer.Num()];
+}
+
 float FUERayTracingAudioOcclusionPlugin::RenderIndirectSample(
     FUERayTracingAudioOcclusionSource& SourceState,
     const FUERayTracingAudioIndirectSimulationResult& IndirectResult,
@@ -95,45 +112,53 @@ float FUERayTracingAudioOcclusionPlugin::RenderIndirectSample(
     const int32 DelayBufferSize = SourceState.DelayBuffer.Num();
     SourceState.DelayBuffer[SourceState.DelayWriteIndex] = MonoInput;
 
-    float EarlyWet = 0.0f;
-    for (int32 TapIndex = 0; TapIndex < IndirectResult.EarlyReflectionDelaySeconds.Num(); ++TapIndex)
+    float ImpulseWet = 0.0f;
+    for (int32 BinIndex = 0; BinIndex < IndirectResult.ReconstructedImpulseResponse.Num(); ++BinIndex)
     {
+        const float TapAmplitude = IndirectResult.ReconstructedImpulseResponse[BinIndex];
+        if (TapAmplitude <= KINDA_SMALL_NUMBER)
+        {
+            continue;
+        }
+
+        const float DelaySeconds = (static_cast<float>(BinIndex) + 0.5f) * IndirectResult.ImpulseResponseBinDurationSeconds;
         const int32 DelaySamples = FMath::Clamp(
-            FMath::RoundToInt(IndirectResult.EarlyReflectionDelaySeconds[TapIndex] * static_cast<float>(SourceState.SampleRate)),
+            FMath::RoundToInt(DelaySeconds * static_cast<float>(SourceState.SampleRate)),
             1,
             DelayBufferSize - 1);
-        int32 ReadIndex = SourceState.DelayWriteIndex - DelaySamples;
-        if (ReadIndex < 0)
-        {
-            ReadIndex += DelayBufferSize * (1 + (-ReadIndex / DelayBufferSize));
-        }
-        ReadIndex %= DelayBufferSize;
-        EarlyWet += SourceState.DelayBuffer[ReadIndex] * IndirectResult.EarlyReflectionGains[TapIndex];
+        ImpulseWet += ReadDelayedSample(SourceState, DelaySamples) * TapAmplitude;
     }
 
     float LateWet = 0.0f;
     if (IndirectResult.bUsedParametricTail && SourceState.CombBuffers.Num() == 3)
     {
-        const float AverageRT60 = FMath::Max((IndirectResult.ReverbTimes.X + IndirectResult.ReverbTimes.Y + IndirectResult.ReverbTimes.Z) / 3.0f, 0.1f);
+        const int32 PreDelaySamples = FMath::Clamp(
+            FMath::RoundToInt(IndirectResult.ParametricDelaySeconds * static_cast<float>(SourceState.SampleRate)),
+            1,
+            DelayBufferSize - 1);
+        const float PreDelayedInput = ReadDelayedSample(SourceState, PreDelaySamples);
+
         for (int32 CombIndex = 0; CombIndex < SourceState.CombBuffers.Num(); ++CombIndex)
         {
             TArray<float>& CombBuffer = SourceState.CombBuffers[CombIndex];
             int32& WriteIndex = SourceState.CombWriteIndices[CombIndex];
             const int32 BufferSize = CombBuffer.Num();
+            const float BandRT60 = FMath::Max(IndirectResult.ReverbTimes[CombIndex], 0.1f);
+            const float BandEq = IndirectResult.ParametricEq[CombIndex];
             const float DelaySeconds = static_cast<float>(BufferSize) / static_cast<float>(SourceState.SampleRate);
-            const float Feedback = FMath::Clamp(FMath::Pow(0.001f, DelaySeconds / AverageRT60), 0.0f, 0.95f);
+            const float Feedback = FMath::Clamp(FMath::Pow(0.001f, DelaySeconds / BandRT60), 0.0f, 0.97f);
 
             const float DelayedSample = CombBuffer[WriteIndex];
-            CombBuffer[WriteIndex] = MonoInput + (DelayedSample * Feedback);
+            CombBuffer[WriteIndex] = (PreDelayedInput * BandEq) + (DelayedSample * Feedback);
             WriteIndex = (WriteIndex + 1) % BufferSize;
-            LateWet += DelayedSample;
+            LateWet += DelayedSample * BandEq;
         }
 
         LateWet = (LateWet / static_cast<float>(SourceState.CombBuffers.Num())) * IndirectResult.LateReverbGain;
     }
 
     SourceState.DelayWriteIndex = (SourceState.DelayWriteIndex + 1) % DelayBufferSize;
-    return (EarlyWet + LateWet) * IndirectMix;
+    return (ImpulseWet + LateWet) * IndirectMix;
 }
 
 void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInputData& InputData, FAudioPluginSourceOutputData& OutputData)

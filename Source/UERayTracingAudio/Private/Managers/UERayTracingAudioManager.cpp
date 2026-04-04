@@ -154,7 +154,9 @@ FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioManager::SimulateIn
     Input.NumReflectionRays = Source->GetNumReflectionRays();
     Input.MaxReflectionBounces = Source->GetMaxReflectionBounces();
     Input.DurationSeconds = Source->GetIndirectDurationSeconds();
+    Input.DeltaTimeSeconds = World->GetDeltaSeconds();
     Input.MaxEarlyReflectionTaps = Source->GetMaxEarlyReflectionTaps();
+    Input.NumDelayBins = 96;
     Input.HybridTransitionRatio = Source->GetHybridTransitionRatio();
     Input.AirAbsorptionPerMeter = Source->GetAirAbsorptionPerMeter();
 

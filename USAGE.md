@@ -2,13 +2,15 @@
 
 ## 1. 当前可用范围
 
-当前插件处于 Phase 1、Phase 2 和 Phase 3 的第一版可用阶段，已经具备：
+当前插件处于 Phase 1、Phase 2 和 Phase 3.1 / 3.2 / 3.3 的第一版可用阶段，已经具备：
 
 - 插件模块可编译
 - Listener / Source / Geometry 组件
 - 最小直接声参数计算
 - 基于 UE Ray Tracing RHI 的最小体积遮挡后端
-- 第一版实时间接声链路
+- 基于 Minimal EnergyField 的第一版实时间接声链路
+- 基于 EnergyField 的第一版 IR 重建
+- 基于 EnergyField 的第一版 Parametric / Hybrid 导出
 - Occlusion 插件增益处理
 - Editor 中的 Bake 窗口骨架入口
 
@@ -78,6 +80,7 @@
 - 保存当前直接声状态
 - 保存当前间接声状态
 - 提供体积遮挡相关参数配置
+- 驱动 Minimal EnergyField 结果更新
 
 当前可观察的关键量包括：
 
@@ -135,16 +138,36 @@
 
 ### 4.4 当前间接声模式说明
 
+当前间接声内部已经不再直接把每条路径粗暴累积成几个 gain，而是先进入一个 Minimal EnergyField：
+
+- delay bins
+- 3-band energy accumulation
+- earliest/latest split
+- temporal smoothing
+
+然后再从这个 EnergyField 导出：
+
+- `IndirectGain`
+- `EarlyReflectionGain`
+- `LateReverbGain`
+- `ReverbTimes`
+
+当前还会继续导出：
+
+- `ReconstructedImpulseResponse`
+- `ParametricDelaySeconds`
+- `ParametricEq`
+
 `UUERayTracingAudioSourceComponent` 的 `IndirectMode` 当前支持三种模式：
 
 - `Minimal Convolution`
-  - 输出早期反射 taps
-  - 适合先验证路径延迟和早反能量是否存在
+  - 从 EnergyField 重建第一版 IR
+  - 适合先验证脉冲响应式早反是否存在
 - `Parametric Reverb`
-  - 输出参数化尾部混响估计
+  - 输出 Parametric delay / EQ / RT60 估计
   - 适合先验证尾部混响量级是否变化
 - `Hybrid Reverb`
-  - 同时启用早期反射和参数化尾部
+  - 同时启用 IR 早期部分和参数化尾部
   - 是当前阶段最接近完整间接声体验的模式
 
 ## 5. 当前阶段推荐测试场景
@@ -185,7 +208,7 @@
 
 - 硬件光追可用时：
   - 用 UE Ray Tracing RHI shader 返回每条反射射线的命中距离、法线和几何索引
-  - CPU 侧继续负责多 bounce 调度、路径贡献累计和早反 / 混响参数生成
+  - CPU 侧继续负责多 bounce 调度、Minimal EnergyField 累积、IR 重建和 Parametric / Hybrid 参数生成
 - 硬件光追不可用时：
   - 回退到 CPU 声学场景求交
 
@@ -194,7 +217,7 @@
 目前真正生效的是：
 
 - 直接路径相关增益
-- 第一版间接声早期反射 / 参数化尾部混响
+- 基于 Minimal EnergyField 的第一版 IR / Parametric / Hybrid 间接声链路
 - Phase 3 的 RHI 优先命中查询 + CPU 路径累积
 
 目前还没有：
@@ -204,6 +227,8 @@
 - 生产级早期反射
 - 生产级混响
 - 完整 GPU EnergyField / IR 重建链路
+- 完整方向场 / 高阶球谐 EnergyField
+- 生产级长 IR 卷积器
 
 ### 6.3 当前 Editor 窗口只是骨架
 
