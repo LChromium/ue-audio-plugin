@@ -14,5 +14,10 @@
   - before each build, run `uv run script\build_and_validate.py`
   - `script\build_and_validate.py` will first sync the plugin repository, then build the test project and the plugin
   - fix any compile errors in the test project and the plugin
+  - after build and validate succeeds, agent should run `uv run script\launch_runtime_validation.py`
+  - `script\launch_runtime_validation.py` is the fixed startup flow and must be preferred over ad-hoc launch commands
+  - the script first launches the project in `-game` mode, waits a fixed amount of time, then kills the process itself
+  - the script then launches the Unreal Editor and leaves it ready for the user to test
+  - if any of these steps fails or crashes, immediately enter `workflow\crash-debugging.md`
 - if user reports crash, follow `workflow\crash-debugging.md`
  

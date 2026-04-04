@@ -88,6 +88,7 @@ public:
         const FUERayTracingAudioDirectSimulationInput& Input) const;
 
     FUERayTracingAudioIndirectSimulationResult SimulateIndirectSound(
+        const FUERayTracingAudioRayTracingDevice& RayTracingDevice,
         const FUERayTracingAudioIndirectSimulationInput& Input) const;
 
 private:

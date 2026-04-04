@@ -173,7 +173,7 @@ FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioManager::SimulateIn
         break;
     }
 
-    return Simulator.SimulateIndirectSound(Input);
+    return Simulator.SimulateIndirectSound(RayTracingDevice, Input);
 }
 
 const FUERayTracingAudioScene& FUERayTracingAudioManager::GetScene() const

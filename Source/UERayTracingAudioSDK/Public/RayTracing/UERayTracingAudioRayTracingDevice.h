@@ -32,10 +32,23 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioTraceHit
     TWeakObjectPtr<const UPrimitiveComponent> Primitive;
 };
 
+struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioDetailedTraceHit
+{
+    bool bHit = false;
+    FVector Location = FVector::ZeroVector;
+    FVector Normal = FVector::UpVector;
+    float Distance = 0.0f;
+    int32 GeometryIndex = INDEX_NONE;
+};
+
 class UERAYTRACINGAUDIOSDK_API FUERayTracingAudioRayTracingDevice
 {
 public:
     bool IsRayTracingAvailable() const;
     bool TraceDirectPath(const FUERayTracingAudioTraceRequest& Request, FUERayTracingAudioTraceHit& OutHit) const;
     bool TraceRays(const FUERayTracingAudioTraceRequest& Request, const TArray<FUERayTracingAudioRay>& Rays, TArray<bool>& OutHits) const;
+    bool TraceDetailedRays(
+        const FUERayTracingAudioTraceRequest& Request,
+        const TArray<FUERayTracingAudioRay>& Rays,
+        TArray<FUERayTracingAudioDetailedTraceHit>& OutHits) const;
 };

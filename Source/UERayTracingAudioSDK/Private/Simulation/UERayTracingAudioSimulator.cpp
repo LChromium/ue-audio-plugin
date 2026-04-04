@@ -365,6 +365,7 @@ FUERayTracingAudioDirectSimulationResult FUERayTracingAudioSimulator::SimulateDi
 }
 
 FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioSimulator::SimulateIndirectSound(
+    const FUERayTracingAudioRayTracingDevice& RayTracingDevice,
     const FUERayTracingAudioIndirectSimulationInput& Input) const
 {
     FUERayTracingAudioIndirectSimulationResult Result;
@@ -384,6 +385,88 @@ FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioSimulator::Simulate
     const FVector SourceOffset = Input.SourceForward.GetSafeNormal().IsNearlyZero()
         ? FVector::UpVector
         : Input.SourceForward.GetSafeNormal();
+    const bool bCanUseHardwareRayTracing = RayTracingDevice.IsRayTracingAvailable();
+
+    FUERayTracingAudioTraceRequest TraceRequest;
+    TraceRequest.World = Input.World;
+    TraceRequest.Scene = Input.Scene;
+    TraceRequest.IgnoredActor = Input.SourceActor;
+    TraceRequest.SecondaryIgnoredActor = Input.ListenerActor;
+
+    auto BuildSceneHitFromDetailed = [Input](const FUERayTracingAudioDetailedTraceHit& DetailedHit, FAcousticSceneHit& OutHit) -> bool
+    {
+        if (!DetailedHit.bHit || !Input.Scene || !Input.Scene->GetStaticGeometry().IsValidIndex(DetailedHit.GeometryIndex))
+        {
+            return false;
+        }
+
+        const FUERayTracingAudioGeometryExport& GeometryExport = Input.Scene->GetStaticGeometry()[DetailedHit.GeometryIndex];
+        OutHit = FAcousticSceneHit();
+        OutHit.bHit = true;
+        OutHit.Location = DetailedHit.Location;
+        OutHit.Normal = DetailedHit.Normal;
+        OutHit.Distance = DetailedHit.Distance;
+        OutHit.Absorption = GeometryExport.Absorption;
+        return true;
+    };
+
+    auto TraceBounceBatch = [&](const TArray<FUERayTracingAudioRay>& Rays, TArray<FAcousticSceneHit>& OutBatchHits) -> bool
+    {
+        OutBatchHits.SetNum(Rays.Num());
+
+        if (bCanUseHardwareRayTracing)
+        {
+            TArray<FUERayTracingAudioDetailedTraceHit> DetailedHits;
+            if (RayTracingDevice.TraceDetailedRays(TraceRequest, Rays, DetailedHits) && DetailedHits.Num() == Rays.Num())
+            {
+                for (int32 RayIndex = 0; RayIndex < Rays.Num(); ++RayIndex)
+                {
+                    BuildSceneHitFromDetailed(DetailedHits[RayIndex], OutBatchHits[RayIndex]);
+                }
+                return true;
+            }
+        }
+
+        for (int32 RayIndex = 0; RayIndex < Rays.Num(); ++RayIndex)
+        {
+            const FVector Segment = Rays[RayIndex].End - Rays[RayIndex].Start;
+            const float Distance = Segment.Length();
+            if (Distance <= UE_KINDA_SMALL_NUMBER)
+            {
+                OutBatchHits[RayIndex] = FAcousticSceneHit();
+                continue;
+            }
+
+            TraceAcousticScene(*Input.Scene, Rays[RayIndex].Start, Segment / Distance, Distance, OutBatchHits[RayIndex]);
+        }
+
+        return true;
+    };
+
+    auto CheckVisibilityBatch = [&](const TArray<FUERayTracingAudioRay>& Rays, TArray<bool>& OutVisibility) -> bool
+    {
+        OutVisibility.SetNum(Rays.Num());
+
+        if (bCanUseHardwareRayTracing)
+        {
+            TArray<FUERayTracingAudioDetailedTraceHit> DetailedHits;
+            if (RayTracingDevice.TraceDetailedRays(TraceRequest, Rays, DetailedHits) && DetailedHits.Num() == Rays.Num())
+            {
+                for (int32 RayIndex = 0; RayIndex < Rays.Num(); ++RayIndex)
+                {
+                    OutVisibility[RayIndex] = !DetailedHits[RayIndex].bHit;
+                }
+                return true;
+            }
+        }
+
+        for (int32 RayIndex = 0; RayIndex < Rays.Num(); ++RayIndex)
+        {
+            OutVisibility[RayIndex] = IsVisibleInAcousticScene(*Input.Scene, Rays[RayIndex].Start, Rays[RayIndex].End);
+        }
+
+        return true;
+    };
 
     TArray<FIndirectPathContribution> Contributions;
     Contributions.Reserve(Input.NumReflectionRays * Input.MaxReflectionBounces);
@@ -392,34 +475,76 @@ FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioSimulator::Simulate
     float TotalMonoEnergy = 0.0f;
     float WeightedDelay = 0.0f;
 
-    for (int32 RayIndex = 0; RayIndex < Input.NumReflectionRays; ++RayIndex)
+    struct FIndirectPathState
     {
-        FVector RayDirection = GenerateSphereDirectionSample(RayIndex);
-        FVector RayOrigin = Input.SourceLocation + (RayDirection + SourceOffset) * (Input.SourceRadiusCm * 0.05f);
+        FVector RayOrigin = FVector::ZeroVector;
+        FVector RayDirection = FVector::ForwardVector;
         FVector BandEnergy = FVector::OneVector;
         float TravelDistance = 0.0f;
+    };
 
-        for (int32 BounceIndex = 0; BounceIndex < Input.MaxReflectionBounces; ++BounceIndex)
+    TArray<FIndirectPathState> ActivePaths;
+    ActivePaths.Reserve(Input.NumReflectionRays);
+
+    for (int32 RayIndex = 0; RayIndex < Input.NumReflectionRays; ++RayIndex)
+    {
+        FIndirectPathState& Path = ActivePaths.AddDefaulted_GetRef();
+        Path.RayDirection = GenerateSphereDirectionSample(RayIndex);
+        Path.RayOrigin = Input.SourceLocation + (Path.RayDirection + SourceOffset) * (Input.SourceRadiusCm * 0.05f);
+    }
+
+    for (int32 BounceIndex = 0; BounceIndex < Input.MaxReflectionBounces && ActivePaths.Num() > 0; ++BounceIndex)
+    {
+        TArray<FUERayTracingAudioRay> BounceRays;
+        BounceRays.Reserve(ActivePaths.Num());
+        for (const FIndirectPathState& Path : ActivePaths)
         {
-            FAcousticSceneHit Hit;
-            if (!TraceAcousticScene(*Input.Scene, RayOrigin, RayDirection, MaxTraceDistance, Hit))
+            BounceRays.Add(FUERayTracingAudioRay{ Path.RayOrigin, Path.RayOrigin + (Path.RayDirection * MaxTraceDistance) });
+        }
+
+        TArray<FAcousticSceneHit> BounceHits;
+        TraceBounceBatch(BounceRays, BounceHits);
+
+        TArray<FUERayTracingAudioRay> VisibilityRays;
+        TArray<int32> VisibilityPathIndices;
+        VisibilityRays.Reserve(ActivePaths.Num());
+        VisibilityPathIndices.Reserve(ActivePaths.Num());
+
+        for (int32 PathIndex = 0; PathIndex < ActivePaths.Num(); ++PathIndex)
+        {
+            const FAcousticSceneHit& Hit = BounceHits[PathIndex];
+            if (!Hit.bHit)
             {
-                break;
+                continue;
             }
 
-            TravelDistance += Hit.Distance;
+            const FIndirectPathState& Path = ActivePaths[PathIndex];
+            const FVector VisibilityStart = Hit.Location + (Hit.Normal * 1.0f);
+            VisibilityRays.Add(FUERayTracingAudioRay{ VisibilityStart, Input.ListenerLocation });
+            VisibilityPathIndices.Add(PathIndex);
+        }
 
-            BandEnergy.X *= FMath::Clamp(1.0f - Hit.Absorption.X, 0.0f, 1.0f);
-            BandEnergy.Y *= FMath::Clamp(1.0f - Hit.Absorption.Y, 0.0f, 1.0f);
-            BandEnergy.Z *= FMath::Clamp(1.0f - Hit.Absorption.Z, 0.0f, 1.0f);
+        TArray<bool> VisibilityResults;
+        CheckVisibilityBatch(VisibilityRays, VisibilityResults);
+
+        for (int32 VisibilityIndex = 0; VisibilityIndex < VisibilityPathIndices.Num(); ++VisibilityIndex)
+        {
+            const int32 PathIndex = VisibilityPathIndices[VisibilityIndex];
+            const FAcousticSceneHit& Hit = BounceHits[PathIndex];
+            FIndirectPathState& Path = ActivePaths[PathIndex];
+
+            Path.TravelDistance += Hit.Distance;
+            Path.BandEnergy.X *= FMath::Clamp(1.0f - Hit.Absorption.X, 0.0f, 1.0f);
+            Path.BandEnergy.Y *= FMath::Clamp(1.0f - Hit.Absorption.Y, 0.0f, 1.0f);
+            Path.BandEnergy.Z *= FMath::Clamp(1.0f - Hit.Absorption.Z, 0.0f, 1.0f);
 
             const FVector VisibilityStart = Hit.Location + (Hit.Normal * 1.0f);
             const FVector ToListener = Input.ListenerLocation - VisibilityStart;
             const float ListenerDistance = ToListener.Length();
 
-            if (ListenerDistance > UE_KINDA_SMALL_NUMBER && IsVisibleInAcousticScene(*Input.Scene, VisibilityStart, Input.ListenerLocation))
+            if (ListenerDistance > UE_KINDA_SMALL_NUMBER && VisibilityResults.IsValidIndex(VisibilityIndex) && VisibilityResults[VisibilityIndex])
             {
-                const float TotalDistance = TravelDistance + ListenerDistance;
+                const float TotalDistance = Path.TravelDistance + ListenerDistance;
                 const float DelaySeconds = TotalDistance / SpeedOfSound;
                 if (DelaySeconds <= Input.DurationSeconds)
                 {
@@ -429,7 +554,7 @@ FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioSimulator::Simulate
                     AirAttenuation.Y = FMath::Exp(-Input.AirAbsorptionPerMeter.Y * DistanceMeters);
                     AirAttenuation.Z = FMath::Exp(-Input.AirAbsorptionPerMeter.Z * DistanceMeters);
 
-                    const FVector PathBandGain = BandEnergy * AirAttenuation;
+                    const FVector PathBandGain = Path.BandEnergy * AirAttenuation;
                     const float DistanceRatio = FMath::Max(TotalDistance, ReferenceDistance) / ReferenceDistance;
                     const float GeometricAttenuation = 1.0f / FMath::Square(DistanceRatio);
                     const float BounceAttenuation = 1.0f / static_cast<float>(BounceIndex + 1);
@@ -451,14 +576,28 @@ FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioSimulator::Simulate
                     }
                 }
             }
+        }
 
-            RayOrigin = Hit.Location + (Hit.Normal * 1.0f);
-            RayDirection = RayDirection.MirrorByVector(Hit.Normal).GetSafeNormal();
-            if (RayDirection.IsNearlyZero())
+        TArray<FIndirectPathState> NextPaths;
+        NextPaths.Reserve(ActivePaths.Num());
+        for (int32 PathIndex = 0; PathIndex < ActivePaths.Num(); ++PathIndex)
+        {
+            const FAcousticSceneHit& Hit = BounceHits[PathIndex];
+            if (!Hit.bHit)
             {
-                break;
+                continue;
+            }
+
+            FIndirectPathState NextPath = ActivePaths[PathIndex];
+            NextPath.RayOrigin = Hit.Location + (Hit.Normal * 1.0f);
+            NextPath.RayDirection = ActivePaths[PathIndex].RayDirection.MirrorByVector(Hit.Normal).GetSafeNormal();
+            if (!NextPath.RayDirection.IsNearlyZero())
+            {
+                NextPaths.Add(NextPath);
             }
         }
+
+        ActivePaths = MoveTemp(NextPaths);
     }
 
     Contributions.Sort([](const FIndirectPathContribution& A, const FIndirectPathContribution& B)

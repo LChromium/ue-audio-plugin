@@ -1,0 +1,85 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/RayTracing/RayTracingCommon.ush"
+#include "/Engine/Private/RayTracing/RayTracingHitGroupCommon.ush"
+
+struct FUERayTracingAudioTraceRayData
+{
+    float3 Origin;
+    uint Mask;
+    float3 Direction;
+    float TFar;
+};
+
+struct FUERayTracingAudioTraceResultData
+{
+    uint Hit;
+    float Distance;
+    float3 Normal;
+    uint GeometryIndex;
+};
+
+struct FUERayTracingAudioTracePayload
+{
+    float HitT;
+    float3 WorldNormal;
+    uint GeometryIndex;
+    uint Hit;
+};
+
+RaytracingAccelerationStructure TLAS;
+StructuredBuffer<FUERayTracingAudioTraceRayData> Rays;
+RWStructuredBuffer<FUERayTracingAudioTraceResultData> Results;
+
+RAY_TRACING_ENTRY_RAYGEN(UERayTracingAudioIndirectRGS)
+{
+    const uint RayIndex = DispatchRaysIndex().x;
+    const FUERayTracingAudioTraceRayData InputRay = Rays[RayIndex];
+
+    FRayDesc Ray;
+    Ray.Origin = InputRay.Origin;
+    Ray.Direction = normalize(InputRay.Direction);
+    Ray.TMin = 0.0f;
+    Ray.TMax = InputRay.TFar;
+
+    FUERayTracingAudioTracePayload Payload = (FUERayTracingAudioTracePayload)0;
+    Payload.HitT = Ray.TMax;
+    Payload.WorldNormal = float3(0.0f, 0.0f, 1.0f);
+    Payload.GeometryIndex = 0xFFFFFFFFu;
+    Payload.Hit = 0u;
+
+    TraceRay(
+        TLAS,
+        RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_FORCE_OPAQUE,
+        InputRay.Mask,
+        0,
+        RAY_TRACING_NUM_SHADER_SLOTS,
+        0,
+        Ray.GetNativeDesc(),
+        Payload
+    );
+
+    FUERayTracingAudioTraceResultData Result;
+    Result.Hit = Payload.Hit;
+    Result.Distance = Payload.HitT;
+    Result.Normal = Payload.WorldNormal;
+    Result.GeometryIndex = Payload.GeometryIndex;
+    Results[RayIndex] = Result;
+}
+
+RAY_TRACING_ENTRY_CLOSEST_HIT(UERayTracingAudioIndirectCHS,
+    FUERayTracingAudioTracePayload, Payload,
+    FRayTracingIntersectionAttributes, Attributes)
+{
+    Payload.Hit = 1u;
+    Payload.HitT = RayTCurrent();
+    Payload.WorldNormal = GetGeometryNormalFromTriangleBaseAttributes(PrimitiveIndex());
+    Payload.GeometryIndex = GetInstanceUserData();
+}
+
+RAY_TRACING_ENTRY_MISS(UERayTracingAudioIndirectMS, FUERayTracingAudioTracePayload, Payload)
+{
+    Payload.Hit = 0u;
+    Payload.HitT = 0.0f;
+    Payload.WorldNormal = float3(0.0f, 0.0f, 1.0f);
+    Payload.GeometryIndex = 0xFFFFFFFFu;
+}

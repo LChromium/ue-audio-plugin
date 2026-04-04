@@ -43,12 +43,14 @@
   - 暴露可见性查询入口。
   - 当前已经支持批量射线查询。
   - 当前已经接入一版基于 UE Ray Tracing RHI 的硬件光追后端。
+  - 当前已经支持返回命中距离、法线和几何索引的间接声详细查询。
   - 当硬件光追不可用时仍会回退到 `LineTraceSingleByChannel`。
 - `FUERayTracingAudioSimulator`
   - 负责直接声和间接声最小模拟。
   - 已实现距离衰减、空气吸收、遮挡增益计算。
   - 已实现参考 Steam Audio 的体积遮挡采样逻辑。
   - 已实现基于导出声学场景的实时间接声路径采样、早期反射、参数化混响和 Hybrid 结果生成。
+  - 当前在硬件光追可用时会优先使用 UE Ray Tracing RHI 做多跳命中查询，不可用时回退到 CPU 声学场景求交。
 - `FUERayTracingAudioSerializedObject`
   - 提供后续烘焙 / Probe / IR 数据序列化的占位类型。
 
@@ -185,6 +187,14 @@
   - `ParametricReverb`
   - `HybridReverb`
 
+当前查询后端策略是：
+
+- 当硬件光追可用时：
+  - 使用 UE Ray Tracing RHI shader 返回命中距离、法线和几何索引
+  - CPU 侧负责组织 bounce、累计路径贡献并生成间接声输出
+- 当硬件光追不可用时：
+  - 回退到 CPU 场景求交实现
+
 当前模式含义如下：
 
 - `MinimalConvolution`
@@ -228,6 +238,7 @@
 - 基于 UE Ray Tracing RHI 的批量遮挡检测
 - 基于导出声学几何构建最小 BLAS / TLAS
 - 遮挡查询结果回读到 CPU 并参与直接声计算
+- Phase 3 间接声已经改为“RHI 命中查询优先、CPU fallback 兜底”的后端模式
 
 当前还不是最终目标里的完整版本，原因是：
 
@@ -281,6 +292,7 @@
 - 使用 `-plugin="C:\tasks\ue-audio-plugin\UERayTracingAudio.uplugin"` 和 `-BuildPlugin=UERayTracingAudio` 验证了插件三个模块都能成功编译
 - 已修复 `UERayTracingAudioSDK` 因 shader 加载时机过晚导致的模块加载失败问题
 - 已修复 RHI 遮挡后端在 ray tracing pipeline 缺少 hit shader 时触发的启动 / 运行时崩溃问题
+- 已修复间接声 RHI RTPSO 因 ShaderBindingLayout 不匹配导致的编辑器运行时崩溃问题
 - 已验证测试工程可以正常启动，插件模块能够被项目成功加载
 - 已验证项目可在 `-game` 模式下成功启动并退出，没有再触发同类崩溃
 - 在 Unreal Editor 中验证了 `UUERayTracingAudioSourceComponent` 的运行时调试量可以正确显示
@@ -309,8 +321,7 @@
 
 当前 Phase 3 虽然已经实现，但仍有明显限制：
 
-- 反射路径查询当前主要基于导出的声学场景 CPU 路径求交
-- 还没有把实时间接声完整切到 UE Ray Tracing RHI 的多跳命中信息路径
+- 当前虽然已经把多跳命中查询优先切到 UE Ray Tracing RHI，但 bounce 调度和路径贡献累积仍在 CPU 上完成
 - 当前没有完整的 Steam Audio `EnergyField` 数据结构
 - 当前参数化混响是简化模型，不是完整 RT60 / EQ / delay 拟合实现
 - 当前卷积播放链路是简化版早期反射延迟线，不是完整长 IR 卷积器
@@ -345,7 +356,7 @@
 
 - 虽然已经完成实际编译，并且已经确认关键直接声参数可在 Unreal Editor 中正确显示，但还没有完成试听验证。
 - 当前虽然已经接入最小 UE Ray Tracing RHI 后端，并且已经支持真实静态网格三角形导出，但材质和更复杂几何类型还没有接入，不是最终生产级实现。
-- 虽然已经实现 Phase 3 第一版间接声链路，但仍是简化版早反 + 参数尾部渲染，不是完整 Steam Audio 等级的反射系统。
+- 虽然已经实现 Phase 3 第一版间接声链路，并且查询优先切到 UE Ray Tracing RHI，但仍是简化版早反 + 参数尾部渲染，不是完整 Steam Audio 等级的反射系统。
 - Spatialization 仍然是占位实现。
 
 所以更准确的判断是：
@@ -407,7 +418,7 @@
 - 用真实三角网格替换当前包围盒近似
 - 让 RHI 查询与场景更新做缓存和异步化
 - 把命中材质和传播信息继续接入后续声学计算
-- 把 Phase 3 的多跳反射查询也接到正式的 RHI hit 结果链路
+- 让 Phase 3 从“RHI 命中查询 + CPU 路径累积”进一步走向“更完整的 GPU energy field / IR 重建链路”
 
 ## 8. 一句话结论
 
