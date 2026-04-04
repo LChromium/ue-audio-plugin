@@ -2,13 +2,14 @@
 
 ## 1. 已完成范围
 
-当前仓库已经完成了 `ARCHITECTURE.md` 中 Phase 1 和 Phase 2 的第一版代码骨架与最小链路实现，并且已经完成一次基于 Unreal Build Tool 的实际编译验证，但还没有达到“功能闭环已在 Unreal Editor 中试听跑通”的状态。
+当前仓库已经完成了 `ARCHITECTURE.md` 中 Phase 1、Phase 2 以及 Phase 3 第一版代码实现，并且已经完成基于 Unreal Build Tool 的实际编译验证，但还没有达到“完整声学功能闭环已在 Unreal Editor 中试听跑通”的状态。
 
 目前完成的内容可以概括为：
 
 - 插件结构已经建立起来。
 - Runtime / Editor / SDK 三层模块已经拆开。
 - 直接声的最小数据链路已经接通。
+- 间接声实时链路已经有第一版可运行实现。
 - 编辑器里已经有 Bake 窗口入口骨架。
 - 代码层面的静态检查通过。
 - 插件模块已经在测试工程环境中完成实际编译。
@@ -44,9 +45,10 @@
   - 当前已经接入一版基于 UE Ray Tracing RHI 的硬件光追后端。
   - 当硬件光追不可用时仍会回退到 `LineTraceSingleByChannel`。
 - `FUERayTracingAudioSimulator`
-  - 负责直接声最小模拟。
+  - 负责直接声和间接声最小模拟。
   - 已实现距离衰减、空气吸收、遮挡增益计算。
   - 已实现参考 Steam Audio 的体积遮挡采样逻辑。
+  - 已实现基于导出声学场景的实时间接声路径采样、早期反射、参数化混响和 Hybrid 结果生成。
 - `FUERayTracingAudioSerializedObject`
   - 提供后续烘焙 / Probe / IR 数据序列化的占位类型。
 
@@ -62,10 +64,11 @@
 - `FUERayTracingAudioManager`
   - 管理 Source / Listener / Geometry 注册。
   - 负责重建声学场景。
-  - 负责调度直接声模拟。
+  - 负责调度直接声和间接声模拟。
 - `UUERayTracingAudioSourceComponent`
-  - 每帧向 Manager 请求直接声结果。
-  - 保存 `bIsOccluded`、`DistanceAttenuation`、`OverallGain` 等运行时结果。
+  - 每帧向 Manager 请求直接声和间接声结果。
+  - 保存 `bIsOccluded`、`DistanceAttenuation`、`OverallGain` 等直接声结果。
+  - 保存 `IndirectGain`、`EarlyReflectionGain`、`LateReverbGain`、`ReverbTimes` 等间接声结果。
 - `UUERayTracingAudioListenerComponent`
   - 提供当前监听器位置。
 - `UUERayTracingAudioGeometryComponent`
@@ -82,6 +85,7 @@
   - 从 `UUERayTracingAudioSourceComponent` 读取模拟结果。
   - 把距离衰减、空气吸收、遮挡组合成目标增益。
   - 对输出 buffer 做平滑增益处理。
+  - 已接入第一版早期反射延迟线和参数化尾部混响渲染。
 - `FUERayTracingAudioSpatializationPlugin`
   - 目前是占位实现。
   - 已接入 Unreal 插件工厂注册。
@@ -91,7 +95,7 @@
 - `UUERayTracingAudioSpatializationSettings`
   - 提供空间化占位设置。
 
-也就是说，当前已经接进了 Unreal 的音频插件机制，但只在 Occlusion 方向有最小可工作的处理逻辑。
+也就是说，当前已经接进了 Unreal 的音频插件机制，并且已经在 Occlusion 插件路径上接入第一版间接声播放链路。
 
 ### 2.5 Editor 模块
 
@@ -169,6 +173,50 @@
 
 三者相乘后得到 `OverallGain`，再由 Occlusion 插件对输出 buffer 做平滑应用。
 
+### 3.7 间接声实时链路
+
+当前已经实现一版参考 Steam Audio 思路的间接声实时链路：
+
+- 从声源发射多条反射采样射线。
+- 在导出的声学场景中做多次反射查询。
+- 对有效路径累计延迟、能量和频段衰减结果。
+- 根据间接声模式输出：
+  - `MinimalConvolution`
+  - `ParametricReverb`
+  - `HybridReverb`
+
+当前模式含义如下：
+
+- `MinimalConvolution`
+  - 输出早期反射 delay / gain taps
+  - 由音频插件用延迟线方式渲染
+- `ParametricReverb`
+  - 从路径能量估计 `ReverbTimes`
+  - 由音频插件使用参数化尾部混响近似渲染
+- `HybridReverb`
+  - 同时保留早期反射 taps 和参数化尾部混响
+
+当前 `UUERayTracingAudioSourceComponent` 已暴露的关键参数包括：
+
+- `bEnableIndirectSound`
+- `IndirectMode`
+- `NumReflectionRays`
+- `MaxReflectionBounces`
+- `IndirectDurationSeconds`
+- `MaxEarlyReflectionTaps`
+- `HybridTransitionRatio`
+- `IndirectMix`
+
+当前可观察的关键结果包括：
+
+- `bHasIndirectPath`
+- `NumValidReflectionPaths`
+- `IndirectGain`
+- `EarlyReflectionGain`
+- `LateReverbGain`
+- `AverageReflectionDelaySeconds`
+- `ReverbTimes`
+
 ## 4. 还没有完成的部分
 
 下面这些是“当前还没有做完，所以不能说已经完整跑通直接声”的关键原因。
@@ -217,6 +265,11 @@
 - 已经能算出直接路径相关的增益参数
 - 但还不是完整空间音频意义上的直接声播放效果
 
+而“间接声”更准确地说是：
+
+- 已经有第一版实时路径采样、早期反射和参数化尾部混响
+- 但还不是 Steam Audio 那种完整 `EnergyField -> IR / Hybrid` 级别的生产实现
+
 ### 4.4 Unreal Editor 内功能验证已部分完成
 
 当前完成的是：
@@ -252,7 +305,17 @@
 - 组件和资产在编辑器中的完整工作流验证
 - 不同场景布局下的试听校验
 
-## 5. 现在能不能跑通直接声
+### 4.6 Phase 3 还不是生产级间接声后端
+
+当前 Phase 3 虽然已经实现，但仍有明显限制：
+
+- 反射路径查询当前主要基于导出的声学场景 CPU 路径求交
+- 还没有把实时间接声完整切到 UE Ray Tracing RHI 的多跳命中信息路径
+- 当前没有完整的 Steam Audio `EnergyField` 数据结构
+- 当前参数化混响是简化模型，不是完整 RT60 / EQ / delay 拟合实现
+- 当前卷积播放链路是简化版早期反射延迟线，不是完整长 IR 卷积器
+
+## 5. 现在能不能跑通直接声和间接声
 
 结论分两层说。
 
@@ -272,7 +335,7 @@
 - 遮挡增益
 - Occlusion 插件把结果作用到音频 buffer
 
-### 5.2 从“项目目标意义上的直接声是否已跑通”来说
+### 5.2 从“项目目标意义上的直接声和间接声是否已跑通”来说
 
 现在还不能说：
 
@@ -282,6 +345,7 @@
 
 - 虽然已经完成实际编译，并且已经确认关键直接声参数可在 Unreal Editor 中正确显示，但还没有完成试听验证。
 - 当前虽然已经接入最小 UE Ray Tracing RHI 后端，并且已经支持真实静态网格三角形导出，但材质和更复杂几何类型还没有接入，不是最终生产级实现。
+- 虽然已经实现 Phase 3 第一版间接声链路，但仍是简化版早反 + 参数尾部渲染，不是完整 Steam Audio 等级的反射系统。
 - Spatialization 仍然是占位实现。
 
 所以更准确的判断是：
@@ -343,6 +407,7 @@
 - 用真实三角网格替换当前包围盒近似
 - 让 RHI 查询与场景更新做缓存和异步化
 - 把命中材质和传播信息继续接入后续声学计算
+- 把 Phase 3 的多跳反射查询也接到正式的 RHI hit 结果链路
 
 ## 8. 一句话结论
 
@@ -350,6 +415,7 @@
 
 - **Phase 1 全部骨架**
 - **Phase 2 的最小直接声代码链路**
+- **Phase 3 的第一版实时间接声链路**
 - **测试工程中的实际编译验证**
 - **Unreal Editor 中关键直接声参数显示验证**
 - **基于 RHI 的最小体积遮挡后端**
@@ -360,7 +426,8 @@
 - **Unreal Editor 内试听与场景验证**
 - **生产级 UE Ray Tracing RHI 几何与场景接入**
 - **完整空间化直接声实现**
+- **生产级 Steam Audio 风格间接声系统**
 
 所以现在最准确的说法是：
 
-- **你已经把直接声和最小 RHI 遮挡后端都写出来了，但还不能说已经把最终形态的直接声完全跑通了。**
+- **你已经把直接声、最小 RHI 遮挡后端和第一版间接声链路都写出来了，但还不能说已经把最终形态的完整声学系统完全跑通了。**

@@ -88,7 +88,7 @@ UUERayTracingAudioListenerComponent* FUERayTracingAudioManager::GetCurrentListen
     return nullptr;
 }
 
-FUERayTracingAudioDirectSimulationResult FUERayTracingAudioManager::SimulateSource(UUERayTracingAudioSourceComponent* Source)
+FUERayTracingAudioDirectSimulationResult FUERayTracingAudioManager::SimulateDirectSource(UUERayTracingAudioSourceComponent* Source)
 {
     FUERayTracingAudioDirectSimulationResult Result;
 
@@ -121,6 +121,59 @@ FUERayTracingAudioDirectSimulationResult FUERayTracingAudioManager::SimulateSour
     Input.AirAbsorptionPerMeter = Source->GetAirAbsorptionPerMeter();
 
     return Simulator.SimulateDirectSound(RayTracingDevice, Input);
+}
+
+FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioManager::SimulateIndirectSource(UUERayTracingAudioSourceComponent* Source)
+{
+    FUERayTracingAudioIndirectSimulationResult Result;
+
+    if (!IsValid(Source))
+    {
+        return Result;
+    }
+
+    UWorld* World = Source->GetWorld();
+    UUERayTracingAudioListenerComponent* Listener = GetCurrentListener();
+    if (!IsValid(World) || !IsValid(Listener))
+    {
+        return Result;
+    }
+
+    RebuildScene(World);
+
+    FUERayTracingAudioIndirectSimulationInput Input;
+    Input.World = World;
+    Input.Scene = &Scene;
+    Input.ListenerLocation = Listener->GetListenerLocation();
+    Input.ListenerForward = Listener->GetListenerForward();
+    Input.ListenerActor = Listener->GetOwner();
+    Input.SourceLocation = Source->GetSourceLocation();
+    Input.SourceForward = Source->GetSourceForward();
+    Input.SourceActor = Source->GetOwner();
+    Input.SourceRadiusCm = Source->GetSourceRadiusCm();
+    Input.NumReflectionRays = Source->GetNumReflectionRays();
+    Input.MaxReflectionBounces = Source->GetMaxReflectionBounces();
+    Input.DurationSeconds = Source->GetIndirectDurationSeconds();
+    Input.MaxEarlyReflectionTaps = Source->GetMaxEarlyReflectionTaps();
+    Input.HybridTransitionRatio = Source->GetHybridTransitionRatio();
+    Input.AirAbsorptionPerMeter = Source->GetAirAbsorptionPerMeter();
+
+    switch (Source->GetIndirectMode())
+    {
+    case EUERayTracingAudioIndirectMode::ParametricReverb:
+        Input.EffectType = EUERayTracingAudioIndirectEffectType::Parametric;
+        break;
+
+    case EUERayTracingAudioIndirectMode::HybridReverb:
+        Input.EffectType = EUERayTracingAudioIndirectEffectType::Hybrid;
+        break;
+
+    default:
+        Input.EffectType = EUERayTracingAudioIndirectEffectType::Convolution;
+        break;
+    }
+
+    return Simulator.SimulateIndirectSound(Input);
 }
 
 const FUERayTracingAudioScene& FUERayTracingAudioManager::GetScene() const

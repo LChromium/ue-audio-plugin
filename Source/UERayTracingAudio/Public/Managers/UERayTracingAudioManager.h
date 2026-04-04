@@ -31,7 +31,8 @@ public:
 
     UUERayTracingAudioListenerComponent* GetCurrentListener() const;
 
-    FUERayTracingAudioDirectSimulationResult SimulateSource(UUERayTracingAudioSourceComponent* Source);
+    FUERayTracingAudioDirectSimulationResult SimulateDirectSource(UUERayTracingAudioSourceComponent* Source);
+    FUERayTracingAudioIndirectSimulationResult SimulateIndirectSource(UUERayTracingAudioSourceComponent* Source);
 
     const FUERayTracingAudioScene& GetScene() const;
     const FUERayTracingAudioRayTracingDevice& GetRayTracingDevice() const;

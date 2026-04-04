@@ -2,12 +2,13 @@
 
 ## 1. 当前可用范围
 
-当前插件处于 Phase 1 和 Phase 2 的最小可用阶段，已经具备：
+当前插件处于 Phase 1、Phase 2 和 Phase 3 的第一版可用阶段，已经具备：
 
 - 插件模块可编译
 - Listener / Source / Geometry 组件
 - 最小直接声参数计算
 - 基于 UE Ray Tracing RHI 的最小体积遮挡后端
+- 第一版实时间接声链路
 - Occlusion 插件增益处理
 - Editor 中的 Bake 窗口骨架入口
 
@@ -15,7 +16,7 @@
 
 - 生产级的 UE Ray Tracing RHI 场景接入
 - 完整双耳空间化
-- 反射、混响、烘焙的正式功能链路
+- 生产级反射、混响、烘焙链路
 
 ## 2. 已验证的编译方式
 
@@ -73,7 +74,9 @@
 当前这个组件负责：
 
 - 每帧请求直接声模拟结果
+- 每帧请求间接声模拟结果
 - 保存当前直接声状态
+- 保存当前间接声状态
 - 提供体积遮挡相关参数配置
 
 当前可观察的关键量包括：
@@ -82,6 +85,11 @@
 - `DistanceAttenuation`
 - `DirectVisibility`
 - `OverallGain`
+- `IndirectGain`
+- `EarlyReflectionGain`
+- `LateReverbGain`
+- `AverageReflectionDelaySeconds`
+- `ReverbTimes`
 
 当前可调的关键直接声参数包括：
 
@@ -89,6 +97,20 @@
 - `SourceRadiusCm`
 - `NumOcclusionSamples`
 - `bUseVolumetricOcclusion`
+
+当前可调的关键间接声参数包括：
+
+- `bEnableIndirectSound`
+- `IndirectMode`
+  - `Minimal Convolution`
+  - `Parametric Reverb`
+  - `Hybrid Reverb`
+- `NumReflectionRays`
+- `MaxReflectionBounces`
+- `IndirectDurationSeconds`
+- `MaxEarlyReflectionTaps`
+- `HybridTransitionRatio`
+- `IndirectMix`
 
 ### 4.3 放置遮挡物
 
@@ -111,6 +133,20 @@
 
 建议先用最简单的静态网格墙体测试。
 
+### 4.4 当前间接声模式说明
+
+`UUERayTracingAudioSourceComponent` 的 `IndirectMode` 当前支持三种模式：
+
+- `Minimal Convolution`
+  - 输出早期反射 taps
+  - 适合先验证路径延迟和早反能量是否存在
+- `Parametric Reverb`
+  - 输出参数化尾部混响估计
+  - 适合先验证尾部混响量级是否变化
+- `Hybrid Reverb`
+  - 同时启用早期反射和参数化尾部
+  - 是当前阶段最接近完整间接声体验的模式
+
 ## 5. 当前阶段推荐测试场景
 
 建议先做一个最小验证：
@@ -118,6 +154,7 @@
 - 一个 Listener
 - 一个带音频的 Source
 - 一面可以挡在两者之间的墙
+- 一个更大的封闭或半封闭房间
 
 验证目标：
 
@@ -125,6 +162,8 @@
 - 墙挡住时，`DirectVisibility` 下降到小于 `1.0`
 - 挡住时 `OverallGain` 下降
 - 挪开墙之后 `OverallGain` 恢复
+- 在封闭空间里 `IndirectGain` 和 `LateReverbGain` 高于开阔空间
+- 增加 `NumReflectionRays` 后，早期反射与尾部结果更稳定
 
 ## 6. 当前阶段的重要限制
 
@@ -147,13 +186,14 @@
 目前真正生效的是：
 
 - 直接路径相关增益
+- 第一版间接声早期反射 / 参数化尾部混响
 
 目前还没有：
 
 - HRTF
 - 双耳空间化
-- 早期反射
-- 混响
+- 生产级早期反射
+- 生产级混响
 
 ### 6.3 当前 Editor 窗口只是骨架
 
@@ -166,5 +206,6 @@
 1. 先确认插件在测试工程中可启用
 2. 再确认场景内组件能正常挂载
 3. 对遮挡物优先试 `ExportMode = Static Mesh Triangles`
-4. 先观察 `bIsOccluded / DirectVisibility / OverallGain`
-5. 再做遮挡试听验证
+4. Source 先试 `IndirectMode = Hybrid Reverb`
+5. 先观察 `bIsOccluded / DirectVisibility / OverallGain / IndirectGain / LateReverbGain`
+6. 再做遮挡试听和房间感验证

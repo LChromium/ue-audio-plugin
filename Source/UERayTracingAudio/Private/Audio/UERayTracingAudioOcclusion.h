@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "IAudioExtensionPlugin.h"
+#include "Simulation/UERayTracingAudioSimulator.h"
 
 class UUERayTracingAudioOcclusionSettings;
 
@@ -11,6 +12,12 @@ struct FUERayTracingAudioOcclusionSource
     bool bApplyAirAbsorption = true;
     bool bApplyOcclusion = true;
     float PreviousGain = 1.0f;
+    int32 NumChannels = 0;
+    int32 SampleRate = 48000;
+    int32 DelayWriteIndex = 0;
+    TArray<float> DelayBuffer;
+    TArray<TArray<float>> CombBuffers;
+    TArray<int32> CombWriteIndices;
 };
 
 class FUERayTracingAudioOcclusionPlugin : public IAudioOcclusion
@@ -22,7 +29,15 @@ public:
     virtual void ProcessAudio(const FAudioPluginSourceInputData& InputData, FAudioPluginSourceOutputData& OutputData) override;
 
 private:
+    void EnsureDelayCapacity(FUERayTracingAudioOcclusionSource& SourceState, float DurationSeconds);
+    float RenderIndirectSample(
+        FUERayTracingAudioOcclusionSource& SourceState,
+        const FUERayTracingAudioIndirectSimulationResult& IndirectResult,
+        float MonoInput,
+        float IndirectMix);
+
     TArray<FUERayTracingAudioOcclusionSource> Sources;
+    int32 SampleRate = 48000;
 };
 
 class FUERayTracingAudioOcclusionPluginFactory : public IAudioOcclusionFactory

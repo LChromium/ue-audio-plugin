@@ -11,10 +11,25 @@ UUERayTracingAudioSourceComponent::UUERayTracingAudioSourceComponent()
     , NumOcclusionSamples(8)
     , bUseVolumetricOcclusion(true)
     , AirAbsorptionPerMeter(0.0002f, 0.0006f, 0.0012f)
+    , bEnableIndirectSound(true)
+    , IndirectMode(EUERayTracingAudioIndirectMode::MinimalConvolution)
+    , NumReflectionRays(64)
+    , MaxReflectionBounces(2)
+    , IndirectDurationSeconds(1.0f)
+    , MaxEarlyReflectionTaps(16)
+    , HybridTransitionRatio(0.35f)
+    , IndirectMix(0.3f)
     , bIsOccluded(false)
     , DistanceAttenuation(1.0f)
     , DirectVisibility(1.0f)
     , OverallGain(1.0f)
+    , bHasIndirectPath(false)
+    , NumValidReflectionPaths(0)
+    , IndirectGain(0.0f)
+    , EarlyReflectionGain(0.0f)
+    , LateReverbGain(0.0f)
+    , AverageReflectionDelaySeconds(0.0f)
+    , ReverbTimes(FVector::ZeroVector)
 {
     PrimaryComponentTick.bCanEverTick = true;
 }
@@ -42,14 +57,37 @@ void UUERayTracingAudioSourceComponent::TickComponent(float DeltaTime, ELevelTic
         DistanceAttenuation = 1.0f;
         DirectVisibility = 1.0f;
         OverallGain = 1.0f;
+    }
+    else
+    {
+        DirectSoundResult = FUERayTracingAudioModule::GetManager().SimulateDirectSource(this);
+        bIsOccluded = DirectSoundResult.bIsOccluded;
+        DistanceAttenuation = DirectSoundResult.DistanceAttenuation;
+        DirectVisibility = DirectSoundResult.DirectVisibility;
+        OverallGain = DirectSoundResult.OverallGain;
+    }
+
+    if (!bEnableIndirectSound)
+    {
+        IndirectSoundResult = FUERayTracingAudioIndirectSimulationResult();
+        bHasIndirectPath = false;
+        NumValidReflectionPaths = 0;
+        IndirectGain = 0.0f;
+        EarlyReflectionGain = 0.0f;
+        LateReverbGain = 0.0f;
+        AverageReflectionDelaySeconds = 0.0f;
+        ReverbTimes = FVector::ZeroVector;
         return;
     }
 
-    DirectSoundResult = FUERayTracingAudioModule::GetManager().SimulateSource(this);
-    bIsOccluded = DirectSoundResult.bIsOccluded;
-    DistanceAttenuation = DirectSoundResult.DistanceAttenuation;
-    DirectVisibility = DirectSoundResult.DirectVisibility;
-    OverallGain = DirectSoundResult.OverallGain;
+    IndirectSoundResult = FUERayTracingAudioModule::GetManager().SimulateIndirectSource(this);
+    bHasIndirectPath = IndirectSoundResult.bHasValidPaths;
+    NumValidReflectionPaths = IndirectSoundResult.NumValidPaths;
+    IndirectGain = IndirectSoundResult.IndirectGain;
+    EarlyReflectionGain = IndirectSoundResult.EarlyReflectionGain;
+    LateReverbGain = IndirectSoundResult.LateReverbGain;
+    AverageReflectionDelaySeconds = IndirectSoundResult.AverageDelaySeconds;
+    ReverbTimes = IndirectSoundResult.ReverbTimes;
 }
 
 FVector UUERayTracingAudioSourceComponent::GetSourceLocation() const
@@ -87,9 +125,49 @@ FVector UUERayTracingAudioSourceComponent::GetAirAbsorptionPerMeter() const
     return AirAbsorptionPerMeter;
 }
 
+EUERayTracingAudioIndirectMode UUERayTracingAudioSourceComponent::GetIndirectMode() const
+{
+    return IndirectMode;
+}
+
+int32 UUERayTracingAudioSourceComponent::GetNumReflectionRays() const
+{
+    return NumReflectionRays;
+}
+
+int32 UUERayTracingAudioSourceComponent::GetMaxReflectionBounces() const
+{
+    return MaxReflectionBounces;
+}
+
+float UUERayTracingAudioSourceComponent::GetIndirectDurationSeconds() const
+{
+    return IndirectDurationSeconds;
+}
+
+int32 UUERayTracingAudioSourceComponent::GetMaxEarlyReflectionTaps() const
+{
+    return MaxEarlyReflectionTaps;
+}
+
+float UUERayTracingAudioSourceComponent::GetHybridTransitionRatio() const
+{
+    return HybridTransitionRatio;
+}
+
+float UUERayTracingAudioSourceComponent::GetIndirectMix() const
+{
+    return IndirectMix;
+}
+
 const FUERayTracingAudioDirectSimulationResult& UUERayTracingAudioSourceComponent::GetDirectSoundResult() const
 {
     return DirectSoundResult;
+}
+
+const FUERayTracingAudioIndirectSimulationResult& UUERayTracingAudioSourceComponent::GetIndirectSoundResult() const
+{
+    return IndirectSoundResult;
 }
 
 float UUERayTracingAudioSourceComponent::GetCurrentOverallGain() const
