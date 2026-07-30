@@ -254,3 +254,14 @@
 - `Source/UERayTracingAudioSDK/Private/Simulation/UERayTracingAudioSimulator.cpp`
 - `Source/UERayTracingAudio/Private/Audio/UERayTracingAudioOcclusion.cpp`
 - `Source/UERayTracingAudio/Private/Components/UERayTracingAudioSourceComponent.cpp`
+
+## Task 2：World-scoped listener and acoustic scene state（2026-07-30）
+
+- [x] Listener registration is first-wins per `UWorld`; a duplicate in the same World is ignored, while listeners in other Worlds remain independent.
+- [x] Acoustic geometry/signatures use stable heap-owned per-World scenes; Source and Bake queries select their own World, direct/indirect hardware batches are partitioned by scene, and dead World state is cleaned after its in-flight references drain.
+- [x] Required build passed: `uv run script\build_and_validate.py` exited `0`, with `31 functions / 32 bodies / 0 forbidden operations`, `Result: Succeeded`, and `Build and validation complete.`
+- [x] Focused NullRHI Automation passed `3/3` (`0 failed`): `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task2-WorldScoping-Final.log`.
+- [x] Full Audio NullRHI Automation passed `26/26` (`0 failed`): `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task2-Audio-Final.log`.
+- [x] Fixed runtime flow `uv run script\launch_runtime_validation.py` exited `0`: Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and hard realtime passed with `169 / 0 / 0` callbacks/capacity misses/prepare drops. Logs: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785425951315732900.log` and `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785426132061345000.log`.
+- [ ] Run a true multi-PIE hardware session to supplement the deterministic two-World NullRHI tests and the single-World hardware runtime. The P3 coverage follow-up remains ledgered for final review; this documentation fix adds no tests.
+- [ ] Complete Editor PIE/manual hardware listening and record Human Pass/Fail. Automated evidence does not constitute Human Pass, and the overall plugin is not complete.

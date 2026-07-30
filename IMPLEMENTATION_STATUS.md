@@ -481,3 +481,16 @@
 所以现在最准确的说法是：
 
 - **你已经把直接声、最小 RHI 遮挡后端和第一版间接声链路都写出来了，但还不能说已经把最终形态的完整声学系统完全跑通了。**
+
+## Task 2：World-scoped listener and acoustic scene state
+
+实现状态：Task 2 代码已实现并通过自动化验证。Manager 使用 per-World weak Listener entry（同一 World first-wins）和稳定 heap-owned acoustic state；Geometry/signature、Source/Bake 查询、stale/directional IR 与 Direct/Indirect hardware batching 都按 World/scene 隔离；dead World state 在相关 in-flight scene 引用结束后清理。
+
+已验证证据（2026-07-30）：
+
+- `uv run script\build_and_validate.py` exit `0`：`31 functions / 32 bodies / 0 forbidden operations`，`Result: Succeeded`，`Build and validation complete.`
+- Focused NullRHI `UERayTracingAudio.Audio.ConfigurableDirect`：`3/3`、`0 failed`；`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task2-WorldScoping-Final.log`。
+- Full NullRHI `UERayTracingAudio.Audio`：`26/26`、`0 failed`；`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task2-Audio-Final.log`。
+- `uv run script\launch_runtime_validation.py` exit `0`：Direct/Indirect batches `4/4`，hardware/CPU paths `171/171`，gain `0.001625/0.001625`，data sources passed，`non_finite=0`，kernels `2/2/4`，hard realtime passed with callbacks/misses/drops `169/0/0`。Game：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785425951315732900.log`；Editor：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785426132061345000.log`。
+
+剩余限制：两 World 行为由 NullRHI Automation 验证，硬件 runtime 只覆盖单 World；尚未执行 multi-PIE hardware isolation。人工 Editor PIE/hardware listening 与 Human Pass 未执行，P3 coverage follow-up 保留到 final review。因此 Task 2 的自动化验证已完成，但整个插件仍未完成。

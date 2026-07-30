@@ -212,3 +212,25 @@
 - 挪开墙之后 `OverallGain` 恢复
 - 在封闭空间里 `IndirectGain` 和 `LateReverbGain` 高于开阔空间
 - 增加 `NumReflectionRays` 后，早期反射与尾部结果更稳定
+
+## Task 2：在多个 World 中使用 Listener 与声学场景
+
+每个 `UWorld` 放置一个 `UUERayTracingAudioListenerComponent`。同一 World 内按注册顺序保留第一个有效 Listener；后注册的重复 Listener 会被忽略并记录 warning。不同 World（包括 PIE 实例）各自维护 Listener、Geometry、scene signature 和稳定的 acoustic scene。
+
+Source、参与 Bake 的 Source/Listener/Geometry 必须属于同一目标 World。Direct、Indirect、stale-asset 检查和 directional IR 都按 Source 或 Bake Source 的 World 解析；硬件 Direct/Indirect 请求也按 scene 分批。World 销毁后，管理器会清理弱 Listener key，并在该 scene 不再被查询引用后清理 acoustic state。
+
+建议的 Editor 检查：
+
+1. 在每个 PIE World 中只启用一个 Listener，并确认 Source 与声学 Geometry 位于该 World。
+2. 若同一 World 有多个 Listener，移除或禁用重复项；不要依赖注册顺序作为关卡设计。
+3. 多 PIE 验证时分别移动各 World 的 Listener/Source，并观察另一个 World 的 Listener、遮挡和 scene signature 不受影响。
+4. Baked 资产仍需通过当前 World、scene/material signature 和 Source/Listener placement 的 stale 检查。
+
+Task 2 已验证的自动化证据：
+
+- `uv run script\build_and_validate.py`：exit `0`；`31 functions / 32 bodies / 0 forbidden operations`；`Result: Succeeded`；`Build and validation complete.`
+- `UERayTracingAudio.Audio.ConfigurableDirect` NullRHI：`3/3`、`0 failed`；日志 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task2-WorldScoping-Final.log`。
+- `UERayTracingAudio.Audio` NullRHI：`26/26`、`0 failed`；日志 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task2-Audio-Final.log`。
+- `uv run script\launch_runtime_validation.py`：exit `0`；Direct/Indirect batches `4/4`，hardware/CPU paths `171/171`，gain `0.001625/0.001625`，data sources passed，kernels `2/2/4`，`non_finite=0`，hard realtime `169 / 0 / 0`。Game 日志：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785425951315732900.log`；Editor 日志：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785426132061345000.log`。
+
+范围说明：两 World 隔离仅在 NullRHI Automation 中完成，固定硬件运行时为单 World；尚未执行真实 multi-PIE hardware session。Editor PIE 人工试听和 Human Pass 也未执行。以上自动化结果不能替代 Human Pass，不能据此宣称整个插件已完成。
