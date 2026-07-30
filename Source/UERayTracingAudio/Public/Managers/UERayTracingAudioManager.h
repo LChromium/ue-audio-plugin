@@ -15,7 +15,8 @@ class UWorld;
 class UERAYTRACINGAUDIO_API FUERayTracingAudioManager
 {
 public:
-    FUERayTracingAudioManager();
+    explicit FUERayTracingAudioManager(
+        const FUERayTracingAudioContextSettings& ContextSettings = {});
 
     void AddSource(UUERayTracingAudioSourceComponent* Source);
     void RemoveSource(UUERayTracingAudioSourceComponent* Source);

@@ -1,10 +1,17 @@
 #include "API/UERayTracingAudioContext.h"
 
-FUERayTracingAudioContext::FUERayTracingAudioContext()
-    : ReferenceDistanceCm(100.0f)
-    , MaxDistanceCm(5000.0f)
-    , SpeedOfSoundCmPerSecond(34300.0f)
+FUERayTracingAudioContext::FUERayTracingAudioContext(
+    const FUERayTracingAudioContextSettings& Settings)
 {
+    Configure(Settings);
+}
+
+void FUERayTracingAudioContext::Configure(
+    const FUERayTracingAudioContextSettings& Settings)
+{
+    ReferenceDistanceCm = Settings.ReferenceDistanceCm;
+    MaxDistanceCm = Settings.MaxDistanceCm;
+    SpeedOfSoundCmPerSecond = Settings.SpeedOfSoundCmPerSecond;
 }
 
 float FUERayTracingAudioContext::GetReferenceDistanceCm() const

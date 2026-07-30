@@ -5,6 +5,7 @@
 #include "Features/IModularFeatures.h"
 #include "Managers/UERayTracingAudioManager.h"
 #include "Modules/ModuleManager.h"
+#include "Settings/UERayTracingAudioProjectSettings.h"
 
 DEFINE_LOG_CATEGORY(LogUERayTracingAudio);
 
@@ -26,7 +27,23 @@ FUERayTracingAudioManager& FUERayTracingAudioModule::GetManager()
 
 void FUERayTracingAudioModule::StartupModule()
 {
-    Manager = MakeShared<FUERayTracingAudioManager>();
+    constexpr float StartupSampleRate = 48000.0f;
+    const UUERayTracingAudioProjectSettings* ProjectSettings =
+        GetDefault<UUERayTracingAudioProjectSettings>();
+    const FUERayTracingAudioContextSettings ContextSettings =
+        ProjectSettings->GetValidatedContextSettings();
+    const FVector2f AirAbsorptionCrossovers =
+        ProjectSettings->GetValidatedAirAbsorptionCrossoversHz(StartupSampleRate);
+    Manager = MakeShared<FUERayTracingAudioManager>(ContextSettings);
+    UE_LOG(
+        LogUERayTracingAudio,
+        Display,
+        TEXT("Acoustic physics on Game Thread: reference=%.2f cm maximum=%.2f cm speed=%.2f cm/s crossovers=%.2f/%.2f Hz."),
+        ContextSettings.ReferenceDistanceCm,
+        ContextSettings.MaxDistanceCm,
+        ContextSettings.SpeedOfSoundCmPerSecond,
+        AirAbsorptionCrossovers.X,
+        AirAbsorptionCrossovers.Y);
     OcclusionPluginFactory = MakeUnique<FUERayTracingAudioOcclusionPluginFactory>();
     SpatializationPluginFactory = MakeUnique<FUERayTracingAudioSpatializationPluginFactory>();
 

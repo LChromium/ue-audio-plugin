@@ -10,6 +10,7 @@ public class UERayTracingAudio : ModuleRules
         {
             "Core",
             "AudioExtensions",
+            "DeveloperSettings",
             "UERayTracingAudioSDK"
         });
 

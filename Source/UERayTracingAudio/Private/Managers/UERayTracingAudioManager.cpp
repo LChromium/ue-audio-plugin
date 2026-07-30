@@ -5,8 +5,10 @@
 #include "Components/UERayTracingAudioSourceComponent.h"
 #include "Engine/World.h"
 
-FUERayTracingAudioManager::FUERayTracingAudioManager()
-    : Simulator(Context)
+FUERayTracingAudioManager::FUERayTracingAudioManager(
+    const FUERayTracingAudioContextSettings& ContextSettings)
+    : Context(ContextSettings)
+    , Simulator(Context)
 {
 }
 
