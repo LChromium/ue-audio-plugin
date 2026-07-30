@@ -17,9 +17,4 @@ public:
 
     FVector GetListenerLocation() const;
     FVector GetListenerForward() const;
-
-    static UUERayTracingAudioListenerComponent* GetCurrentListener();
-
-private:
-    static TWeakObjectPtr<UUERayTracingAudioListenerComponent> CurrentListener;
 };

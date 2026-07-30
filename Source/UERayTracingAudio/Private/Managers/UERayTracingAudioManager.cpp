@@ -4,54 +4,124 @@
 #include "Components/UERayTracingAudioListenerComponent.h"
 #include "Components/UERayTracingAudioSourceComponent.h"
 #include "Engine/World.h"
+#include "Misc/Crc.h"
+#include "UERayTracingAudioModule.h"
 
 FUERayTracingAudioManager::FUERayTracingAudioManager(
     const FUERayTracingAudioContextSettings& ContextSettings)
     : Context(ContextSettings)
     , Simulator(Context)
 {
+    WorldStateTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateRaw(
+            this,
+            &FUERayTracingAudioManager::TickWorldStateCleanup));
 }
 
-void FUERayTracingAudioManager::AddSource(UUERayTracingAudioSourceComponent* Source)
+FUERayTracingAudioManager::~FUERayTracingAudioManager()
+{
+    if (WorldStateTickerHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(WorldStateTickerHandle);
+        WorldStateTickerHandle.Reset();
+    }
+}
+
+void FUERayTracingAudioManager::AddSource(
+    UUERayTracingAudioSourceComponent* Source)
 {
     Sources.Add(Source);
 }
 
-void FUERayTracingAudioManager::RemoveSource(UUERayTracingAudioSourceComponent* Source)
+void FUERayTracingAudioManager::RemoveSource(
+    UUERayTracingAudioSourceComponent* Source)
 {
     Sources.Remove(Source);
 }
 
-void FUERayTracingAudioManager::AddListener(UUERayTracingAudioListenerComponent* Listener)
+void FUERayTracingAudioManager::AddListener(
+    UUERayTracingAudioListenerComponent* Listener)
 {
-    Listeners.Add(Listener);
+    check(IsInGameThread());
+
+    UWorld* World = IsValid(Listener) ? Listener->GetWorld() : nullptr;
+    if (!IsValid(World))
+    {
+        return;
+    }
+
+    TWeakObjectPtr<UUERayTracingAudioListenerComponent>& CurrentListener =
+        ListenersByWorld.FindOrAdd(World);
+    if (CurrentListener.IsValid() && CurrentListener.Get() != Listener)
+    {
+        UE_LOG(
+            LogUERayTracingAudio,
+            Warning,
+            TEXT("World '%s' already has a Ray Tracing Audio Listener '%s'; keeping the first Listener and ignoring '%s'."),
+            *World->GetName(),
+            *CurrentListener->GetName(),
+            *Listener->GetName());
+        return;
+    }
+
+    CurrentListener = Listener;
 }
 
-void FUERayTracingAudioManager::RemoveListener(UUERayTracingAudioListenerComponent* Listener)
+void FUERayTracingAudioManager::RemoveListener(
+    UUERayTracingAudioListenerComponent* Listener)
 {
-    Listeners.Remove(Listener);
+    check(IsInGameThread());
+
+    UWorld* World = Listener ? Listener->GetWorld() : nullptr;
+    if (!World)
+    {
+        return;
+    }
+
+    const TWeakObjectPtr<UUERayTracingAudioListenerComponent>* CurrentListener =
+        ListenersByWorld.Find(World);
+    if (CurrentListener && CurrentListener->Get() == Listener)
+    {
+        ListenersByWorld.Remove(World);
+    }
 }
 
-void FUERayTracingAudioManager::AddGeometry(UUERayTracingAudioGeometryComponent* Geometry)
+void FUERayTracingAudioManager::AddGeometry(
+    UUERayTracingAudioGeometryComponent* Geometry)
 {
     GeometryComponents.Add(Geometry);
-    bSceneDirty = true;
+    MarkSceneDirty(IsValid(Geometry) ? Geometry->GetWorld() : nullptr);
 }
 
-void FUERayTracingAudioManager::RemoveGeometry(UUERayTracingAudioGeometryComponent* Geometry)
+void FUERayTracingAudioManager::RemoveGeometry(
+    UUERayTracingAudioGeometryComponent* Geometry)
 {
+    UWorld* World = Geometry ? Geometry->GetWorld() : nullptr;
     GeometryComponents.Remove(Geometry);
-    bSceneDirty = true;
+    MarkSceneDirty(World);
 }
 
-void FUERayTracingAudioManager::MarkSceneDirty()
+void FUERayTracingAudioManager::MarkSceneDirty(UWorld* World)
 {
-    bSceneDirty = true;
+    check(IsInGameThread());
+
+    if (IsValid(World))
+    {
+        GetOrCreateWorldAcousticState(World).bSceneDirty = true;
+    }
 }
 
 void FUERayTracingAudioManager::RebuildScene(UWorld* World)
 {
-    if (!bSceneDirty)
+    check(IsInGameThread());
+
+    if (!IsValid(World))
+    {
+        return;
+    }
+
+    FWorldAcousticState& WorldState = GetOrCreateWorldAcousticState(World);
+    if (!WorldState.bSceneDirty)
     {
         return;
     }
@@ -59,9 +129,11 @@ void FUERayTracingAudioManager::RebuildScene(UWorld* World)
     TArray<FUERayTracingAudioGeometryExport> GeometryExports;
     GeometryExports.Reserve(GeometryComponents.Num());
 
-    for (const TWeakObjectPtr<UUERayTracingAudioGeometryComponent>& GeometryComponent : GeometryComponents)
+    for (const TWeakObjectPtr<UUERayTracingAudioGeometryComponent>& GeometryComponent
+        : GeometryComponents)
     {
-        if (!GeometryComponent.IsValid())
+        if (!GeometryComponent.IsValid()
+            || GeometryComponent->GetWorld() != World)
         {
             continue;
         }
@@ -73,119 +145,255 @@ void FUERayTracingAudioManager::RebuildScene(UWorld* World)
         }
     }
 
-    Scene.SetStaticGeometry(MoveTemp(GeometryExports));
-    bSceneDirty = false;
+    WorldState.Scene.SetStaticGeometry(MoveTemp(GeometryExports));
+    WorldState.SceneSignature = BuildSceneSignature(WorldState.Scene);
+    WorldState.bSceneDirty = false;
 }
 
-UUERayTracingAudioListenerComponent* FUERayTracingAudioManager::GetCurrentListener() const
+FString FUERayTracingAudioManager::GetCurrentSceneSignature(UWorld* World)
 {
-    for (const TWeakObjectPtr<UUERayTracingAudioListenerComponent>& Listener : Listeners)
+    check(IsInGameThread());
+
+    if (!IsValid(World))
     {
-        if (Listener.IsValid())
-        {
-            return Listener.Get();
-        }
-    }
-
-    return nullptr;
-}
-
-FUERayTracingAudioDirectSimulationResult FUERayTracingAudioManager::SimulateDirectSource(UUERayTracingAudioSourceComponent* Source)
-{
-    FUERayTracingAudioDirectSimulationResult Result;
-
-    if (!IsValid(Source))
-    {
-        return Result;
-    }
-
-    UWorld* World = Source->GetWorld();
-    UUERayTracingAudioListenerComponent* Listener = GetCurrentListener();
-    if (!IsValid(World) || !IsValid(Listener))
-    {
-        return Result;
+        return TEXT("00000000");
     }
 
     RebuildScene(World);
+    return GetOrCreateWorldAcousticState(World).SceneSignature;
+}
 
+UUERayTracingAudioListenerComponent*
+FUERayTracingAudioManager::GetCurrentListener(const UWorld* World) const
+{
+    const TWeakObjectPtr<UUERayTracingAudioListenerComponent>* Listener =
+        IsValid(World) ? ListenersByWorld.Find(World) : nullptr;
+    return Listener && Listener->IsValid() ? Listener->Get() : nullptr;
+}
+
+FUERayTracingAudioDirectSimulationResult
+FUERayTracingAudioManager::SimulateDirectSource(
+    UUERayTracingAudioSourceComponent* Source)
+{
+    FUERayTracingAudioDirectSimulationResult Result;
     FUERayTracingAudioDirectSimulationInput Input;
-    Input.World = World;
-    Input.Scene = &Scene;
-    Input.ListenerLocation = Listener->GetListenerLocation();
-    Input.ListenerActor = Listener->GetOwner();
-    Input.SourceLocation = Source->GetSourceLocation();
-    Input.SourceForward = Source->GetSourceForward();
-    Input.SourceActor = Source->GetOwner();
-    Input.OccludedGain = Source->GetOccludedGain();
-    Input.SourceRadiusCm = Source->GetSourceRadiusCm();
-    Input.NumOcclusionSamples = Source->GetNumOcclusionSamples();
-    Input.bUseVolumetricOcclusion = Source->ShouldUseVolumetricOcclusion();
-    Input.AirAbsorptionPerMeter = Source->GetAirAbsorptionPerMeter();
+    if (!BuildDirectSimulationInput(Source, Input))
+    {
+        return Result;
+    }
 
     return Simulator.SimulateDirectSound(RayTracingDevice, Input);
 }
 
-FUERayTracingAudioIndirectSimulationResult FUERayTracingAudioManager::SimulateIndirectSource(UUERayTracingAudioSourceComponent* Source)
+bool FUERayTracingAudioManager::BuildDirectSimulationInput(
+    UUERayTracingAudioSourceComponent* Source,
+    FUERayTracingAudioDirectSimulationInput& OutInput)
 {
-    FUERayTracingAudioIndirectSimulationResult Result;
-
     if (!IsValid(Source))
     {
-        return Result;
+        return false;
     }
 
     UWorld* World = Source->GetWorld();
-    UUERayTracingAudioListenerComponent* Listener = GetCurrentListener();
+    UUERayTracingAudioListenerComponent* Listener = GetCurrentListener(World);
     if (!IsValid(World) || !IsValid(Listener))
     {
-        return Result;
+        return false;
     }
 
     RebuildScene(World);
+    FWorldAcousticState& WorldState = GetOrCreateWorldAcousticState(World);
 
+    OutInput = FUERayTracingAudioDirectSimulationInput();
+    OutInput.World = World;
+    OutInput.Scene = &WorldState.Scene;
+    OutInput.ListenerLocation = Listener->GetListenerLocation();
+    OutInput.ListenerActor = Listener->GetOwner();
+    OutInput.SourceLocation = Source->GetSourceLocation();
+    OutInput.SourceForward = Source->GetSourceForward();
+    OutInput.SourceActor = Source->GetOwner();
+    OutInput.OccludedGain = Source->GetOccludedGain();
+    OutInput.SourceRadiusCm = Source->GetSourceRadiusCm();
+    OutInput.NumOcclusionSamples = Source->GetNumOcclusionSamples();
+    OutInput.bUseVolumetricOcclusion = Source->ShouldUseVolumetricOcclusion();
+    OutInput.AirAbsorptionPerMeter = Source->GetAirAbsorptionPerMeter();
+    return true;
+}
+
+FUERayTracingAudioIndirectSimulationResult
+FUERayTracingAudioManager::SimulateIndirectSource(
+    UUERayTracingAudioSourceComponent* Source)
+{
+    FUERayTracingAudioIndirectSimulationResult Result;
     FUERayTracingAudioIndirectSimulationInput Input;
-    Input.World = World;
-    Input.Scene = &Scene;
-    Input.ListenerLocation = Listener->GetListenerLocation();
-    Input.ListenerForward = Listener->GetListenerForward();
-    Input.ListenerActor = Listener->GetOwner();
-    Input.SourceLocation = Source->GetSourceLocation();
-    Input.SourceForward = Source->GetSourceForward();
-    Input.SourceActor = Source->GetOwner();
-    Input.SourceRadiusCm = Source->GetSourceRadiusCm();
-    Input.NumReflectionRays = Source->GetNumReflectionRays();
-    Input.MaxReflectionBounces = Source->GetMaxReflectionBounces();
-    Input.DurationSeconds = Source->GetIndirectDurationSeconds();
-    Input.DeltaTimeSeconds = World->GetDeltaSeconds();
-    Input.MaxEarlyReflectionTaps = Source->GetMaxEarlyReflectionTaps();
-    Input.NumDelayBins = 96;
-    Input.HybridTransitionRatio = Source->GetHybridTransitionRatio();
-    Input.AirAbsorptionPerMeter = Source->GetAirAbsorptionPerMeter();
-
-    switch (Source->GetIndirectMode())
+    if (!BuildIndirectSimulationInput(Source, Input))
     {
-    case EUERayTracingAudioIndirectMode::ParametricReverb:
-        Input.EffectType = EUERayTracingAudioIndirectEffectType::Parametric;
-        break;
-
-    case EUERayTracingAudioIndirectMode::HybridReverb:
-        Input.EffectType = EUERayTracingAudioIndirectEffectType::Hybrid;
-        break;
-
-    default:
-        Input.EffectType = EUERayTracingAudioIndirectEffectType::Convolution;
-        break;
+        return Result;
     }
 
     return Simulator.SimulateIndirectSound(RayTracingDevice, Input);
 }
 
-const FUERayTracingAudioScene& FUERayTracingAudioManager::GetScene() const
+bool FUERayTracingAudioManager::BuildIndirectSimulationInput(
+    UUERayTracingAudioSourceComponent* Source,
+    FUERayTracingAudioIndirectSimulationInput& OutInput)
 {
-    return Scene;
+    if (!IsValid(Source))
+    {
+        return false;
+    }
+
+    UWorld* World = Source->GetWorld();
+    UUERayTracingAudioListenerComponent* Listener = GetCurrentListener(World);
+    if (!IsValid(World) || !IsValid(Listener))
+    {
+        return false;
+    }
+
+    RebuildScene(World);
+    FWorldAcousticState& WorldState = GetOrCreateWorldAcousticState(World);
+
+    OutInput = FUERayTracingAudioIndirectSimulationInput();
+    OutInput.World = World;
+    OutInput.Scene = &WorldState.Scene;
+    OutInput.ListenerLocation = Listener->GetListenerLocation();
+    OutInput.ListenerForward = Listener->GetListenerForward();
+    OutInput.ListenerActor = Listener->GetOwner();
+    OutInput.SourceLocation = Source->GetSourceLocation();
+    OutInput.SourceForward = Source->GetSourceForward();
+    OutInput.SourceActor = Source->GetOwner();
+    OutInput.SourceRadiusCm = Source->GetSourceRadiusCm();
+    OutInput.NumReflectionRays = Source->GetNumReflectionRays();
+    OutInput.MaxReflectionBounces = Source->GetMaxReflectionBounces();
+    OutInput.DurationSeconds = Source->GetIndirectDurationSeconds();
+    OutInput.DeltaTimeSeconds = World->GetDeltaSeconds();
+    OutInput.MaxEarlyReflectionTaps = Source->GetMaxEarlyReflectionTaps();
+    OutInput.NumDelayBins = 96;
+    OutInput.HybridTransitionRatio = Source->GetHybridTransitionRatio();
+    OutInput.AirAbsorptionPerMeter = Source->GetAirAbsorptionPerMeter();
+
+    switch (Source->GetIndirectMode())
+    {
+    case EUERayTracingAudioIndirectMode::ParametricReverb:
+        OutInput.EffectType =
+            EUERayTracingAudioIndirectEffectType::Parametric;
+        break;
+    case EUERayTracingAudioIndirectMode::HybridReverb:
+        OutInput.EffectType = EUERayTracingAudioIndirectEffectType::Hybrid;
+        break;
+    default:
+        OutInput.EffectType =
+            EUERayTracingAudioIndirectEffectType::Convolution;
+        break;
+    }
+
+    return true;
 }
 
-const FUERayTracingAudioRayTracingDevice& FUERayTracingAudioManager::GetRayTracingDevice() const
+FString FUERayTracingAudioManager::BuildSceneSignature(
+    const FUERayTracingAudioScene& Scene) const
+{
+    TArray<uint32> GeometryHashes;
+    GeometryHashes.Reserve(Scene.GetStaticGeometry().Num());
+    for (const FUERayTracingAudioGeometryExport& Geometry
+        : Scene.GetStaticGeometry())
+    {
+        uint32 GeometryHash = GetTypeHash(Geometry.Transform.ToString());
+        GeometryHash = FCrc::MemCrc32(
+            &Geometry.Extent,
+            sizeof(Geometry.Extent),
+            GeometryHash);
+        GeometryHash = FCrc::MemCrc32(
+            &Geometry.Absorption,
+            sizeof(Geometry.Absorption),
+            GeometryHash);
+        GeometryHash = HashCombineFast(
+            GeometryHash,
+            GetTypeHash(Geometry.bVisibleForDirectSound));
+        GeometryHash = HashCombineFast(
+            GeometryHash,
+            GetTypeHash(Geometry.bUseStaticMeshTriangles));
+        if (!Geometry.Vertices.IsEmpty())
+        {
+            GeometryHash = FCrc::MemCrc32(
+                Geometry.Vertices.GetData(),
+                Geometry.Vertices.Num() * sizeof(FVector),
+                GeometryHash);
+        }
+        if (!Geometry.Indices.IsEmpty())
+        {
+            GeometryHash = FCrc::MemCrc32(
+                Geometry.Indices.GetData(),
+                Geometry.Indices.Num() * sizeof(uint32),
+                GeometryHash);
+        }
+        GeometryHashes.Add(GeometryHash);
+    }
+    GeometryHashes.Sort();
+    const uint32 Hash = GeometryHashes.IsEmpty()
+        ? 0u
+        : FCrc::MemCrc32(
+            GeometryHashes.GetData(),
+            GeometryHashes.Num() * sizeof(uint32));
+    return FString::Printf(TEXT("%08X"), Hash);
+}
+
+FUERayTracingAudioManager::FWorldAcousticState&
+FUERayTracingAudioManager::GetOrCreateWorldAcousticState(UWorld* World)
+{
+    check(IsInGameThread());
+    check(IsValid(World));
+
+    TUniquePtr<FWorldAcousticState>& WorldState =
+        AcousticStatesByWorld.FindOrAdd(World);
+    if (!WorldState)
+    {
+        WorldState = MakeUnique<FWorldAcousticState>();
+    }
+    return *WorldState;
+}
+
+void FUERayTracingAudioManager::RemoveDeadWorldState()
+{
+    check(IsInGameThread());
+
+    for (auto ListenerIt = ListenersByWorld.CreateIterator(); ListenerIt;
+        ++ListenerIt)
+    {
+        if (!ListenerIt.Key().IsValid() || !ListenerIt.Value().IsValid())
+        {
+            ListenerIt.RemoveCurrent();
+        }
+    }
+
+    for (auto StateIt = AcousticStatesByWorld.CreateIterator(); StateIt;
+        ++StateIt)
+    {
+        if (!StateIt.Key().IsValid())
+        {
+            StateIt.RemoveCurrent();
+        }
+    }
+}
+
+bool FUERayTracingAudioManager::TickWorldStateCleanup(float)
+{
+    check(IsInGameThread());
+    RemoveDeadWorldState();
+    return true;
+}
+
+const FUERayTracingAudioScene& FUERayTracingAudioManager::GetScene(
+    UWorld* World)
+{
+    check(IsInGameThread());
+    check(IsValid(World));
+    RebuildScene(World);
+    return GetOrCreateWorldAcousticState(World).Scene;
+}
+
+const FUERayTracingAudioRayTracingDevice&
+FUERayTracingAudioManager::GetRayTracingDevice() const
 {
     return RayTracingDevice;
 }

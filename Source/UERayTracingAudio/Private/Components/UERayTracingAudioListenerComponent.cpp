@@ -4,8 +4,6 @@
 #include "Managers/UERayTracingAudioManager.h"
 #include "UERayTracingAudioModule.h"
 
-TWeakObjectPtr<UUERayTracingAudioListenerComponent> UUERayTracingAudioListenerComponent::CurrentListener;
-
 UUERayTracingAudioListenerComponent::UUERayTracingAudioListenerComponent()
 {
     PrimaryComponentTick.bCanEverTick = false;
@@ -14,19 +12,12 @@ UUERayTracingAudioListenerComponent::UUERayTracingAudioListenerComponent()
 void UUERayTracingAudioListenerComponent::BeginPlay()
 {
     Super::BeginPlay();
-    CurrentListener = this;
     FUERayTracingAudioModule::GetManager().AddListener(this);
 }
 
 void UUERayTracingAudioListenerComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     FUERayTracingAudioModule::GetManager().RemoveListener(this);
-
-    if (CurrentListener.Get() == this)
-    {
-        CurrentListener = nullptr;
-    }
-
     Super::EndPlay(EndPlayReason);
 }
 
@@ -38,9 +29,4 @@ FVector UUERayTracingAudioListenerComponent::GetListenerLocation() const
 FVector UUERayTracingAudioListenerComponent::GetListenerForward() const
 {
     return GetOwner() ? GetOwner()->GetActorForwardVector() : FVector::ForwardVector;
-}
-
-UUERayTracingAudioListenerComponent* UUERayTracingAudioListenerComponent::GetCurrentListener()
-{
-    return CurrentListener.Get();
 }

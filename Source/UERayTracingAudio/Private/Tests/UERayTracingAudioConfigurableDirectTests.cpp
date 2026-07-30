@@ -1,5 +1,12 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Components/BoxComponent.h"
+#include "Components/UERayTracingAudioGeometryComponent.h"
+#include "Components/UERayTracingAudioListenerComponent.h"
+#include "Components/UERayTracingAudioSourceComponent.h"
+#include "Engine/World.h"
+#include "GameFramework/Actor.h"
+#include "Managers/UERayTracingAudioManager.h"
 #include "Misc/AutomationTest.h"
 #include "API/UERayTracingAudioContext.h"
 #include "Settings/UERayTracingAudioProjectSettings.h"
@@ -62,6 +69,125 @@ bool FUERayTracingAudioProjectSettingsTest::RunTest(const FString&)
         TEXT("context receives speed"),
         Context.GetSpeedOfSoundCmPerSecond(),
         1.0f);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioWorldScopedListenerTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.WorldScopedListener",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioWorldScopedListenerTest::RunTest(const FString&)
+{
+    UWorld* WorldA = UWorld::CreateWorld(
+        EWorldType::Game,
+        false,
+        TEXT("UERayTracingAudioListenerWorldA"));
+    UWorld* WorldB = UWorld::CreateWorld(
+        EWorldType::Game,
+        false,
+        TEXT("UERayTracingAudioListenerWorldB"));
+    TestNotNull(TEXT("World A"), WorldA);
+    TestNotNull(TEXT("World B"), WorldB);
+
+    if (WorldA && WorldB)
+    {
+        AActor* SourceActorA = WorldA->SpawnActor<AActor>();
+        AActor* ListenerActorA = WorldA->SpawnActor<AActor>();
+        AActor* ListenerActorB = WorldB->SpawnActor<AActor>();
+        UUERayTracingAudioSourceComponent* SourceA =
+            NewObject<UUERayTracingAudioSourceComponent>(SourceActorA);
+        UUERayTracingAudioListenerComponent* ListenerA =
+            NewObject<UUERayTracingAudioListenerComponent>(ListenerActorA);
+        UUERayTracingAudioListenerComponent* ListenerB =
+            NewObject<UUERayTracingAudioListenerComponent>(ListenerActorB);
+
+        FUERayTracingAudioManager Manager;
+        Manager.AddListener(ListenerB);
+        FUERayTracingAudioDirectSimulationResult WrongWorld =
+            Manager.SimulateDirectSource(SourceA);
+        TestFalse(
+            TEXT("a source cannot consume another world's listener"),
+            WrongWorld.bHasListener);
+
+        Manager.AddListener(ListenerA);
+        TestTrue(
+            TEXT("World A listener"),
+            Manager.GetCurrentListener(WorldA) == ListenerA);
+        TestTrue(
+            TEXT("World B listener"),
+            Manager.GetCurrentListener(WorldB) == ListenerB);
+        Manager.RemoveListener(ListenerA);
+        TestNull(
+            TEXT("World A listener is removed"),
+            Manager.GetCurrentListener(WorldA));
+        TestTrue(
+            TEXT("removing Listener A does not affect World B"),
+            Manager.GetCurrentListener(WorldB) == ListenerB);
+    }
+
+    if (WorldA)
+    {
+        WorldA->DestroyWorld(false);
+    }
+    if (WorldB)
+    {
+        WorldB->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioWorldScopedGeometryTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.WorldScopedGeometry",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioWorldScopedGeometryTest::RunTest(const FString&)
+{
+    UWorld* WorldA = UWorld::CreateWorld(
+        EWorldType::Game,
+        false,
+        TEXT("UERayTracingAudioGeometryWorldA"));
+    UWorld* WorldB = UWorld::CreateWorld(
+        EWorldType::Game,
+        false,
+        TEXT("UERayTracingAudioGeometryWorldB"));
+    TestNotNull(TEXT("World A"), WorldA);
+    TestNotNull(TEXT("World B"), WorldB);
+
+    if (WorldA && WorldB)
+    {
+        AActor* GeometryActorB = WorldB->SpawnActor<AActor>();
+        UBoxComponent* BoxB = NewObject<UBoxComponent>(GeometryActorB);
+        GeometryActorB->SetRootComponent(BoxB);
+        BoxB->SetBoxExtent(FVector(100.0, 200.0, 300.0));
+        UUERayTracingAudioGeometryComponent* GeometryB =
+            NewObject<UUERayTracingAudioGeometryComponent>(GeometryActorB);
+
+        FUERayTracingAudioManager Manager;
+        Manager.AddGeometry(GeometryB);
+        const FString WorldASignature =
+            Manager.GetCurrentSceneSignature(WorldA);
+        const FString WorldBSignature =
+            Manager.GetCurrentSceneSignature(WorldB);
+        TestEqual(
+            TEXT("World A keeps the empty-scene signature"),
+            WorldASignature,
+            FString(TEXT("00000000")));
+        TestNotEqual(
+            TEXT("World B includes its registered geometry"),
+            WorldBSignature,
+            FString(TEXT("00000000")));
+    }
+
+    if (WorldA)
+    {
+        WorldA->DestroyWorld(false);
+    }
+    if (WorldB)
+    {
+        WorldB->DestroyWorld(false);
+    }
     return true;
 }
 
