@@ -7,7 +7,9 @@
 #include "Managers/UERayTracingAudioManager.h"
 #include "Modules/ModuleManager.h"
 #include "Settings/UERayTracingAudioProjectSettings.h"
+#if WITH_UERAYTRACINGAUDIO_VALIDATION
 #include "Validation/UERayTracingAudioRuntimeValidation.h"
+#endif
 
 DEFINE_LOG_CATEGORY(LogUERayTracingAudio);
 
@@ -53,18 +55,22 @@ void FUERayTracingAudioModule::StartupModule()
 
     IModularFeatures::Get().RegisterModularFeature(FUERayTracingAudioOcclusionPluginFactory::GetModularFeatureName(), OcclusionPluginFactory.Get());
     IModularFeatures::Get().RegisterModularFeature(FUERayTracingAudioSpatializationPluginFactory::GetModularFeatureName(), SpatializationPluginFactory.Get());
+#if WITH_UERAYTRACINGAUDIO_VALIDATION
     RuntimeValidation = MakeUnique<FUERayTracingAudioRuntimeValidation>();
     RuntimeValidation->Start();
+#endif
     UE_LOG(LogUERayTracingAudio, Display, TEXT("UERayTracingAudio runtime module initialized."));
 }
 
 void FUERayTracingAudioModule::ShutdownModule()
 {
+#if WITH_UERAYTRACINGAUDIO_VALIDATION
     if (RuntimeValidation)
     {
         RuntimeValidation->Stop();
         RuntimeValidation.Reset();
     }
+#endif
 
     if (SpatializationPluginFactory)
     {

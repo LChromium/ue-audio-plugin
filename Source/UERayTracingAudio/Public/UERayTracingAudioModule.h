@@ -11,7 +11,9 @@ class FUERayTracingAudioManager;
 class FUERayTracingAudioOcclusionPluginFactory;
 class FUERayTracingAudioSpatializationPluginFactory;
 class FUERayTracingAudioIndirectAudioBridge;
+#if WITH_UERAYTRACINGAUDIO_VALIDATION
 class FUERayTracingAudioRuntimeValidation;
+#endif
 
 class UERAYTRACINGAUDIO_API FUERayTracingAudioModule : public IModuleInterface
 {
@@ -52,5 +54,7 @@ private:
         FVector2f(500.0f, 4000.0f);
     TUniquePtr<FUERayTracingAudioOcclusionPluginFactory> OcclusionPluginFactory;
     TUniquePtr<FUERayTracingAudioSpatializationPluginFactory> SpatializationPluginFactory;
+#if WITH_UERAYTRACINGAUDIO_VALIDATION
     TUniquePtr<FUERayTracingAudioRuntimeValidation> RuntimeValidation;
+#endif
 };

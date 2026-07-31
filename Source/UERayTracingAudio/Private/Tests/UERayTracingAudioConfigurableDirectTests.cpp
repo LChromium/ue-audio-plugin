@@ -17,6 +17,7 @@
 #include "Settings/UERayTracingAudioOcclusionSettings.h"
 #include "Settings/UERayTracingAudioProjectSettings.h"
 #include "UObject/UObjectGlobals.h"
+#include "Validation/UERayTracingAudioDirectSweep.h"
 
 #if __has_include("Audio/UERayTracingAudioAudioDiagnosticsInternal.h")
 #include "Audio/UERayTracingAudioAudioDiagnosticsInternal.h"
@@ -30,6 +31,64 @@
 
 namespace
 {
+    FUERayTracingAudioDirectSweepMetrics MakeDirectSweepMetrics(
+        const TArray<float>& DistancesCm,
+        const TArray<float>& Visibilities,
+        const TArray<float>& OverallGains,
+        const int32 CpuFallbackIndex = INDEX_NONE)
+    {
+        FUERayTracingAudioDirectSweepMetrics Metrics;
+        Metrics.Reset();
+        const int32 ObservationCount = FMath::Min3(
+            DistancesCm.Num(),
+            Visibilities.Num(),
+            OverallGains.Num());
+        for (int32 Index = 0; Index < ObservationCount; ++Index)
+        {
+            FUERayTracingAudioDirectSimulationResult Result;
+            Result.bHasListener = true;
+            Result.bRayTracingAvailable =
+                Index != CpuFallbackIndex;
+            Result.DistanceCm = DistancesCm[Index];
+            Result.DirectVisibility = Visibilities[Index];
+            Result.OverallGain = OverallGains[Index];
+            Metrics.Observe(
+                static_cast<uint64>(Index + 1),
+                Result);
+        }
+        return Metrics;
+    }
+
+    FUERayTracingAudioDirectSweepMetrics MakePassingDirectSweepMetrics()
+    {
+        return MakeDirectSweepMetrics(
+            {
+                200.0f, 200.0f, 200.0f, 200.0f,
+                200.0f, 200.0f, 200.0f, 200.0f
+            },
+            {
+                1.0f, 0.95f, 0.60f, 0.05f,
+                0.0f, 0.20f, 0.95f, 1.0f
+            },
+            {
+                0.50f, 0.48f, 0.30f, 0.175f,
+                0.175f, 0.20f, 0.48f, 0.50f
+            });
+    }
+
+    FUERayTracingAudioDirectAudioStats MakePassingDirectAudioStats()
+    {
+        FUERayTracingAudioDirectAudioStats Stats;
+        Stats.BufferCount = 100;
+        Stats.NonSilentInputBufferCount = 100;
+        Stats.DirectPresentInputBufferCount = 100;
+        Stats.MaxConsecutiveSilentDirectBufferCount = 0;
+        Stats.NonFiniteDirectSampleCount = 0;
+        Stats.OverUnitDirectSampleCount = 0;
+        Stats.MaxBandGainStep = 0.01f;
+        return Stats;
+    }
+
     template <typename DiagnosticsType, typename = void>
     struct THasDirectAudioDiagnostics : std::false_type
     {
@@ -265,6 +324,298 @@ namespace
 #endif
         return Observation;
     }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioDirectSweepTrajectoryTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.DirectSweepTrajectory",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioDirectSweepTrajectoryTest::RunTest(
+    const FString&)
+{
+    const FVector ListenerLocation(-100.0, 0.0, 180.0);
+    const FVector ClearEndpoint(-100.0, 200.0, 180.0);
+    const FVector OccludedEndpoint(100.0, 0.0, 180.0);
+    TestTrue(
+        TEXT("The outbound arc starts at the existing clear fixture endpoint"),
+        FUERayTracingAudioDirectSweepTrajectory::Evaluate(
+            ListenerLocation,
+            0.0f).Equals(ClearEndpoint, 0.01f));
+    TestTrue(
+        TEXT("The outbound arc ends at the existing occluded fixture endpoint"),
+        FUERayTracingAudioDirectSweepTrajectory::Evaluate(
+            ListenerLocation,
+            1.0f).Equals(OccludedEndpoint, 0.01f));
+
+    bool bCrossedWallOutbound = false;
+    bool bCrossedWallReturning = false;
+    float PreviousOutboundX =
+        FUERayTracingAudioDirectSweepTrajectory::Evaluate(
+            ListenerLocation,
+            0.0f).X;
+    float PreviousReturningX =
+        FUERayTracingAudioDirectSweepTrajectory::Evaluate(
+            ListenerLocation,
+            1.0f).X;
+    for (int32 Index = 0; Index <= 100; ++Index)
+    {
+        const float Alpha =
+            static_cast<float>(Index) / 100.0f;
+        const FVector Outbound =
+            FUERayTracingAudioDirectSweepTrajectory::Evaluate(
+                ListenerLocation,
+                Alpha);
+        const FVector Returning =
+            FUERayTracingAudioDirectSweepTrajectory::Evaluate(
+                ListenerLocation,
+                1.0f - Alpha);
+        TestTrue(
+            TEXT("Every outbound point remains on the two-metre arc"),
+            FMath::IsNearlyEqual(
+                FVector::Distance(
+                    Outbound,
+                    ListenerLocation),
+                200.0f,
+                0.01f));
+        TestTrue(
+            TEXT("Every returning point remains on the same two-metre arc"),
+            FMath::IsNearlyEqual(
+                FVector::Distance(
+                    Returning,
+                    ListenerLocation),
+                200.0f,
+                0.01f));
+        bCrossedWallOutbound |=
+            PreviousOutboundX <= 0.0f
+            && Outbound.X > 0.0f;
+        bCrossedWallReturning |=
+            PreviousReturningX >= 0.0f
+            && Returning.X < 0.0f;
+        PreviousOutboundX = Outbound.X;
+        PreviousReturningX = Returning.X;
+    }
+    TestTrue(
+        TEXT("The outbound arc crosses the wall plane"),
+        bCrossedWallOutbound);
+    TestTrue(
+        TEXT("The reverse arc crosses the wall plane"),
+        bCrossedWallReturning);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioDirectSweepMetricsTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.DirectSweepMetrics",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioDirectSweepMetricsTest::RunTest(
+    const FString&)
+{
+    const FUERayTracingAudioDirectAudioStats PassingAudioStats =
+        MakePassingDirectAudioStats();
+    TestTrue(
+        TEXT("A continuous hardware clear-occluded-clear sweep passes"),
+        MakePassingDirectSweepMetrics().Passes(
+            PassingAudioStats,
+            true,
+            true));
+
+    FUERayTracingAudioDirectSweepMetrics TooFewGenerations =
+        MakeDirectSweepMetrics(
+            {
+                200.0f, 200.0f, 200.0f, 200.0f,
+                200.0f, 200.0f, 200.0f
+            },
+            {
+                1.0f, 0.95f, 0.60f, 0.05f,
+                0.0f, 0.20f, 0.95f
+            },
+            {
+                0.50f, 0.48f, 0.30f, 0.175f,
+                0.175f, 0.20f, 0.48f
+            });
+    TestFalse(
+        TEXT("Fewer than eight distinct Direct generations fail"),
+        TooFewGenerations.Passes(
+            PassingAudioStats,
+            true,
+            true));
+
+    FUERayTracingAudioDirectSweepMetrics DistanceDrift =
+        MakeDirectSweepMetrics(
+            {
+                200.0f, 200.0f, 203.0f, 200.0f,
+                200.0f, 200.0f, 200.0f, 200.0f
+            },
+            {
+                1.0f, 0.95f, 0.60f, 0.05f,
+                0.0f, 0.20f, 0.95f, 1.0f
+            },
+            {
+                0.50f, 0.48f, 0.30f, 0.175f,
+                0.175f, 0.20f, 0.48f, 0.50f
+            });
+    TestFalse(
+        TEXT("Distance outside the two-centimetre tolerance fails"),
+        DistanceDrift.Passes(
+            PassingAudioStats,
+            true,
+            true));
+
+    FUERayTracingAudioDirectSweepMetrics VisibilityDidNotCross =
+        MakeDirectSweepMetrics(
+            {
+                200.0f, 200.0f, 200.0f, 200.0f,
+                200.0f, 200.0f, 200.0f, 200.0f
+            },
+            {
+                1.0f, 0.95f, 0.60f, 0.50f,
+                0.40f, 0.60f, 0.95f, 1.0f
+            },
+            {
+                0.50f, 0.48f, 0.30f, 0.25f,
+                0.20f, 0.30f, 0.48f, 0.50f
+            });
+    TestFalse(
+        TEXT("A sweep that never reaches occluded visibility fails"),
+        VisibilityDidNotCross.Passes(
+            PassingAudioStats,
+            true,
+            true));
+
+    FUERayTracingAudioDirectSweepMetrics ZeroSoftGain =
+        MakeDirectSweepMetrics(
+            {
+                200.0f, 200.0f, 200.0f, 200.0f,
+                200.0f, 200.0f, 200.0f, 200.0f
+            },
+            {
+                1.0f, 0.95f, 0.60f, 0.05f,
+                0.0f, 0.20f, 0.95f, 1.0f
+            },
+            {
+                0.50f, 0.48f, 0.30f, 0.175f,
+                0.0f, 0.20f, 0.48f, 0.50f
+            });
+    TestFalse(
+        TEXT("A zero Soft Occlusion Direct target gain fails"),
+        ZeroSoftGain.Passes(
+            PassingAudioStats,
+            true,
+            true));
+
+    FUERayTracingAudioDirectAudioStats DropoutAudioStats =
+        PassingAudioStats;
+    DropoutAudioStats.MaxConsecutiveSilentDirectBufferCount = 1;
+    TestFalse(
+        TEXT("A Direct dropout during non-silent input fails"),
+        MakePassingDirectSweepMetrics().Passes(
+            DropoutAudioStats,
+            true,
+            true));
+
+    FUERayTracingAudioDirectAudioStats DiscontinuousAudioStats =
+        PassingAudioStats;
+    DiscontinuousAudioStats.MaxBandGainStep = 0.0101f;
+    TestFalse(
+        TEXT("A per-sample Direct gain step above 0.01 fails"),
+        MakePassingDirectSweepMetrics().Passes(
+            DiscontinuousAudioStats,
+            true,
+            true));
+
+    TestFalse(
+        TEXT("CPU-only observations cannot pass the hardware gate"),
+        MakePassingDirectSweepMetrics().Passes(
+            PassingAudioStats,
+            false,
+            true));
+    TestFalse(
+        TEXT("Any accepted CPU-fallback generation fails hardware provenance"),
+        MakeDirectSweepMetrics(
+            {
+                200.0f, 200.0f, 200.0f, 200.0f,
+                200.0f, 200.0f, 200.0f, 200.0f
+            },
+            {
+                1.0f, 0.95f, 0.60f, 0.05f,
+                0.0f, 0.20f, 0.95f, 1.0f
+            },
+            {
+                0.50f, 0.48f, 0.30f, 0.175f,
+                0.175f, 0.20f, 0.48f, 0.50f
+            },
+            4).Passes(
+                PassingAudioStats,
+                true,
+                true));
+    TestTrue(
+        TEXT("An owner starts only from a fresh hardware Direct generation"),
+        FUERayTracingAudioDirectSweepPolicy::ShouldStartAutomatic(
+            true,
+            false,
+            true,
+            true,
+            7,
+            true));
+    TestFalse(
+        TEXT("A non-owner cannot start the process-global automatic fixture"),
+        FUERayTracingAudioDirectSweepPolicy::ShouldStartAutomatic(
+            true,
+            false,
+            false,
+            true,
+            7,
+            true));
+    TestFalse(
+        TEXT("CPU fallback cannot start the automatic hardware sweep"),
+        FUERayTracingAudioDirectSweepPolicy::ShouldStartAutomatic(
+            true,
+            false,
+            true,
+            true,
+            7,
+            false));
+    TestFalse(
+        TEXT("Hardware wait remains open at its exact deadline"),
+        FUERayTracingAudioDirectSweepPolicy::HasHardwareWaitTimedOut(
+            true,
+            false,
+            true,
+            30.0,
+            30.0));
+    TestTrue(
+        TEXT("Hardware wait terminates immediately after its deadline"),
+        FUERayTracingAudioDirectSweepPolicy::HasHardwareWaitTimedOut(
+            true,
+            false,
+            true,
+            30.001,
+            30.0));
+    TestFalse(
+        TEXT("A non-owner never emits an automatic timeout marker"),
+        FUERayTracingAudioDirectSweepPolicy::HasHardwareWaitTimedOut(
+            true,
+            false,
+            false,
+            30.001,
+            30.0));
+    TestFalse(
+        TEXT("A terminalized automatic request cannot time out twice"),
+        FUERayTracingAudioDirectSweepPolicy::HasHardwareWaitTimedOut(
+            true,
+            true,
+            true,
+            60.0,
+            30.0));
+    TestFalse(
+        TEXT("A sweep cannot pass before Source state restoration"),
+        MakePassingDirectSweepMetrics().Passes(
+            PassingAudioStats,
+            true,
+            false));
+    return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(

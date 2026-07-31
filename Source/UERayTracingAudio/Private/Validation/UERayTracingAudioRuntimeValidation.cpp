@@ -1,4 +1,7 @@
 #include "Validation/UERayTracingAudioRuntimeValidation.h"
+
+#if WITH_UERAYTRACINGAUDIO_VALIDATION
+
 #include "Validation/UERayTracingAudioValidationSoundWave.h"
 
 #include "Assets/UERayTracingAudioImpulseResponseAsset.h"
@@ -110,6 +113,37 @@ namespace
     // Keep an inaudible non-zero fader level so both decoders stay active and
     // sample position remains continuous across A/B switches.
     constexpr float ValidationInactiveFadeLevel = 0.00025f;
+    constexpr double ValidationDirectSweepClearHoldSeconds = 0.5;
+    constexpr double ValidationDirectSweepTraversalSeconds = 3.0;
+    constexpr double ValidationDirectSweepOccludedHoldSeconds = 0.5;
+    constexpr double ValidationDirectSweepReturnHoldSeconds = 0.5;
+    constexpr double ValidationDirectSweepTimeoutSeconds = 15.0;
+    constexpr double ValidationDirectSweepRestoreTimeoutSeconds = 5.0;
+    constexpr float ValidationDirectSweepSoftOccludedGain = 0.35f;
+
+    const TCHAR* GetDirectSweepPhaseName(
+        const EUERayTracingAudioDirectSweepPhase Phase)
+    {
+        switch (Phase)
+        {
+        case EUERayTracingAudioDirectSweepPhase::ClearHold:
+            return TEXT("CLEAR");
+        case EUERayTracingAudioDirectSweepPhase::EnteringWall:
+            return TEXT("ENTERING WALL");
+        case EUERayTracingAudioDirectSweepPhase::OccludedHold:
+            return TEXT("OCCLUDED");
+        case EUERayTracingAudioDirectSweepPhase::Returning:
+            return TEXT("RETURNING");
+        case EUERayTracingAudioDirectSweepPhase::Restoring:
+            return TEXT("RESTORING");
+        case EUERayTracingAudioDirectSweepPhase::Complete:
+            return TEXT("COMPLETE");
+        case EUERayTracingAudioDirectSweepPhase::Failed:
+            return TEXT("FAILED");
+        default:
+            return TEXT("IDLE");
+        }
+    }
 
     FString GetValidationDirectPreset()
     {
@@ -500,12 +534,18 @@ void FUERayTracingAudioRuntimeValidation::Start()
         return;
     }
 
+    bValidationEnabled = true;
     FUERayTracingAudioAudioDiagnostics::ResetHardRealtime();
     WorldInitializationHandle = FWorldDelegates::OnPostWorldInitialization.AddLambda(
         [this](UWorld* World, const UWorld::InitializationValues)
         {
             CreateScenario(World);
         });
+    WorldBeginTearDownHandle =
+        FWorldDelegates::OnWorldBeginTearDown.AddRaw(
+            this,
+            &FUERayTracingAudioRuntimeValidation::
+                HandleWorldBeginTearDown);
     TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
         FTickerDelegate::CreateRaw(this, &FUERayTracingAudioRuntimeValidation::Tick));
     UE_LOG(LogUERayTracingAudio, Display, TEXT("UERayTracingAudio validation harness enabled."));
@@ -513,19 +553,52 @@ void FUERayTracingAudioRuntimeValidation::Start()
 
 void FUERayTracingAudioRuntimeValidation::Stop()
 {
-    FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(0);
-    if (WorldInitializationHandle.IsValid())
+    if (!bValidationEnabled)
     {
-        FWorldDelegates::OnPostWorldInitialization.Remove(WorldInitializationHandle);
-        WorldInitializationHandle.Reset();
+        return;
     }
+
     if (TickerHandle.IsValid())
     {
         FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
         TickerHandle.Reset();
     }
+    if (WorldInitializationHandle.IsValid())
+    {
+        FWorldDelegates::OnPostWorldInitialization.Remove(WorldInitializationHandle);
+        WorldInitializationHandle.Reset();
+    }
+    if (WorldBeginTearDownHandle.IsValid())
+    {
+        FWorldDelegates::OnWorldBeginTearDown.Remove(
+            WorldBeginTearDownHandle);
+        WorldBeginTearDownHandle.Reset();
+    }
+
+    for (FScenarioState& State : Scenarios)
+    {
+        if (IsDirectSweepActive(State))
+        {
+            AbortDirectSweepImmediately(
+                State,
+                TEXT("validation stopped"));
+        }
+        if (UWorld* World = State.World.Get();
+            IsValid(World)
+            && State.ActorDestroyedHandle.IsValid())
+        {
+            World->RemoveOnActorDestroyedHandler(
+                State.ActorDestroyedHandle);
+            State.ActorDestroyedHandle.Reset();
+        }
+    }
+
+    FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(0);
+    ActiveDirectSweepWorld.Reset();
     InitializedWorlds.Reset();
     Scenarios.Reset();
+    bValidationOwnerAssigned = false;
+    bValidationEnabled = false;
 }
 
 void FUERayTracingAudioRuntimeValidation::CreateScenario(UWorld* World)
@@ -542,11 +615,9 @@ void FUERayTracingAudioRuntimeValidation::CreateScenario(UWorld* World)
     const bool bClearDirectPreset = DirectPreset == TEXT("clear");
     const bool bHardDirectPreset =
         DirectPreset == TEXT("hard_occluded");
-    const FVector ListenerLocation = bClearDirectPreset
-        ? FVector(-300.0, 0.0, 180.0)
-        : FVector(-100.0, 0.0, 180.0);
+    const FVector ListenerLocation(-100.0, 0.0, 180.0);
     const FVector PrimarySourceLocation = bClearDirectPreset
-        ? FVector(-300.0, 200.0, 180.0)
+        ? FVector(-100.0, 200.0, 180.0)
         : FVector(100.0, 0.0, 180.0);
 
     UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
@@ -851,6 +922,11 @@ void FUERayTracingAudioRuntimeValidation::CreateScenario(UWorld* World)
     }
 
     FScenarioState& State = Scenarios.AddDefaulted_GetRef();
+    State.bValidationOwner = !bValidationOwnerAssigned;
+    if (State.bValidationOwner)
+    {
+        bValidationOwnerAssigned = true;
+    }
     State.World = World;
     State.CameraActor = CameraActor;
     State.ListenerMarker = ListenerMarker;
@@ -875,16 +951,28 @@ void FUERayTracingAudioRuntimeValidation::CreateScenario(UWorld* World)
     State.bBakeRepeatabilityEnabled = FParse::Param(
         FCommandLine::Get(),
         TEXT("UERayTracingAudioValidationBakeRepeatability"));
+    State.bDirectSweepAutomaticRequested =
+        State.bValidationOwner
+        && FParse::Param(
+            FCommandLine::Get(),
+            TEXT("UERayTracingAudioValidationDirectSweep"));
     State.bInteractiveSmokeEnabled = FParse::Param(
         FCommandLine::Get(),
         TEXT("UERayTracingAudioInteractiveSmoke"));
     State.bInteractiveRequested = State.bInteractiveSmokeEnabled || FParse::Param(
         FCommandLine::Get(),
         TEXT("UERayTracingAudioInteractiveValidation"));
+    State.ActorDestroyedHandle =
+        World->AddOnActorDestroyedHandler(
+            FOnActorDestroyed::FDelegate::CreateRaw(
+                this,
+                &FUERayTracingAudioRuntimeValidation::
+                    HandleActorDestroyed));
     if (UAudioComponent* PrimaryAudio =
-        State.AudioComponents.IsValidIndex(0)
-            ? State.AudioComponents[0].Get()
-            : nullptr)
+            State.AudioComponents.IsValidIndex(0)
+                ? State.AudioComponents[0].Get()
+                : nullptr;
+        State.bValidationOwner && IsValid(PrimaryAudio))
     {
         FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(
             PrimaryAudio->GetAudioComponentID());
@@ -918,6 +1006,695 @@ void FUERayTracingAudioRuntimeValidation::CreateScenario(UWorld* World)
     }
 }
 
+bool FUERayTracingAudioRuntimeValidation::IsDirectSweepActive(
+    const FScenarioState& State) const
+{
+    return State.DirectSweepPhase
+            == EUERayTracingAudioDirectSweepPhase::ClearHold
+        || State.DirectSweepPhase
+            == EUERayTracingAudioDirectSweepPhase::EnteringWall
+        || State.DirectSweepPhase
+            == EUERayTracingAudioDirectSweepPhase::OccludedHold
+        || State.DirectSweepPhase
+            == EUERayTracingAudioDirectSweepPhase::Returning
+        || State.DirectSweepPhase
+            == EUERayTracingAudioDirectSweepPhase::Restoring;
+}
+
+bool FUERayTracingAudioRuntimeValidation::StartDirectSweep(
+    FScenarioState& State,
+    FUERayTracingAudioManager& Manager,
+    const bool bAutomatic)
+{
+    if (!State.bValidationOwner
+        || IsDirectSweepActive(State)
+        || ActiveDirectSweepWorld.IsValid())
+    {
+        UE_LOG(
+            LogUERayTracingAudio,
+            Warning,
+            TEXT("UERayTracingAudio direct sweep start rejected: non_reentrant=1 phase=%s."),
+            GetDirectSweepPhaseName(State.DirectSweepPhase));
+        return false;
+    }
+
+    UWorld* World = State.World.Get();
+    UUERayTracingAudioSourceComponent* Source = State.Source.Get();
+    UUERayTracingAudioListenerComponent* Listener =
+        State.Listener.Get();
+    UAudioComponent* Audio = State.AudioComponents.IsValidIndex(0)
+        ? State.AudioComponents[0].Get()
+        : nullptr;
+    AActor* SourceActor = IsValid(Source)
+        ? Source->GetOwner()
+        : nullptr;
+    AActor* ListenerActor = IsValid(Listener)
+        ? Listener->GetOwner()
+        : nullptr;
+    if (!IsValid(World)
+        || !IsValid(Source)
+        || !IsValid(Listener)
+        || !IsValid(Audio)
+        || !IsValid(SourceActor)
+        || !IsValid(ListenerActor))
+    {
+        UE_LOG(
+            LogUERayTracingAudio,
+            Error,
+            TEXT("UERayTracingAudio direct sweep start rejected: source, listener, audio, or owner is invalid."));
+        return false;
+    }
+
+    FUERayTracingAudioSourceSimulationResult LatestResult;
+    const bool bHasLatestDirect =
+        Manager.GetLatestSourceSimulation(
+            Source,
+            LatestResult)
+        && LatestResult.bHasDirectResult
+        && LatestResult.DirectGeneration != 0;
+
+    State.DirectSweepMetrics.Reset();
+    State.DirectSweepAudioStats =
+        FUERayTracingAudioDirectAudioStats();
+    State.DirectSweepLatestResult =
+        FUERayTracingAudioDirectSimulationResult();
+    State.DirectSweepFailureReason.Reset();
+    State.DirectSweepSavedSourceTransform =
+        SourceActor->GetActorTransform();
+    State.bDirectSweepSavedHardOcclusion =
+        Source->bHardOcclusion;
+    State.DirectSweepSavedOccludedGain =
+        Source->OccludedGain;
+    State.DirectSweepSavedIndirectMix =
+        Source->IndirectMix;
+    State.DirectSweepSavedDataSource =
+        Source->IndirectDataSource;
+    State.DirectSweepRestoredDistanceCm =
+        FVector::Distance(
+            State.DirectSweepSavedSourceTransform.
+                GetLocation(),
+            State.FixedListenerLocation);
+    State.DirectSweepStartTimeSeconds =
+        FPlatformTime::Seconds();
+    State.DirectSweepPhaseStartTimeSeconds =
+        State.DirectSweepStartTimeSeconds;
+    State.DirectSweepGenerationFloor =
+        bHasLatestDirect
+            ? LatestResult.DirectGeneration
+            : 0;
+    State.DirectSweepPendingGenerationDiscardCount = 1;
+    State.DirectSweepPhase =
+        EUERayTracingAudioDirectSweepPhase::ClearHold;
+    State.bDirectSweepWasAutomatic = bAutomatic;
+    State.bDirectSweepStateSaved = true;
+    State.bDirectSweepRestoreApplied = false;
+    State.bDirectSweepRestored = false;
+    State.bDirectSweepHardwareObserved = false;
+    State.bDirectSweepHardwareOnly = true;
+    State.bDirectSweepMotionSucceeded = false;
+    State.bDirectSweepSummaryLogged = false;
+    State.bDirectSweepWarmupComplete = false;
+    State.bDirectSweepAudioStatsCaptured = false;
+    if (bAutomatic)
+    {
+        State.bDirectSweepAutomaticStarted = true;
+        State.bDirectSweepAutomaticTerminal = false;
+    }
+
+    ListenerActor->SetActorLocation(
+        State.FixedListenerLocation,
+        false,
+        nullptr,
+        ETeleportType::TeleportPhysics);
+    SourceActor->SetActorLocation(
+        FUERayTracingAudioDirectSweepTrajectory::Evaluate(
+            State.FixedListenerLocation,
+            0.0f),
+        false,
+        nullptr,
+        ETeleportType::TeleportPhysics);
+    Source->bHardOcclusion = false;
+    Source->OccludedGain =
+        ValidationDirectSweepSoftOccludedGain;
+    Source->IndirectMix = 0.0f;
+    Source->SetIndirectDataSource(
+        EUERayTracingAudioIndirectDataSource::Realtime);
+
+    FUERayTracingAudioAudioDiagnostics::
+        SetTargetAudioComponentId(
+            Audio->GetAudioComponentID());
+    FUERayTracingAudioAudioDiagnostics::ResetDirect();
+    ActiveDirectSweepWorld = World;
+
+    UE_LOG(
+        LogUERayTracingAudio,
+        Display,
+        TEXT("UERayTracingAudio direct sweep started: automatic=%d radius_cm=200.000 clear_hold_seconds=0.500 traversal_seconds=3.000 occluded_hold_seconds=0.500 return_hold_seconds=0.500."),
+        bAutomatic ? 1 : 0);
+    return true;
+}
+
+void FUERayTracingAudioRuntimeValidation::
+    BeginDirectSweepRestore(
+        FScenarioState& State,
+        FUERayTracingAudioManager& Manager,
+        const bool bMotionSucceeded,
+        const FString& FailureReason)
+{
+    if (!IsDirectSweepActive(State)
+        || State.DirectSweepPhase
+            == EUERayTracingAudioDirectSweepPhase::Restoring)
+    {
+        return;
+    }
+
+    State.bDirectSweepMotionSucceeded =
+        bMotionSucceeded;
+    State.DirectSweepFailureReason = FailureReason;
+    if (!State.bDirectSweepAudioStatsCaptured)
+    {
+        State.DirectSweepAudioStats =
+            FUERayTracingAudioAudioDiagnostics::
+                ReadDirect();
+        State.bDirectSweepAudioStatsCaptured = true;
+    }
+
+    UUERayTracingAudioSourceComponent* Source =
+        State.Source.Get();
+    UUERayTracingAudioListenerComponent* Listener =
+        State.Listener.Get();
+    AActor* SourceActor = IsValid(Source)
+        ? Source->GetOwner()
+        : nullptr;
+    AActor* ListenerActor = IsValid(Listener)
+        ? Listener->GetOwner()
+        : nullptr;
+    if (State.bDirectSweepStateSaved
+        && !State.bDirectSweepRestoreApplied)
+    {
+        State.bDirectSweepRestoreApplied = true;
+        if (IsValid(Source) && IsValid(SourceActor))
+        {
+            SourceActor->SetActorTransform(
+                State.DirectSweepSavedSourceTransform,
+                false,
+                nullptr,
+                ETeleportType::TeleportPhysics);
+            Source->bHardOcclusion =
+                State.bDirectSweepSavedHardOcclusion;
+            Source->OccludedGain =
+                State.DirectSweepSavedOccludedGain;
+            Source->IndirectMix =
+                State.DirectSweepSavedIndirectMix;
+            Source->SetIndirectDataSource(
+                State.DirectSweepSavedDataSource);
+        }
+        if (IsValid(ListenerActor))
+        {
+            ListenerActor->SetActorLocation(
+                State.FixedListenerLocation,
+                false,
+                nullptr,
+                ETeleportType::TeleportPhysics);
+        }
+    }
+
+    FUERayTracingAudioSourceSimulationResult LatestResult;
+    if (IsValid(Source)
+        && Manager.GetLatestSourceSimulation(
+            Source,
+            LatestResult)
+        && LatestResult.bHasDirectResult)
+    {
+        State.DirectSweepGenerationFloor =
+            FMath::Max(
+                State.DirectSweepGenerationFloor,
+                LatestResult.DirectGeneration);
+    }
+    State.DirectSweepPendingGenerationDiscardCount = 1;
+    State.DirectSweepPhase =
+        EUERayTracingAudioDirectSweepPhase::Restoring;
+    State.DirectSweepPhaseStartTimeSeconds =
+        FPlatformTime::Seconds();
+
+    if (!IsValid(Source)
+        || !IsValid(SourceActor)
+        || !IsValid(ListenerActor))
+    {
+        FinishDirectSweep(State, false);
+    }
+}
+
+void FUERayTracingAudioRuntimeValidation::FinishDirectSweep(
+    FScenarioState& State,
+    const bool bRestored)
+{
+    if (State.bDirectSweepSummaryLogged)
+    {
+        return;
+    }
+
+    State.bDirectSweepRestored = bRestored;
+    const FUERayTracingAudioHardRealtimeStats
+        HardRealtimeStats =
+            FUERayTracingAudioAudioDiagnostics::
+                ReadHardRealtime();
+    const bool bHardRealtimePassed =
+        HardRealtimeStats.AudioCallbackCount > 0
+        && HardRealtimeStats.CallbackCapacityMissCount == 0
+        && HardRealtimeStats.
+            ConvolutionPrepareCapacityDropCount == 0;
+    const bool bHardwarePassed =
+        State.bDirectSweepHardwareObserved
+        && State.bDirectSweepHardwareOnly;
+    const bool bPassed =
+        State.bDirectSweepMotionSucceeded
+        && State.DirectSweepMetrics.Passes(
+            State.DirectSweepAudioStats,
+            bHardwarePassed,
+            bRestored)
+        && bHardRealtimePassed;
+    State.DirectSweepPhase =
+        bPassed
+            ? EUERayTracingAudioDirectSweepPhase::Complete
+            : EUERayTracingAudioDirectSweepPhase::Failed;
+    State.bDirectSweepSummaryLogged = true;
+    if (State.bDirectSweepWasAutomatic)
+    {
+        State.bDirectSweepAutomaticTerminal = true;
+    }
+
+    if (!bPassed
+        && !State.DirectSweepFailureReason.IsEmpty())
+    {
+        UE_LOG(
+            LogUERayTracingAudio,
+            Error,
+            TEXT("UERayTracingAudio direct sweep failure: reason=\"%s\" callbacks=%llu callback_capacity_misses=%llu convolution_prepare_drops=%llu."),
+            *State.DirectSweepFailureReason,
+            HardRealtimeStats.AudioCallbackCount,
+            HardRealtimeStats.CallbackCapacityMissCount,
+            HardRealtimeStats.
+                ConvolutionPrepareCapacityDropCount);
+    }
+
+    UE_LOG(
+        LogUERayTracingAudio,
+        Display,
+        TEXT("UERayTracingAudio direct sweep: passed=%d generations=%d distance_min_cm=%.3f distance_max_cm=%.3f visibility_min=%.6f visibility_max=%.6f gain_min=%.6f gain_max=%.6f max_gain_step=%.8f direct_dropouts=%llu restored=%d hardware=%d"),
+        bPassed ? 1 : 0,
+        State.DirectSweepMetrics.GetGenerationCount(),
+        State.DirectSweepMetrics.GetDistanceMinCm(),
+        State.DirectSweepMetrics.GetDistanceMaxCm(),
+        State.DirectSweepMetrics.GetVisibilityMin(),
+        State.DirectSweepMetrics.GetVisibilityMax(),
+        State.DirectSweepMetrics.GetGainMin(),
+        State.DirectSweepMetrics.GetGainMax(),
+        State.DirectSweepAudioStats.MaxBandGainStep,
+        State.DirectSweepAudioStats.
+            MaxConsecutiveSilentDirectBufferCount,
+        bRestored ? 1 : 0,
+        bHardwarePassed ? 1 : 0);
+
+    if (ActiveDirectSweepWorld == State.World)
+    {
+        ActiveDirectSweepWorld.Reset();
+    }
+}
+
+void FUERayTracingAudioRuntimeValidation::
+    FailAutomaticDirectSweepStart(
+        FScenarioState& State,
+        const FString& FailureReason)
+{
+    if (State.bDirectSweepAutomaticStarted
+        || State.bDirectSweepSummaryLogged)
+    {
+        return;
+    }
+
+    State.DirectSweepMetrics.Reset();
+    State.DirectSweepAudioStats =
+        FUERayTracingAudioDirectAudioStats();
+    State.DirectSweepLatestResult =
+        FUERayTracingAudioDirectSimulationResult();
+    State.DirectSweepFailureReason = FailureReason;
+    State.bDirectSweepAutomaticStarted = true;
+    State.bDirectSweepAutomaticTerminal = false;
+    State.bDirectSweepWasAutomatic = true;
+    State.bDirectSweepStateSaved = false;
+    State.bDirectSweepRestoreApplied = false;
+    State.bDirectSweepRestored = true;
+    State.bDirectSweepHardwareObserved = false;
+    State.bDirectSweepHardwareOnly = false;
+    State.bDirectSweepMotionSucceeded = false;
+    State.bDirectSweepSummaryLogged = false;
+    State.bDirectSweepWarmupComplete = false;
+    State.bDirectSweepAudioStatsCaptured = false;
+    FinishDirectSweep(State, true);
+}
+
+void FUERayTracingAudioRuntimeValidation::
+    AbortDirectSweepImmediately(
+        FScenarioState& State,
+        const FString& FailureReason)
+{
+    if (!IsDirectSweepActive(State))
+    {
+        return;
+    }
+
+    FUERayTracingAudioManager& Manager =
+        FUERayTracingAudioModule::GetManager();
+    BeginDirectSweepRestore(
+        State,
+        Manager,
+        false,
+        FailureReason);
+    FinishDirectSweep(State, false);
+}
+
+void FUERayTracingAudioRuntimeValidation::
+    HandleWorldBeginTearDown(UWorld* World)
+{
+    for (FScenarioState& State : Scenarios)
+    {
+        if (State.World.Get() == World
+            && IsDirectSweepActive(State))
+        {
+            AbortDirectSweepImmediately(
+                State,
+                TEXT("world began teardown"));
+        }
+    }
+}
+
+void FUERayTracingAudioRuntimeValidation::HandleActorDestroyed(
+    AActor* Actor)
+{
+    if (!Actor)
+    {
+        return;
+    }
+
+    for (FScenarioState& State : Scenarios)
+    {
+        UUERayTracingAudioSourceComponent* Source =
+            State.Source.Get();
+        UUERayTracingAudioListenerComponent* Listener =
+            State.Listener.Get();
+        if (IsDirectSweepActive(State)
+            && ((IsValid(Source)
+                    && Source->GetOwner() == Actor)
+                || (IsValid(Listener)
+                    && Listener->GetOwner() == Actor)))
+        {
+            AbortDirectSweepImmediately(
+                State,
+                TEXT("validation Source or Listener actor was destroyed"));
+        }
+    }
+}
+
+void FUERayTracingAudioRuntimeValidation::TickDirectSweep(
+    FScenarioState& State,
+    FUERayTracingAudioManager& Manager,
+    const FUERayTracingAudioSourceSimulationResult*
+        LatestResult)
+{
+    if (!IsDirectSweepActive(State))
+    {
+        return;
+    }
+
+    UWorld* World = State.World.Get();
+    UUERayTracingAudioSourceComponent* Source =
+        State.Source.Get();
+    UUERayTracingAudioListenerComponent* Listener =
+        State.Listener.Get();
+    AActor* SourceActor = IsValid(Source)
+        ? Source->GetOwner()
+        : nullptr;
+    AActor* ListenerActor = IsValid(Listener)
+        ? Listener->GetOwner()
+        : nullptr;
+    if (!IsValid(World)
+        || !IsValid(Source)
+        || !IsValid(SourceActor)
+        || !IsValid(ListenerActor))
+    {
+        AbortDirectSweepImmediately(
+            State,
+            TEXT("validation Source, Listener, or World became invalid"));
+        return;
+    }
+
+    const double NowSeconds = FPlatformTime::Seconds();
+    ListenerActor->SetActorLocation(
+        State.FixedListenerLocation,
+        false,
+        nullptr,
+        ETeleportType::TeleportPhysics);
+
+    if (State.DirectSweepPhase
+        == EUERayTracingAudioDirectSweepPhase::Restoring)
+    {
+        if (LatestResult
+            && LatestResult->bHasDirectResult
+            && LatestResult->DirectGeneration
+                > State.DirectSweepGenerationFloor)
+        {
+            State.DirectSweepGenerationFloor =
+                LatestResult->DirectGeneration;
+            if (State.DirectSweepPendingGenerationDiscardCount > 0)
+            {
+                --State.
+                    DirectSweepPendingGenerationDiscardCount;
+            }
+            else
+            {
+                const bool bSourceRestored =
+                    State.bDirectSweepRestoreApplied
+                    && SourceActor->GetActorTransform().Equals(
+                        State.DirectSweepSavedSourceTransform,
+                        0.01f)
+                    && Source->bHardOcclusion
+                        == State.
+                            bDirectSweepSavedHardOcclusion
+                    && FMath::IsNearlyEqual(
+                        Source->OccludedGain,
+                        State.
+                            DirectSweepSavedOccludedGain,
+                        UE_KINDA_SMALL_NUMBER)
+                    && FMath::IsNearlyEqual(
+                        Source->IndirectMix,
+                        State.
+                            DirectSweepSavedIndirectMix,
+                        UE_KINDA_SMALL_NUMBER)
+                    && Source->IndirectDataSource
+                        == State.
+                            DirectSweepSavedDataSource;
+                const bool bListenerRestored =
+                    ListenerActor->GetActorLocation().Equals(
+                        State.FixedListenerLocation,
+                        0.01f);
+                const bool bRestoredGenerationAtLocation =
+                    LatestResult->DirectResult.bHasListener
+                    && FMath::IsNearlyEqual(
+                        LatestResult->DirectResult.DistanceCm,
+                        State.
+                            DirectSweepRestoredDistanceCm,
+                        2.0f);
+                FinishDirectSweep(
+                    State,
+                    bSourceRestored
+                        && bListenerRestored
+                        && bRestoredGenerationAtLocation);
+                return;
+            }
+        }
+
+        if (NowSeconds
+                - State.DirectSweepPhaseStartTimeSeconds
+            > ValidationDirectSweepRestoreTimeoutSeconds)
+        {
+            State.DirectSweepFailureReason =
+                State.DirectSweepFailureReason.IsEmpty()
+                    ? TEXT("post-restore Direct generation timed out")
+                    : State.DirectSweepFailureReason
+                        + TEXT("; post-restore Direct generation timed out");
+            FinishDirectSweep(State, false);
+        }
+        return;
+    }
+
+    const double PhaseElapsedSeconds =
+        NowSeconds
+        - State.DirectSweepPhaseStartTimeSeconds;
+    switch (State.DirectSweepPhase)
+    {
+    case EUERayTracingAudioDirectSweepPhase::ClearHold:
+        SourceActor->SetActorLocation(
+            FUERayTracingAudioDirectSweepTrajectory::
+                Evaluate(
+                    State.FixedListenerLocation,
+                    0.0f),
+            false,
+            nullptr,
+            ETeleportType::TeleportPhysics);
+        break;
+    case EUERayTracingAudioDirectSweepPhase::EnteringWall:
+        SourceActor->SetActorLocation(
+            FUERayTracingAudioDirectSweepTrajectory::
+                Evaluate(
+                    State.FixedListenerLocation,
+                    static_cast<float>(
+                        PhaseElapsedSeconds
+                        / ValidationDirectSweepTraversalSeconds)),
+            false,
+            nullptr,
+            ETeleportType::TeleportPhysics);
+        break;
+    case EUERayTracingAudioDirectSweepPhase::OccludedHold:
+        SourceActor->SetActorLocation(
+            FUERayTracingAudioDirectSweepTrajectory::
+                Evaluate(
+                    State.FixedListenerLocation,
+                    1.0f),
+            false,
+            nullptr,
+            ETeleportType::TeleportPhysics);
+        break;
+    case EUERayTracingAudioDirectSweepPhase::Returning:
+        SourceActor->SetActorLocation(
+            FUERayTracingAudioDirectSweepTrajectory::
+                Evaluate(
+                    State.FixedListenerLocation,
+                    1.0f
+                    - static_cast<float>(
+                        FMath::Min(
+                            PhaseElapsedSeconds
+                                / ValidationDirectSweepTraversalSeconds,
+                            1.0))),
+            false,
+            nullptr,
+            ETeleportType::TeleportPhysics);
+        break;
+    default:
+        break;
+    }
+
+    if (LatestResult
+        && LatestResult->bHasDirectResult
+        && LatestResult->DirectGeneration
+            > State.DirectSweepGenerationFloor)
+    {
+        State.DirectSweepGenerationFloor =
+            LatestResult->DirectGeneration;
+        State.DirectSweepLatestResult =
+            LatestResult->DirectResult;
+        if (State.DirectSweepPendingGenerationDiscardCount > 0)
+        {
+            --State.
+                DirectSweepPendingGenerationDiscardCount;
+            if (State.
+                    DirectSweepPendingGenerationDiscardCount
+                == 0)
+            {
+                State.bDirectSweepWarmupComplete = true;
+                State.DirectSweepPhaseStartTimeSeconds =
+                    NowSeconds;
+                FUERayTracingAudioAudioDiagnostics::
+                    ResetDirect();
+            }
+        }
+        else
+        {
+            const bool bGenerationUsedHardware =
+                LatestResult->DirectResult.
+                    bRayTracingAvailable;
+            State.bDirectSweepHardwareObserved |=
+                bGenerationUsedHardware;
+            State.bDirectSweepHardwareOnly &=
+                bGenerationUsedHardware;
+            State.DirectSweepMetrics.Observe(
+                LatestResult->DirectGeneration,
+                LatestResult->DirectResult);
+        }
+    }
+
+    if (!State.bDirectSweepWarmupComplete)
+    {
+        if (NowSeconds - State.DirectSweepStartTimeSeconds
+            > ValidationDirectSweepTimeoutSeconds)
+        {
+            BeginDirectSweepRestore(
+                State,
+                Manager,
+                false,
+                TEXT("Direct sweep warmup timed out"));
+        }
+        return;
+    }
+
+    const double ActivePhaseElapsedSeconds =
+        NowSeconds
+        - State.DirectSweepPhaseStartTimeSeconds;
+    if (State.DirectSweepPhase
+            == EUERayTracingAudioDirectSweepPhase::ClearHold
+        && ActivePhaseElapsedSeconds
+            >= ValidationDirectSweepClearHoldSeconds)
+    {
+        State.DirectSweepPhase =
+            EUERayTracingAudioDirectSweepPhase::EnteringWall;
+        State.DirectSweepPhaseStartTimeSeconds =
+            NowSeconds;
+    }
+    else if (State.DirectSweepPhase
+            == EUERayTracingAudioDirectSweepPhase::EnteringWall
+        && ActivePhaseElapsedSeconds
+            >= ValidationDirectSweepTraversalSeconds)
+    {
+        State.DirectSweepPhase =
+            EUERayTracingAudioDirectSweepPhase::OccludedHold;
+        State.DirectSweepPhaseStartTimeSeconds =
+            NowSeconds;
+    }
+    else if (State.DirectSweepPhase
+            == EUERayTracingAudioDirectSweepPhase::OccludedHold
+        && ActivePhaseElapsedSeconds
+            >= ValidationDirectSweepOccludedHoldSeconds)
+    {
+        State.DirectSweepPhase =
+            EUERayTracingAudioDirectSweepPhase::Returning;
+        State.DirectSweepPhaseStartTimeSeconds =
+            NowSeconds;
+    }
+    else if (State.DirectSweepPhase
+            == EUERayTracingAudioDirectSweepPhase::Returning
+        && ActivePhaseElapsedSeconds
+            >= ValidationDirectSweepTraversalSeconds
+                + ValidationDirectSweepReturnHoldSeconds)
+    {
+        BeginDirectSweepRestore(
+            State,
+            Manager,
+            true,
+            FString());
+        return;
+    }
+
+    if (NowSeconds - State.DirectSweepStartTimeSeconds
+        > ValidationDirectSweepTimeoutSeconds)
+    {
+        BeginDirectSweepRestore(
+            State,
+            Manager,
+            false,
+            TEXT("Direct sweep motion timed out"));
+    }
+}
+
 bool FUERayTracingAudioRuntimeValidation::Tick(const float)
 {
     FUERayTracingAudioManager& Manager = FUERayTracingAudioModule::GetManager();
@@ -927,6 +1704,12 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
         UUERayTracingAudioSourceComponent* Source = State.Source.Get();
         if (!IsValid(World) || !IsValid(Source))
         {
+            if (IsDirectSweepActive(State))
+            {
+                AbortDirectSweepImmediately(
+                    State,
+                    TEXT("validation Source or World became invalid"));
+            }
             continue;
         }
 
@@ -991,7 +1774,9 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
 
         TickInteractiveControls(State);
 
-        if (GEngine && State.bCameraActivated)
+        if (GEngine
+            && State.bCameraActivated
+            && State.bValidationOwner)
         {
             const TCHAR* DataSourceStatus = TEXT("WAITING");
             if (State.bDataSourceValidationLogged)
@@ -1021,12 +1806,24 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
                 0.25f,
                 State.bDataSourceValidationPassed ? FColor::Green : FColor::Cyan,
                 FString::Printf(
-                    TEXT("UE RAY TRACING AUDIO - HARDWARE VALIDATION\nVisible acoustic room | Blue: Listener | Orange: Primary Source | Direct preset: %s\nSources: %d | Geometry: %d | Direct/Indirect RHI: %s | IR Modes: %s\nCURRENT MODE: %s | A/B PLAYBACK: %s | Baked asset: %s | View: %s\nF3: Original/Rendered A/B (Realtime after gate) | F1: Realtime | F2: Baked | F5: Hybrid | F4: Bake origin | F8: View"),
+                    TEXT("UE RAY TRACING AUDIO - HARDWARE VALIDATION\nVisible acoustic room | Blue: Listener | Orange: Primary Source | Direct preset: %s\nSources: %d | Geometry: %d | Direct/Indirect RHI: %s | IR Modes: %s\nDIRECT SWEEP: %s | Distance: %.3f cm | Visibility: %.6f | Direct gain: %.6f | Air bands: %.6f / %.6f / %.6f\nCURRENT MODE: %s | A/B PLAYBACK: %s | Baked asset: %s | View: %s\nF3: Original/Rendered A/B | F6: Direct Sweep | F1: Realtime | F2: Baked | F5: Hybrid | F4: Bake origin | F8: View"),
                     *State.DirectPreset,
                     State.SourceCount,
                     State.GeometryCount,
                     State.bResultLogged ? TEXT("READY") : TEXT("TRACING"),
                     DataSourceStatus,
+                    GetDirectSweepPhaseName(
+                        State.DirectSweepPhase),
+                    State.DirectSweepLatestResult.DistanceCm,
+                    State.DirectSweepLatestResult.
+                        DirectVisibility,
+                    State.DirectSweepLatestResult.OverallGain,
+                    State.DirectSweepLatestResult.
+                        AirAbsorption.X,
+                    State.DirectSweepLatestResult.
+                        AirAbsorption.Y,
+                    State.DirectSweepLatestResult.
+                        AirAbsorption.Z,
                     GetDataSourceName(Source->IndirectDataSource),
                     State.bRenderedABEnabled
                         ? TEXT("RENDERED DIRECT+WET")
@@ -1096,6 +1893,59 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
             }
         }
 
+        FUERayTracingAudioSourceSimulationResult LatestResult;
+        const bool bHasLatestResult =
+            Manager.GetLatestSourceSimulation(
+                Source,
+                LatestResult);
+        const double ScenarioElapsedSeconds =
+            FPlatformTime::Seconds() - State.StartTimeSeconds;
+        if (FUERayTracingAudioDirectSweepPolicy::
+                ShouldStartAutomatic(
+                    State.bDirectSweepAutomaticRequested,
+                    State.bDirectSweepAutomaticStarted,
+                    State.bValidationOwner,
+                    bHasLatestResult
+                        && LatestResult.bHasDirectResult,
+                    bHasLatestResult
+                        ? LatestResult.DirectGeneration
+                        : 0,
+                    bHasLatestResult
+                        && LatestResult.DirectResult.
+                            bRayTracingAvailable))
+        {
+            if (!StartDirectSweep(
+                    State,
+                    Manager,
+                    true))
+            {
+                FailAutomaticDirectSweepStart(
+                    State,
+                    TEXT("automatic sweep start was rejected after hardware Direct became ready"));
+            }
+        }
+        else if (FUERayTracingAudioDirectSweepPolicy::
+                HasHardwareWaitTimedOut(
+                    State.bDirectSweepAutomaticRequested,
+                    State.bDirectSweepAutomaticStarted,
+                    State.bValidationOwner,
+                    ScenarioElapsedSeconds,
+                    ValidationAcousticStartupTimeoutSeconds))
+        {
+            FailAutomaticDirectSweepStart(
+                State,
+                TEXT("hardware Direct result timed out before automatic sweep"));
+        }
+        if (IsDirectSweepActive(State))
+        {
+            TickDirectSweep(
+                State,
+                Manager,
+                bHasLatestResult
+                    ? &LatestResult
+                    : nullptr);
+        }
+
         if (!State.bResultLogged)
         {
         if (const IConsoleVariable* DirectBatchSources =
@@ -1109,11 +1959,12 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
             State.MaxIndirectBatchSources = FMath::Max(State.MaxIndirectBatchSources, IndirectBatchSources->GetInt());
         }
 
-        FUERayTracingAudioSourceSimulationResult Result;
-        if (Manager.GetLatestSourceSimulation(Source, Result)
-            && Result.bHasDirectResult
-            && Result.bHasIndirectResult)
+        if (bHasLatestResult
+            && LatestResult.bHasDirectResult
+            && LatestResult.bHasIndirectResult)
         {
+            const FUERayTracingAudioSourceSimulationResult&
+                Result = LatestResult;
             const FUERayTracingAudioIndirectSimulationResult CpuReference =
                 Manager.SimulateIndirectSource(Source);
             const float PathRelativeDelta = static_cast<float>(FMath::Abs(
@@ -1225,12 +2076,16 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
             }
         }
 
-        if (State.bResultLogged
-            && !State.bDataSourceValidationLogged)
+        if (State.bValidationOwner
+            && State.bResultLogged
+            && !State.bDataSourceValidationLogged
+            && (!State.bDirectSweepAutomaticRequested
+                || State.bDirectSweepAutomaticTerminal))
         {
             TickDataSourceValidation(State, Manager);
         }
         else if (State.bBakeRepeatabilityEnabled
+            && State.bValidationOwner
             && State.bDataSourceValidationPassed
             && !State.bBakeRepeatabilityLogged)
         {
@@ -1589,7 +2444,7 @@ bool FUERayTracingAudioRuntimeValidation::SetInteractiveMode(
     UE_LOG(
         LogUERayTracingAudio,
         Display,
-        TEXT("UERayTracingAudio interactive validation mode: enabled=%d listener_follows_player=%d controls=\"WASD+Mouse,F1=Realtime,F2=Baked,F3=RenderedAB,F4=Origin,F5=Hybrid,F8=View\"."),
+        TEXT("UERayTracingAudio interactive validation mode: enabled=%d listener_follows_player=%d controls=\"WASD+Mouse,F1=Realtime,F2=Baked,F3=RenderedAB,F4=Origin,F5=Hybrid,F6=DirectSweep,F8=View\"."),
         bEnabled ? 1 : 0,
         bEnabled ? 1 : 0);
     return true;
@@ -1618,29 +2473,13 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveControls(FScenarioState
         UE_LOG(
             LogUERayTracingAudio,
             Display,
-            TEXT("UERayTracingAudio interactive validation ready: fixed_camera=1 interactive_available=1 acoustic_gate_passed=%d mode_hotkeys=F1,F2,F5 ab_hotkey=F3 origin_hotkey=F4 view_hotkey=F8."),
+            TEXT("UERayTracingAudio interactive validation ready: fixed_camera=1 interactive_available=1 acoustic_gate_passed=%d mode_hotkeys=F1,F2,F5 ab_hotkey=F3 direct_sweep_hotkey=F6 origin_hotkey=F4 view_hotkey=F8."),
             State.bDataSourceValidationPassed ? 1 : 0);
     }
 
     if (State.bInteractiveRequested && bInteractiveReady && !State.bInteractiveMode)
     {
         SetInteractiveMode(State, true);
-    }
-
-    if (PlayerController->WasInputKeyJustPressed(EKeys::F8))
-    {
-        if (bInteractiveReady)
-        {
-            State.bInteractiveRequested = !State.bInteractiveMode;
-            SetInteractiveMode(State, !State.bInteractiveMode);
-        }
-        else
-        {
-            UE_LOG(
-                LogUERayTracingAudio,
-                Warning,
-                TEXT("UERayTracingAudio interactive validation is waiting for the hardware IR mode gate."));
-        }
     }
 
     // Original/Rendered comparison is a playback control, not a movement or
@@ -1676,7 +2515,118 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveControls(FScenarioState
             UE_LOG(
                 LogUERayTracingAudio,
                 Warning,
-                TEXT("UERayTracingAudio F3 A/B is waiting for synchronized audio playback to start."));
+            TEXT("UERayTracingAudio F3 A/B is waiting for synchronized audio playback to start."));
+        }
+    }
+
+    if (PlayerController->WasInputKeyJustPressed(EKeys::F6))
+    {
+        if (IsDirectSweepActive(State))
+        {
+            UE_LOG(
+                LogUERayTracingAudio,
+                Warning,
+                TEXT("UERayTracingAudio F6 direct sweep rejected: non_reentrant=1 phase=%s."),
+                GetDirectSweepPhaseName(
+                    State.DirectSweepPhase));
+        }
+        else if (!bInteractiveReady
+            || !State.bInteractiveMode)
+        {
+            UE_LOG(
+                LogUERayTracingAudio,
+                Warning,
+                TEXT("UERayTracingAudio F6 direct sweep requires interactive validation after the hardware IR mode gate."));
+        }
+        else if (!State.bValidationOwner)
+        {
+            UE_LOG(
+                LogUERayTracingAudio,
+                Warning,
+                TEXT("UERayTracingAudio F6 direct sweep is reserved for the process validation-owner World."));
+        }
+        else if (ActiveDirectSweepWorld.IsValid()
+            && ActiveDirectSweepWorld != State.World)
+        {
+            UE_LOG(
+                LogUERayTracingAudio,
+                Warning,
+                TEXT("UERayTracingAudio F6 direct sweep rejected: another World owns the active sweep."));
+        }
+        else
+        {
+            APawn* Pawn = State.InteractivePawn.Get();
+            FUERayTracingAudioManager& Manager =
+                FUERayTracingAudioModule::GetManager();
+            FUERayTracingAudioSourceSimulationResult
+                LatestResult;
+            UUERayTracingAudioListenerComponent* Listener =
+                State.Listener.Get();
+            UAudioComponent* PrimaryAudio =
+                State.AudioComponents.IsValidIndex(0)
+                    ? State.AudioComponents[0].Get()
+                    : nullptr;
+            AActor* SourceActor =
+                PrimarySource->GetOwner();
+            AActor* ListenerActor = IsValid(Listener)
+                ? Listener->GetOwner()
+                : nullptr;
+            const bool bSweepDependenciesReady =
+                IsValid(SourceActor)
+                && IsValid(Listener)
+                && IsValid(ListenerActor)
+                && IsValid(PrimaryAudio);
+            const bool bHardwareDirectReady =
+                Manager.GetLatestSourceSimulation(
+                    PrimarySource,
+                    LatestResult)
+                && LatestResult.bHasDirectResult
+                && LatestResult.DirectGeneration != 0
+                && LatestResult.DirectResult.
+                    bRayTracingAvailable;
+            if (!IsValid(Pawn)
+                || !bSweepDependenciesReady
+                || !bHardwareDirectReady)
+            {
+                UE_LOG(
+                    LogUERayTracingAudio,
+                    Warning,
+                    TEXT("UERayTracingAudio F6 direct sweep is waiting for valid Source/Listener/Audio actors, an interactive Pawn, and a hardware Direct generation."));
+            }
+            else if (PlaceInteractiveViewAtBakedOrigin(
+                    State,
+                    *PlayerController,
+                    *Pawn))
+            {
+                StartDirectSweep(
+                    State,
+                    Manager,
+                    false);
+            }
+        }
+    }
+
+    // The Direct sweep owns Listener position and temporary Source settings.
+    // Keep F3 available for audible comparison, but reject movement/view/mode
+    // controls until exact-once restoration reaches a fresh Direct generation.
+    if (IsDirectSweepActive(State))
+    {
+        return;
+    }
+
+    if (PlayerController->WasInputKeyJustPressed(EKeys::F8))
+    {
+        if (bInteractiveReady)
+        {
+            State.bInteractiveRequested = !State.bInteractiveMode;
+            SetInteractiveMode(State, !State.bInteractiveMode);
+        }
+        else
+        {
+            UE_LOG(
+                LogUERayTracingAudio,
+                Warning,
+                TEXT("UERayTracingAudio interactive validation is waiting for the hardware IR mode gate."));
         }
     }
 
@@ -2565,3 +3515,5 @@ void FUERayTracingAudioRuntimeValidation::TickBakeRepeatability(
     State.BakeJob.Reset();
     State.FirstBakeSamples.Reset();
 }
+
+#endif

@@ -5,6 +5,8 @@ public class UERayTracingAudio : ModuleRules
     public UERayTracingAudio(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+        PublicDefinitions.Add(
+            $"WITH_UERAYTRACINGAUDIO_VALIDATION={(Target.Configuration != UnrealTargetConfiguration.Shipping ? 1 : 0)}");
 
         PublicDependencyModuleNames.AddRange(new[]
         {
