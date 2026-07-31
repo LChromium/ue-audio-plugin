@@ -188,3 +188,19 @@ Next:
 1. Execute Task 8 documentation, Shipping isolation, and final verification from the approved plan.
 2. Record target-device Human Pass/Fail for distance, air absorption, moving Direct recovery, click/pop, and R3 reflection environments.
 3. Retain Task 2 multi-PIE hardware isolation and the ledgered Task 4 Minors as explicit follow-ups.
+
+### Task 7 Fix Round 1
+
+Completed:
+
+1. Removed implicit adoption of an arbitrary untagged Source from panel initialization and `StartBake`; automatic lookup is restricted to the tagged fixture role, while **Use Selected Source** remains explicit opt-in.
+2. Centralized persistent instance-component creation so the owner is modified before component construction/addition, creation notification, and registration. Added full Undo/Redo/dirty assertions and an independent Audio-only mutation test.
+3. Made the managed transient Editor World allocate its context only after World creation succeeds, then destroy World/context and collect garbage. Added injected-failure context-count and weak-lifetime coverage.
+4. Recorded three attributable REDs: missing pre-construction owner modification, failed-World context leakage, and a targeted Audio-owner mutation. Restored final production code with no mutation bypass.
+5. Passed final build `48/48`, focused Editor `2/2`, full Automation `55/55`, Python `64/64`, audit `39/40/1718`, and the exact launcher. Direct/data-source/HardRT gates passed; Editor PID `13344` remains open at `200 cm / default`.
+
+Next:
+
+1. Keep Task 8 work separate from this review-fix round.
+2. Record target-device Human Pass/Fail for distance, air absorption, moving Direct recovery, click/pop, and R3 reflection environments.
+3. Retain Task 2 multi-PIE hardware isolation and the ledgered Task 4 Minors as explicit follow-ups.

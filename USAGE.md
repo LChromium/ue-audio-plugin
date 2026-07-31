@@ -318,3 +318,19 @@ UERayTracingAudioEditor validation scene ready: ... source_listener_distance_cm=
 It rejects missing, malformed, duplicate, or request-mismatched Direct preset, reflection environment, distance, profile, or vector evidence. This is configuration evidence only: it does not claim an audible distance/air result, an OpenSpace/NearWall/Enclosed R3 comparison, or Human Pass.
 
 Task 7 verification used the exact default launcher and left Editor PID `34840` open with `200 cm / default / (0.0002,0.0006,0.0012)`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785478813724452300.log`. Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785478994289043000.log`.
+
+#### Task 7 Fix Round 1: selecting a Source safely
+
+Opening the Bake panel no longer adopts an ordinary Source automatically, even when that Source is selected in the level. Automatic fixture discovery accepts only the actor tagged with both `VRTA_EditorValidationScene` and `VRTA_AB_Source`.
+
+To bake an ordinary project Source:
+
+1. Select its actor in the level.
+2. Click **Use Selected Source** in the Bake panel.
+3. Start the Bake.
+
+That explicit action is the only way an untagged Source enters the panel's selected-Source state. If neither an explicit selection nor the tagged validation Source is available, **Bake Selected Source** refuses to start instead of falling back to the current generic selection.
+
+Persistent fixture component additions are normal Editor transactions: Geometry, Source, Audio, and Listener components can be undone/redone, and the level is marked dirty. The transient Automation fixture creates a World context only after the World exists and fully destroys the World/context before garbage collection.
+
+Fix Round 1 verification used the exact default launcher. It exited `0`, left responding Editor PID `13344` open, and parsed `200 cm / default / (0.0002,0.0006,0.0012)`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785491460999842900.log`. Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785491641704854400.log`. This remains configuration/runtime evidence, not a target-device Human Pass.

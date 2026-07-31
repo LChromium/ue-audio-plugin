@@ -264,3 +264,24 @@ Task 7 evidence:
 - Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785478994289043000.log`; parsed fixture `200 cm`, `default`, `(0.0002,0.0006,0.0012)`.
 
 Editor PID `34840` is responding and left open. Target-device distance/air/moving-occlusion listening, R3 OpenSpace/NearWall/Enclosed listening, Human Pass, Task 2 multi-PIE hardware isolation, and Task 4 Minors remain open; the overall plugin is not complete.
+
+#### Task 7 Fix Round 1: review hardening
+
+Implementation status: complete and automatically verified.
+
+Automatic panel discovery is now role-strict: it resolves only `VRTA_EditorValidationScene + VRTA_AB_Source`, and `StartBake` does not fall back to an arbitrary selected Source. Explicit **Use Selected Source** remains the opt-in path for normal project Sources.
+
+All persistent validation instance-component paths modify the owner before `NewObject`/`AddInstanceComponent`, call `OnComponentCreated`, register the component, and participate in the surrounding transaction/dirtying flow. The regression separates Audio from Source creation by pre-installing the Source component, so deleting the Audio-path owner mutation is caught independently rather than being masked by the Source actor's earlier modification callback.
+
+The managed Automation World creates a `FWorldContext` only after `UWorld::CreateWorld` succeeds, binds it immediately, and destroys World/context before GC. A test-only injected creation failure proves no context-count delta. Tagged actor/component teardown is checked before and after GC through weak pointers; focused/full logs contain zero `World has no context!` warnings.
+
+Fix Round 1 evidence:
+
+- RED: `Task7-Fix1-RED-OwnerBeforeComponent.log` failed Geometry/Source/Listener pre-construction owner checks; `Task7-Fix1-RED-WorldContextFailure.log` measured context count `1 -> 2`; the Audio-only mutation log failed only `Audio owner is independently modified before Audio construction`.
+- One temporary mutation-injection build failed with C3861 because `TIsSame` was not visible in that translation unit; this was test instrumentation, not the final implementation. It was replaced with a component-name-only mutation, then fully removed.
+- GREEN: prescribed build `48/48`; focused Editor `2/2`; full Automation `55/55`; Python `64/64`; callback audit `39/40/1718`, zero forbidden operations; zero World-context warnings. UE still emits two pre-engine-init `LogAutomationTest: Error: Condition failed` lines, but all Automation tests pass and there is no Fatal/Assertion.
+- Exact launcher exit `0`: baseline paths `171/171`; Direct `231` generations, visibility `0.000027-0.997022`, gain `0.174776-0.498368`, step `0.00004127`, dropout `0`, restored/hardware `1/1`; data sources passed; hard realtime `1580/0/0`.
+- Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785491460999842900.log`.
+- Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785491641704854400.log`; strict fixture `200 cm / default / (0.0002,0.0006,0.0012)`; PID `13344` is responding and left open.
+
+Human Pass, R3 listening, Task 2 multi-PIE hardware isolation, and Task 4 Minors remain open; the overall plugin is not complete.

@@ -135,3 +135,12 @@
 - Final verification passed: build `48/48`; focused Editor `1/1`; full Automation `54/54`; focused/full Python `2/2` and `64/64`; callback audit `39/40/1718` with zero violations.
 - Exact runtime passed: Direct `206` generations; data sources passed; hard realtime `1584/0/0`. Game `UERayTracingAudioValidation-Game-1785478813724452300.log`; Editor `UERayTracingAudioValidation-Editor-1785478994289043000.log`.
 - Editor PID `34840` is open at `200 cm / default / (0.0002,0.0006,0.0012)`. Human Pass, R3 listening, multi-PIE hardware isolation, and Task 4 Minors remain open.
+
+## 2026-07-31 - Configurable Direct Audio Task 7 Fix Round 1
+
+- Restricted automatic Source discovery to the tagged validation Source and removed `StartBake`'s implicit generic-selection fallback; ordinary Sources now require **Use Selected Source**.
+- Added owner-before-component creation for every persistent fixture instance component, plus Undo/Redo/dirty checks. A pre-existing-Source Audio-only scenario catches removal of the Audio owner mutation independently.
+- Added managed test-World context failure coverage and complete World/context/GC + weak-lifetime assertions. Final focused/full logs have zero `World has no context!` warnings.
+- RED: original owner-order regression; injected failed-World context count `1 -> 2`; targeted Audio mutation. GREEN: build `48/48`, focused `2/2`, full Automation `55/55`, Python `64/64`, audit `39/40/1718` with zero forbidden operations.
+- Exact launcher exit `0`: Direct `231` generations, all data sources passed, hard realtime `1580/0/0`; Game `UERayTracingAudioValidation-Game-1785491460999842900.log`, Editor `UERayTracingAudioValidation-Editor-1785491641704854400.log`.
+- Editor PID `13344` is responding at `200 cm / default / (0.0002,0.0006,0.0012)`. Human Pass, R3 listening, multi-PIE hardware isolation, and Task 4 Minors remain open.
