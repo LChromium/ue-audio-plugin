@@ -217,3 +217,17 @@ Fix Round 2 verification:
 - Runtime: the fixed launcher exited `0`, reported paths `171/171`, data sources passed, and callbacks/misses/drops `190/0/0`. Logs: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785470614600787600.log` and `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785470795487644500.log`.
 
 Editor PID `22952` is left open for manual PIE/listening. The moving Direct sweep, Human Pass/click-pop checks, Task 2 multi-PIE hardware isolation, and ledgered Task 4 Minors remain separate follow-ups.
+
+### Task 5 Direct sweep fixture
+
+The validation-only Direct sweep uses a fixed listener origin and moves the validation source along a 200 cm quarter arc from the clear side of the wall to the occluded side and back. It holds each endpoint long enough to collect fresh Direct generations, displays phase/distance/visibility/gain/air bands in the HUD, and emits exactly one terminal line beginning with `UERayTracingAudio direct sweep:`.
+
+For automatic Game validation, both `-UERayTracingAudioValidationScenario` and `-UERayTracingAudioValidationDirectSweep` are required. Task 6 will add the latter flag to `script\launch_runtime_validation.py` and parse the terminal marker; until then, the fixed launcher does not exercise this sweep.
+
+The first successfully created validation scenario is the process diagnostics owner. Only that World runs the automatic sweep, subsequent data-source diagnostics, F6 sweep, and sweep HUD, preventing process-global audio counters or terminal markers from being mixed across multi-world sessions. If no hardware Direct generation arrives within the acoustic-startup deadline, the owner emits one failed strict summary with `hardware=0` and marks the automatic sweep terminal instead of waiting indefinitely.
+
+In the interactive validation scenario, press F6 after the first hardware Direct result to start the same state machine. F6 is non-reentrant. During the sweep, source/data-source controls and camera-follow motion are suppressed; F3 remains available for the existing debug visualization.
+
+On success, timeout, actor destruction, world teardown, or validation stop, the fixture restores the source transform, hard-occlusion state, `OccludedGain`, `IndirectMix`, and indirect data source exactly once. A normal success waits for a fresh post-restore Direct generation before reporting. The fixture is compiled only when `WITH_UERAYTRACINGAUDIO_VALIDATION=1`, is additionally gated by the validation scenario, and does nothing in ordinary projects.
+
+Automated Task 5 evidence is build `48/48`, callback audit `39/40` with zero forbidden operations, and ConfigurableDirect `15/15` at `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\TestProject\UeVersion1\Saved\Logs\Task5-FINAL-ConfigurableDirect.log`. The hardware runtime marker/parser is pending Task 6, and target-device click/pop and audible-quality Human Pass remains pending.

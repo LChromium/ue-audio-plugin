@@ -188,3 +188,23 @@ Fix Round 2 TDD and final evidence (2026-07-31):
 - `uv run script\launch_runtime_validation.py` exit `0`: Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, all three data sources passed, kernels `2/2/4`, `non_finite=0`, and hard-realtime callbacks/misses/drops `190/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785470614600787600.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785470795487644500.log`.
 
 Remaining limitations are unchanged. The moving Direct sweep, target-device PIE listening, click/pop and audible-quality Human Pass, Task 2 multi-PIE hardware isolation, and the three ledgered Task 4 Minors remain open; the overall plugin is not complete.
+
+### Task 5: validation-only hardware Direct sweep
+
+Implementation status: code-complete and build/test verified; hardware runtime acceptance is pending Task 6.
+
+The runtime validator now owns one non-reentrant Direct-sweep state machine with clear hold, outbound motion, occluded hold, reverse motion, final clear hold, restoration, and terminal phases. The source follows a deterministic 200 cm quarter arc around a fixed listener. Pure helpers accumulate fresh-generation observations and require clear -> occluded -> clear ordering, near-200 cm distance, visibility range, non-zero Direct gain, bounded per-sample gain steps, no Direct dropout/non-finite/over-unit samples, hardware execution, and a fresh post-restore Direct result.
+
+The fixture saves and restores the validation source transform, hard occlusion, `OccludedGain`, `IndirectMix`, and indirect data source exactly once on all terminal paths. Automatic execution is ordered after the first hardware Direct result and before baked/data-source validation; F6 starts the same machine interactively. Exactly one `UERayTracingAudio direct sweep:` summary is emitted. All declarations and runtime integration are guarded by `WITH_UERAYTRACINGAUDIO_VALIDATION`, which is `0` for Shipping, and execution additionally requires the existing validation scenario.
+
+Review hardening selects the first successful scenario as the sole process diagnostics owner, so other Worlds cannot retarget/reset/read the process-global counters, start automatic/F6 sweeps, overwrite the sweep HUD, or emit extra terminal markers. Hardware readiness has a bounded terminal failure. Hardware provenance begins only after the discarded warmup generation, and every accepted sweep observation must report hardware ray tracing; any accepted CPU fallback forces failure and `hardware=0`.
+
+Task 5 evidence:
+
+- Behavioral RED: newest fixed Game log lacked exact marker `UERayTracingAudio direct sweep: passed=1`; the check exited `1`.
+- Unit RED: the new trajectory/metrics tests failed to compile because `Validation/UERayTracingAudioDirectSweep.h` did not exist.
+- GREEN: prescribed build completed `48/48`; callback audit remained `39 functions / 40 bodies / 0 forbidden operations`.
+- Review-fix RED: the prescribed build failed on the intentionally absent pure owner/hardware/deadline policy (`C2653`/`C3861`) before that policy was implemented; the metrics regression also requires mixed hardware/CPU accepted generations to fail.
+- GREEN: ConfigurableDirect passed `15/15`, including trajectory, metrics, all-hardware provenance, owner admission, and deadline assertions; `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\TestProject\UeVersion1\Saved\Logs\Task5-FINAL-ConfigurableDirect.log`.
+
+The fixed runtime launcher was deliberately not run in Task 5. Its Direct-sweep flag and exact terminal-marker parser are pending Task 6, as is hardware Game-log evidence. Target-device audible quality, recovery, and click/pop Human Pass are also pending; the overall plugin is not complete.

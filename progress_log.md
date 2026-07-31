@@ -96,3 +96,13 @@
 - Final verification passed: prescribed build `47/47`; ConfigurableDirect `13/13`; Audio `36/36`; callback audit `39 functions / 40 bodies / 1718 lines / 0 violations`; Python `51/51`.
 - Fixed hardware runtime passed: Direct/Indirect batches `4/4`, paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and callbacks/misses/drops `190/0/0`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785470614600787600.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785470795487644500.log`.
 - Editor PID `22952` is left running. Moving Direct sweep, target-device Human Pass/click-pop listening, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open.
+
+## 2026-07-31 - Configurable Direct Audio Task 5
+
+- Behavioral RED: the newest fixed Game log lacked exact marker `UERayTracingAudio direct sweep: passed=1`; the check exited `1`.
+- Unit RED: the new tests failed at the intended missing seam, `Validation/UERayTracingAudioDirectSweep.h`.
+- Added the pure 200 cm quarter-arc trajectory/metrics helper and a single automatic/F6 runtime sweep state machine with HUD observations, one terminal summary, and exact one-time configuration restoration.
+- Added non-Shipping compile isolation and validation-scenario/command-line gates; the hard-realtime callback path was not changed.
+- Review-fix RED failed on the intentionally absent owner/hardware/deadline policy (`C2653`/`C3861`). The implemented policy bounds no-hardware wait, accepts hardware evidence only after warmup, rejects any accepted CPU fallback, and gives one World exclusive process diagnostics/sweep/HUD ownership.
+- Final verification passed: prescribed build `48/48`; callback audit `39 functions / 40 bodies / 0 forbidden operations`; ConfigurableDirect `15/15` at `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\TestProject\UeVersion1\Saved\Logs\Task5-FINAL-ConfigurableDirect.log`.
+- The Task 6 launcher flag/parser and hardware terminal-marker evidence are pending. Human Pass for target-device recovery and click/pop absence is pending.

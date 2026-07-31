@@ -124,3 +124,20 @@ Next:
 
 1. Continue the planned moving Direct sweep and target-device PIE listening; record click/pop and Human Pass/Fail separately.
 2. Retain Task 2 multi-PIE hardware isolation and the three ledgered Task 4 Minors as separate follow-ups.
+
+### Task 5: isolated hardware Direct sweep fixture
+
+Completed:
+
+1. Recorded behavioral RED against the newest fixed Game log and unit RED against the absent trajectory/metrics helper.
+2. Added the deterministic 200 cm clear -> occluded -> clear quarter arc and pure pass/fail metrics under focused TDD.
+3. Added the validation-only, non-reentrant automatic/F6 state machine, HUD observations, strict single terminal summary, and exact one-time restoration with a fresh post-restore Direct generation.
+4. Guarded the implementation with `WITH_UERAYTRACINGAUDIO_VALIDATION` and the validation-scenario gate; Shipping and ordinary projects remain inert.
+5. Closed review findings with a pure owner/hardware/deadline policy: one World owns process-global diagnostics, hardware wait terminates once, and accepted CPU fallback invalidates the sweep. Non-owner/contention checks precede F6 Pawn motion and only the owner renders the HUD.
+6. Passed the final prescribed build (`48/48`), hard-realtime audit (`39/40`, zero forbidden operations), and ConfigurableDirect (`15/15`).
+
+Next:
+
+1. Task 6 must add `-UERayTracingAudioValidationDirectSweep` to the fixed launcher, parse the exact terminal summary, run hardware validation, and ledger the Game/Editor evidence.
+2. Record target-device PIE Human Pass/Fail for audible recovery and click/pop absence. Automated numeric evidence does not close this gate.
+3. Retain Task 2 multi-PIE hardware isolation and the ledgered Task 4 Minors as separate follow-ups.

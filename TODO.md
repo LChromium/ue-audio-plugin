@@ -167,3 +167,15 @@ v1 必须同时满足：
 - [x] Final gates passed: prescribed build `47/47`; ConfigurableDirect `13/13`; full Audio `36/36`; callback audit `39 functions / 40 bodies / 1718 lines / 0 violations`; Python `51/51`.
 - [x] The exact runtime launcher exited `0`: Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, data sources passed, and callbacks/capacity misses/prepare drops were `190/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785470614600787600.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785470795487644500.log`.
 - [ ] Manual target-device PIE listening, the moving Direct sweep, click/pop confirmation, and Task 2 multi-PIE hardware isolation remain open. The ledgered Task 4 Minors were not addressed in this round.
+
+## Task 5: Isolated hardware Direct sweep fixture (2026-07-31)
+
+- [x] Recorded behavioral RED from the newest fixed Game log: the exact marker `UERayTracingAudio direct sweep: passed=1` was absent, so the check exited `1` with `RED: current runtime has no passing hardware Direct sweep`.
+- [x] Added TDD-covered 200 cm quarter-arc trajectory and sweep metrics for clear -> occluded -> clear ordering, visibility and gain ranges, continuity, bounded gain steps, hardware execution, and post-restore confirmation.
+- [x] Added one non-reentrant runtime state machine shared by automatic validation and F6, with fixed listener origin, live HUD bands, one terminal summary, and exact one-time restoration of source transform and Direct/Indirect settings.
+- [x] Isolated the fixture behind `WITH_UERAYTRACINGAUDIO_VALIDATION` in non-Shipping builds and the validation-scenario command line; ordinary projects remain inert.
+- [x] Prescribed build passed with `48/48` actions and the hard-realtime callback audit remained `39 functions / 40 bodies / 0 forbidden operations`.
+- [x] Closed review integrity findings with regression coverage: hardware wait terminates once with `hardware=0`; only accepted post-warmup generations establish all-hardware provenance; one process-owner World owns sweep/data-source diagnostics and HUD; rejected F6 cannot move a non-owner Pawn.
+- [x] Focused ConfigurableDirect NullRHI verification passed `15/15`; log: `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\TestProject\UeVersion1\Saved\Logs\Task5-FINAL-ConfigurableDirect.log`.
+- [ ] Task 6 must add the fixed-launcher flag/parser and produce the required hardware Game-log terminal marker. Task 5 intentionally did not run the full runtime launcher.
+- [ ] Human Pass is pending for target-device PIE listening, click/pop absence, and audible clear -> occluded -> clear recovery. Automated metrics are not Human Pass.
