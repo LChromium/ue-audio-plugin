@@ -32,7 +32,7 @@ void FUERayTracingAudioModule::StartupModule()
         GetDefault<UUERayTracingAudioProjectSettings>();
     const FUERayTracingAudioContextSettings ContextSettings =
         ProjectSettings->GetValidatedContextSettings();
-    const FVector2f AirAbsorptionCrossovers =
+    AirAbsorptionCrossoversHz =
         ProjectSettings->GetValidatedAirAbsorptionCrossoversHz(StartupSampleRate);
     Manager = MakeShared<FUERayTracingAudioManager>(ContextSettings);
     UE_LOG(
@@ -42,9 +42,11 @@ void FUERayTracingAudioModule::StartupModule()
         ContextSettings.ReferenceDistanceCm,
         ContextSettings.MaxDistanceCm,
         ContextSettings.SpeedOfSoundCmPerSecond,
-        AirAbsorptionCrossovers.X,
-        AirAbsorptionCrossovers.Y);
-    OcclusionPluginFactory = MakeUnique<FUERayTracingAudioOcclusionPluginFactory>();
+        AirAbsorptionCrossoversHz.X,
+        AirAbsorptionCrossoversHz.Y);
+    OcclusionPluginFactory =
+        MakeUnique<FUERayTracingAudioOcclusionPluginFactory>(
+            AirAbsorptionCrossoversHz);
     SpatializationPluginFactory = MakeUnique<FUERayTracingAudioSpatializationPluginFactory>();
 
     IModularFeatures::Get().RegisterModularFeature(FUERayTracingAudioOcclusionPluginFactory::GetModularFeatureName(), OcclusionPluginFactory.Get());

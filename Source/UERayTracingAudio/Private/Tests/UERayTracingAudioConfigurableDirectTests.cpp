@@ -1,5 +1,10 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "Audio/UERayTracingAudioAudioDiagnostics.h"
+#include "Audio/UERayTracingAudioIndirectAudioBridge.h"
+#include "Audio/UERayTracingAudioOcclusion.h"
+#include "Audio/UERayTracingAudioSimulationSnapshot.h"
+#include "Audio/UERayTracingAudioThreeBandAirAbsorption.h"
 #include "Components/BoxComponent.h"
 #include "Components/UERayTracingAudioGeometryComponent.h"
 #include "Components/UERayTracingAudioListenerComponent.h"
@@ -9,8 +14,11 @@
 #include "Managers/UERayTracingAudioManager.h"
 #include "Misc/AutomationTest.h"
 #include "API/UERayTracingAudioContext.h"
+#include "Settings/UERayTracingAudioOcclusionSettings.h"
 #include "Settings/UERayTracingAudioProjectSettings.h"
 #include "UObject/UObjectGlobals.h"
+
+#include <limits>
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUERayTracingAudioProjectSettingsTest,
@@ -188,6 +196,384 @@ bool FUERayTracingAudioWorldScopedGeometryTest::RunTest(const FString&)
     {
         WorldB->DestroyWorld(false);
     }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioUnityReconstructionTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.UnityReconstruction",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioUnityReconstructionTest::RunTest(
+    const FString&)
+{
+    FUERayTracingAudioThreeBandAirAbsorption Processor;
+    Processor.Initialize(48000, 2, 500.0f, 4000.0f);
+    FRandomStream Random(0x57A11);
+    float MaximumAbsoluteError = 0.0f;
+    for (int32 FrameIndex = 0; FrameIndex < 2048; ++FrameIndex)
+    {
+        for (int32 ChannelIndex = 0; ChannelIndex < 2; ++ChannelIndex)
+        {
+            const float Input =
+                Random.GetFraction() * 2.0f - 1.0f;
+            const float Output = Processor.ProcessSample(
+                Input,
+                ChannelIndex,
+                FVector::OneVector);
+            MaximumAbsoluteError = FMath::Max(
+                MaximumAbsoluteError,
+                FMath::Abs(Output - Input));
+        }
+    }
+    TestTrue(
+        *FString::Printf(
+            TEXT("Unity band gains reconstruct every sample (maximum absolute error %.9g)"),
+            MaximumAbsoluteError),
+        MaximumAbsoluteError < 1.0e-6f);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioNonFiniteInputRecoveryTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.NonFiniteInputRecovery",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioNonFiniteInputRecoveryTest::RunTest(
+    const FString&)
+{
+    FUERayTracingAudioThreeBandAirAbsorption Processor;
+    Processor.Initialize(48000, 1, 500.0f, 4000.0f);
+    const FVector UnequalBandGains(1.0f, 0.5f, 0.1f);
+
+    Processor.ProcessSample(
+        std::numeric_limits<float>::quiet_NaN(),
+        0,
+        UnequalBandGains);
+    const float RecoveredOutput = Processor.ProcessSample(
+        1.0f,
+        0,
+        UnequalBandGains);
+
+    TestTrue(
+        TEXT("A non-finite input sample does not poison persistent filter state"),
+        FMath::IsFinite(RecoveredOutput));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioStereoIsolationTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.StereoIsolation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioStereoIsolationTest::RunTest(
+    const FString&)
+{
+    FUERayTracingAudioThreeBandAirAbsorption Processor;
+    Processor.Initialize(48000, 2, 500.0f, 4000.0f);
+    const FVector UnequalBandGains(1.0f, 0.5f, 0.1f);
+    Processor.ProcessSample(1.0f, 0, UnequalBandGains);
+
+    float RightChannelPeak = 0.0f;
+    for (int32 SampleIndex = 0; SampleIndex < 128; ++SampleIndex)
+    {
+        Processor.ProcessSample(
+            0.0f,
+            0,
+            UnequalBandGains);
+        RightChannelPeak = FMath::Max(
+            RightChannelPeak,
+            FMath::Abs(Processor.ProcessSample(
+                0.0f,
+                1,
+                UnequalBandGains)));
+    }
+    TestTrue(
+        TEXT("A left impulse does not alter right-channel filter state"),
+        RightChannelPeak < 1.0e-7f);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioFrequencyDependentAirAbsorptionTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.FrequencyDependentAirAbsorption",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioFrequencyDependentAirAbsorptionTest::RunTest(
+    const FString&)
+{
+    constexpr int32 SampleRate = 48000;
+    constexpr int32 NumFrames = 4800;
+
+    const auto RenderFrequency = [](const float FrequencyHz, const uint64 AudioComponentId)
+    {
+        const TSharedRef<
+            FUERayTracingAudioSimulationSnapshotRegistry,
+            ESPMode::ThreadSafe> SnapshotRegistry =
+                MakeShared<
+                    FUERayTracingAudioSimulationSnapshotRegistry,
+                    ESPMode::ThreadSafe>();
+        const TSharedRef<
+            FUERayTracingAudioIndirectAudioBridge,
+            ESPMode::ThreadSafe> Bridge =
+                MakeShared<
+                    FUERayTracingAudioIndirectAudioBridge,
+                    ESPMode::ThreadSafe>();
+        FUERayTracingAudioOcclusionPlugin Plugin(
+            SnapshotRegistry,
+            Bridge,
+            FVector2f(500.0f, 4000.0f));
+
+        FAudioPluginInitializationParams InitializationParams;
+        InitializationParams.NumSources = 1;
+        InitializationParams.NumOutputChannels = 1;
+        InitializationParams.SampleRate = SampleRate;
+        InitializationParams.BufferLength = NumFrames;
+        Plugin.Initialize(InitializationParams);
+        Plugin.OnInitSource(0, NAME_None, 1, nullptr);
+
+        FUERayTracingAudioSimulationSnapshot Snapshot;
+        Snapshot.DirectResult.bHasListener = true;
+        Snapshot.DirectResult.DistanceAttenuation = 1.0f;
+        Snapshot.DirectResult.Occlusion = 1.0f;
+        Snapshot.DirectResult.AirAbsorption = FVector(1.0f, 1.0f, 0.1f);
+        Snapshot.IndirectMix = 0.0f;
+        SnapshotRegistry->Publish(AudioComponentId, MoveTemp(Snapshot));
+
+        FAudioPluginSourceOutputData OutputData;
+        OutputData.AudioBuffer.SetNumUninitialized(NumFrames);
+        double InputSquareSum = 0.0;
+        for (int32 FrameIndex = 0; FrameIndex < NumFrames; ++FrameIndex)
+        {
+            const float Input = FMath::Sin(
+                2.0f * PI * FrequencyHz
+                * static_cast<float>(FrameIndex)
+                / static_cast<float>(SampleRate));
+            OutputData.AudioBuffer[FrameIndex] = Input;
+            InputSquareSum +=
+                static_cast<double>(Input)
+                * static_cast<double>(Input);
+        }
+
+        FAudioPluginSourceInputData InputData;
+        InputData.SourceId = 0;
+        InputData.AudioComponentId = AudioComponentId;
+        InputData.AudioBuffer = &OutputData.AudioBuffer;
+        InputData.NumChannels = 1;
+        InputData.ListenerOrientation = FQuat::Identity;
+        InputData.SpatializationParams = nullptr;
+        Plugin.ProcessAudio(InputData, OutputData);
+
+        double OutputSquareSum = 0.0;
+        for (const float Output : OutputData.AudioBuffer)
+        {
+            OutputSquareSum +=
+                static_cast<double>(Output)
+                * static_cast<double>(Output);
+        }
+        Plugin.Shutdown();
+        return FVector2d(
+            FMath::Sqrt(InputSquareSum / static_cast<double>(NumFrames)),
+            FMath::Sqrt(OutputSquareSum / static_cast<double>(NumFrames)));
+    };
+
+    const FVector2d LowRms = RenderFrequency(100.0f, 0x100ULL);
+    const FVector2d HighRms = RenderFrequency(10000.0f, 0x10000ULL);
+    AddInfo(
+        *FString::Printf(
+            TEXT(
+                "Frequency-dependent output RMS: low=%.9f high=%.9f ratio=%.6f"),
+            LowRms.Y,
+            HighRms.Y,
+            HighRms.Y > 0.0 ? LowRms.Y / HighRms.Y : 0.0));
+    TestTrue(
+        TEXT("The low and high test buffers have equal input RMS"),
+        FMath::IsNearlyEqual(LowRms.X, HighRms.X, 1.0e-6));
+    TestTrue(
+        *FString::Printf(
+            TEXT(
+                "Low-frequency direct output is at least twice the high-frequency output "
+                "(low RMS %.9f, high RMS %.9f, ratio %.6f)"),
+            LowRms.Y,
+            HighRms.Y,
+            HighRms.Y > 0.0 ? LowRms.Y / HighRms.Y : 0.0),
+        LowRms.Y >= HighRms.Y * 2.0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioDisabledAirAbsorptionTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.DisabledAirAbsorption",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioDisabledAirAbsorptionTest::RunTest(
+    const FString&)
+{
+    constexpr uint64 AudioComponentId = 0xD15AB1EDULL;
+    const TSharedRef<
+        FUERayTracingAudioSimulationSnapshotRegistry,
+        ESPMode::ThreadSafe> SnapshotRegistry =
+            MakeShared<
+                FUERayTracingAudioSimulationSnapshotRegistry,
+                ESPMode::ThreadSafe>();
+    const TSharedRef<
+        FUERayTracingAudioIndirectAudioBridge,
+        ESPMode::ThreadSafe> Bridge =
+            MakeShared<
+                FUERayTracingAudioIndirectAudioBridge,
+                ESPMode::ThreadSafe>();
+    FUERayTracingAudioOcclusionPlugin Plugin(
+        SnapshotRegistry,
+        Bridge,
+        FVector2f(500.0f, 4000.0f));
+
+    FAudioPluginInitializationParams InitializationParams;
+    InitializationParams.NumSources = 1;
+    InitializationParams.NumOutputChannels = 1;
+    InitializationParams.SampleRate = 48000;
+    InitializationParams.BufferLength = 4;
+    Plugin.Initialize(InitializationParams);
+    UUERayTracingAudioOcclusionSettings* Settings =
+        NewObject<UUERayTracingAudioOcclusionSettings>();
+    Settings->bApplyAirAbsorption = false;
+    Plugin.OnInitSource(0, NAME_None, 1, Settings);
+
+    FUERayTracingAudioSimulationSnapshot Snapshot;
+    Snapshot.DirectResult.bHasListener = true;
+    Snapshot.DirectResult.DistanceAttenuation = 0.5f;
+    Snapshot.DirectResult.Occlusion = 0.5f;
+    Snapshot.DirectResult.AirAbsorption =
+        FVector(0.05f, 0.1f, 0.2f);
+    Snapshot.IndirectMix = 0.0f;
+    SnapshotRegistry->Publish(
+        AudioComponentId,
+        MoveTemp(Snapshot));
+
+    FAudioPluginSourceOutputData OutputData;
+    OutputData.AudioBuffer =
+        { 1.0f, -1.0f, 0.5f, -0.5f };
+    const Audio::FAlignedFloatBuffer InputCopy =
+        OutputData.AudioBuffer;
+    FAudioPluginSourceInputData InputData;
+    InputData.SourceId = 0;
+    InputData.AudioComponentId = AudioComponentId;
+    InputData.AudioBuffer = &OutputData.AudioBuffer;
+    InputData.NumChannels = 1;
+    InputData.ListenerOrientation = FQuat::Identity;
+    InputData.SpatializationParams = nullptr;
+    Plugin.ProcessAudio(InputData, OutputData);
+
+    for (int32 SampleIndex = 0;
+        SampleIndex < OutputData.AudioBuffer.Num();
+        ++SampleIndex)
+    {
+        TestTrue(
+            *FString::Printf(
+                TEXT("Disabled air absorption preserves broadband sample %d"),
+                SampleIndex),
+            FMath::IsNearlyEqual(
+                OutputData.AudioBuffer[SampleIndex],
+                InputCopy[SampleIndex] * 0.25f,
+                1.0e-6f));
+    }
+    Plugin.Shutdown();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioPreparedCapacityTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.PreparedCapacity",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioPreparedCapacityTest::RunTest(
+    const FString&)
+{
+    FUERayTracingAudioThreeBandAirAbsorption PreparedProcessor;
+    PreparedProcessor.Initialize(48000, 1, 500.0f, 4000.0f);
+    TestFalse(
+        TEXT("A mono processor rejects an unsupported stereo channel count"),
+        PreparedProcessor.CanProcess(2));
+    PreparedProcessor.ProcessSample(
+        1.0f,
+        1,
+        FVector(1.0f, 0.5f, 0.1f));
+    TestFalse(
+        TEXT("An unsupported sample cannot resize prepared channel state"),
+        PreparedProcessor.CanProcess(2));
+
+    constexpr uint64 AudioComponentId = 0xCA9AC17EULL;
+    const TSharedRef<
+        FUERayTracingAudioSimulationSnapshotRegistry,
+        ESPMode::ThreadSafe> SnapshotRegistry =
+            MakeShared<
+                FUERayTracingAudioSimulationSnapshotRegistry,
+                ESPMode::ThreadSafe>();
+    const TSharedRef<
+        FUERayTracingAudioIndirectAudioBridge,
+        ESPMode::ThreadSafe> Bridge =
+            MakeShared<
+                FUERayTracingAudioIndirectAudioBridge,
+                ESPMode::ThreadSafe>();
+    FUERayTracingAudioOcclusionPlugin Plugin(
+        SnapshotRegistry,
+        Bridge,
+        FVector2f(500.0f, 4000.0f));
+
+    FAudioPluginInitializationParams InitializationParams;
+    InitializationParams.NumSources = 1;
+    InitializationParams.NumOutputChannels = 1;
+    InitializationParams.SampleRate = 48000;
+    InitializationParams.BufferLength = 2;
+    Plugin.Initialize(InitializationParams);
+    Plugin.OnInitSource(0, NAME_None, 1, nullptr);
+
+    FUERayTracingAudioSimulationSnapshot Snapshot;
+    Snapshot.DirectResult.bHasListener = true;
+    Snapshot.DirectResult.DistanceAttenuation = 0.5f;
+    Snapshot.DirectResult.Occlusion = 0.5f;
+    Snapshot.DirectResult.AirAbsorption =
+        FVector(0.05f, 0.1f, 0.2f);
+    Snapshot.IndirectMix = 0.0f;
+    SnapshotRegistry->Publish(
+        AudioComponentId,
+        MoveTemp(Snapshot));
+
+    FAudioPluginSourceOutputData OutputData;
+    OutputData.AudioBuffer =
+        { 1.0f, -1.0f, 0.5f, -0.5f };
+    const Audio::FAlignedFloatBuffer InputCopy =
+        OutputData.AudioBuffer;
+    FAudioPluginSourceInputData InputData;
+    InputData.SourceId = 0;
+    InputData.AudioComponentId = AudioComponentId;
+    InputData.AudioBuffer = &OutputData.AudioBuffer;
+    InputData.NumChannels = 2;
+    InputData.ListenerOrientation = FQuat::Identity;
+    InputData.SpatializationParams = nullptr;
+
+    FUERayTracingAudioAudioDiagnostics::ResetHardRealtime();
+    Plugin.ProcessAudio(InputData, OutputData);
+    const FUERayTracingAudioHardRealtimeStats Stats =
+        FUERayTracingAudioAudioDiagnostics::ReadHardRealtime();
+    TestEqual(
+        TEXT("An unsupported callback channel count records one capacity miss"),
+        Stats.CallbackCapacityMissCount,
+        1ULL);
+    for (int32 SampleIndex = 0;
+        SampleIndex < OutputData.AudioBuffer.Num();
+        ++SampleIndex)
+    {
+        TestTrue(
+            *FString::Printf(
+                TEXT("Capacity fallback sample %d uses scalar broadband gain"),
+                SampleIndex),
+            FMath::IsNearlyEqual(
+                OutputData.AudioBuffer[SampleIndex],
+                InputCopy[SampleIndex] * 0.25f,
+                1.0e-6f));
+    }
+    Plugin.Shutdown();
+    FUERayTracingAudioAudioDiagnostics::ResetHardRealtime();
     return true;
 }
 

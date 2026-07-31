@@ -28,6 +28,8 @@ public:
 private:
     TSharedPtr<FUERayTracingAudioManager> Manager;
     TArray<FAudioDevice*> AudioDevices;
+    FVector2f AirAbsorptionCrossoversHz =
+        FVector2f(500.0f, 4000.0f);
     TUniquePtr<FUERayTracingAudioOcclusionPluginFactory> OcclusionPluginFactory;
     TUniquePtr<FUERayTracingAudioSpatializationPluginFactory> SpatializationPluginFactory;
 };
