@@ -144,3 +144,13 @@
 - RED: original owner-order regression; injected failed-World context count `1 -> 2`; targeted Audio mutation. GREEN: build `48/48`, focused `2/2`, full Automation `55/55`, Python `64/64`, audit `39/40/1718` with zero forbidden operations.
 - Exact launcher exit `0`: Direct `231` generations, all data sources passed, hard realtime `1580/0/0`; Game `UERayTracingAudioValidation-Game-1785491460999842900.log`, Editor `UERayTracingAudioValidation-Editor-1785491641704854400.log`.
 - Editor PID `13344` is responding at `200 cm / default / (0.0002,0.0006,0.0012)`. Human Pass, R3 listening, multi-PIE hardware isolation, and Task 4 Minors remain open.
+
+## 2026-07-31 - Configurable Direct Audio Task 8
+
+- Verified the assigned worktree at base `6d0a10c22f9d09978bdb0545630589fe657efdfd` and retired only legacy Editor PID `13344` before building.
+- Static gates passed: realtime audit `39 functions / 40 bodies / 1718 lines`, all forbidden-operation counts `0`; Python `64/64`; initial `git diff --check` exit `0`.
+- Prescribed Development build exited `0` (`48/48` plugin actions). Fresh NullRHI Automation passed ConfigurableDirect `15/15`, Audio `38/38`, and full plugin `55/55`, with zero failed tests and unique absolute logs.
+- Prescribed Shipping build exited `0`. Shipping macro is `WITH_UERAYTRACINGAUDIO_VALIDATION=0`; executable/receipt string hits for scenario/HUD/F6/strict entry points were all `0`; receipt and Direct/Indirect/SDK artifacts prove the normal runtime remains built.
+- Exact launcher exited `0`: non-fallback Direct/Indirect markers each `1`; strict sweep passed at `200.000 cm`, visibility `0.000038-0.996866`, gain `0.174779-0.498316`, step `0.00005484`, dropout `0`, restored/hardware `1/1`; three data sources had continuous `24/24` Wet and hard realtime was `1600/0/0`.
+- Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785493624391644500.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785493804953148700.log`; responding Editor PID `10276` remains open.
+- Still open: user-performed Human Pass, moving-player/moving-occlusion and audible distance/air/click-pop checks, true multi-PIE hardware isolation, OpenSpace/NearWall/Enclosed R3, the enumerated Task 1-4 minors, and Task 7 duplicate tagged-Source ambiguity.

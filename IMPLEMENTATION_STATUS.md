@@ -285,3 +285,34 @@ Fix Round 1 evidence:
 - Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785491641704854400.log`; strict fixture `200 cm / default / (0.0002,0.0006,0.0012)`; PID `13344` is responding and left open.
 
 Human Pass, R3 listening, Task 2 multi-PIE hardware isolation, and Task 4 Minors remain open; the overall plugin is not complete.
+
+### Task 8: final technical verification and Shipping isolation
+
+Implementation status: automatic/technical R2 verification complete on 2026-07-31. Human listening, true multi-PIE hardware isolation, and R3 remain unverified.
+
+The normal product surface now has a single documented configuration contract: Project Settings cache `ReferenceDistanceCm=100` (`>=1`), `MaxDistanceCm=5000` (`>= ReferenceDistanceCm`), `SpeedOfSoundCmPerSecond=34300` (`>0`), `AirAbsorptionLowMidCrossoverHz=500` (`20..Nyquist`), and `AirAbsorptionMidHighCrossoverHz=4000` (`LowMid..Nyquist`); changes require Editor restart or audio-device reinitialization. Per-Source `AirAbsorptionPerMeter` / **Apply Air Absorption**, Blueprint-callable `SetIndirectDataSource` / `SetBakedImpulseResponseAsset`, first-valid Listener ownership per World, complementary three-band unity reconstruction, frequency-dependent Direct, and Wet bypass are documented independently of the opt-in validation fixture.
+
+Final static/build/Automation evidence:
+
+- `uv run script\validate_audio_realtime_safety.py` exit `0`: `39 functions / 40 bodies / 1718 lines`; lock, heap, shared-ownership, blocking, and UObject operations all `0`.
+- `uv run python -m unittest discover -s script\tests -v` exit `0`: `64/64`. `git diff --check` exit `0` before documentation edits.
+- `uv run script\build_and_validate.py` exit `0`: sync, UE 5.7 `UeVersion1Editor Win64 Development`, and standalone plugin build succeeded; plugin build ran `48/48` actions.
+- Fresh ConfigurableDirect `15/15`, Audio `38/38`, and full `UERayTracingAudio` `55/55`, each with `0` failed tests, one `TEST COMPLETE. EXIT CODE: 0`, and no Fatal/Assertion. Logs: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FINAL-ConfigurableDirect.log`, `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FINAL-Audio.log`, and `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FINAL-Full.log`. The known two pre-engine-init `LogAutomationTest: Error: Condition failed` lines remain startup noise, not failed tests.
+
+Shipping isolation evidence:
+
+- `uv run script\build_and_validate.py --target UeVersion1 --configuration Shipping` exit `0`; project and plugin builds both reported `Result: Succeeded`. UBT log: `C:\Users\splay\AppData\Local\UnrealBuildTool\Log.txt`.
+- Shipping executable: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Binaries\Win64\UeVersion1-Win64-Shipping.exe` (`143925760` bytes). Receipt: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Binaries\Win64\UeVersion1-Win64-Shipping.target`; configuration is Shipping and `BuildPlugins` contains `UERayTracingAudio`.
+- Generated macro proof: `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\Intermediate\Build\Win64\x64\UnrealGame\Shipping\UERayTracingAudio\Definitions.h` defines `WITH_UERAYTRACINGAUDIO_VALIDATION 0`; the runtime entry/HUD/F6 and Direct-sweep implementations are source-guarded by that macro.
+- Exact ASCII and UTF-16LE scans of the executable, plus receipt scans, found `0` hits for `UERayTracingAudioValidationScenario`, the validation HUD title, F6 control strings, and `UERayTracingAudio direct sweep: passed=`. Normal binary strings still include `/Script/UERayTracingAudio`, Source/Project/Spatialization types, `EUERayTracingAudioIndirectDataSource`, and `UERayTracingAudioSDK`.
+- Normal Shipping objects remain present for Direct (`...\UERayTracingAudio\UERayTracingAudioSpatialization.cpp.obj`), Indirect (`...\UERayTracingAudio\UERayTracingAudioIndirectRenderer.cpp.obj`), and SDK RHI (`...\UERayTracingAudioSDK\UERayTracingAudioRayTracingDevice.cpp.obj`) under `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\Intermediate\Build\Win64\x64\UnrealGame\Shipping`. The pure validation sound-wave helper is not claimed to be byte-empty; the proof concerns excluded runtime entry points.
+
+Final fixed-runtime evidence:
+
+- `uv run script\launch_runtime_validation.py` exit `0`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785493624391644500.log`. Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785493804953148700.log`.
+- The exact non-fallback SDK branches `submits direct sound visibility queries asynchronously to the render thread` and `submits indirect sound energy-field queries asynchronously to the render thread` each occur once. Baseline hardware/CPU paths are `171/171`, gain `0.001625/0.001625`, both relative deltas `0`.
+- The unique strict marker is `passed=1`: `200` generations, distance `200.000 / 200.000 cm`, visibility `0.000038 / 0.996866`, Direct gain `0.174779 / 0.498316`, maximum band-gain step `0.00005484`, dropouts `0`, restored `1`, hardware `1`.
+- Baked/Realtime/Hybrid each recorded `24/24` non-silent buffers, `24/24` Wet-present buffers, and maximum silent run `0`; data sources passed with kernels `2/2/4` and `non_finite=0`. Hard realtime passed at callbacks/capacity misses/prepare drops `1600/0/0`.
+- Editor scene/UI readiness is `source=1 listener=1 geometry=7 lighting=1 bake_ui=1`, `200 cm / default / (0.0002,0.0006,0.0012)`. PID `10276` is responding and remains open for the user.
+
+Open ledger (not marked complete): Task 1's effective-crossover startup log hard-codes 48 kHz; Task 2 lacks focused ignored-listener-removal identity, scene-address-stability, and pending-request World-cleanup coverage; Task 3 needs invalid/out-of-order crossover, non-finite band-gain, and finite-input-overflow hardening; Task 4 needs transitive callback-safety/logging audit coverage, remaining Editor mode/bake/artifact/validation assignments routed through public Source setters, and saturating Direct diagnostic counters; Task 7 duplicate tagged Source roles select the first iteration result rather than rejecting ambiguity. Human Pass, moving-player/moving-occlusion listening, audible distance/air comparison, click/pop judgment, true multi-PIE hardware isolation, and the OpenSpace/NearWall/Enclosed R3 matrix also remain open. The overall plugin goal is not complete.

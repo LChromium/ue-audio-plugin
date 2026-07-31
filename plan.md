@@ -204,3 +204,19 @@ Next:
 1. Keep Task 8 work separate from this review-fix round.
 2. Record target-device Human Pass/Fail for distance, air absorption, moving Direct recovery, click/pop, and R3 reflection environments.
 3. Retain Task 2 multi-PIE hardware isolation and the ledgered Task 4 Minors as explicit follow-ups.
+
+### Task 8: documentation, Shipping isolation, and final technical verification
+
+Completed:
+
+1. Closed the five-document technical record for product settings, per-Source and per-World behavior, complementary frequency-dependent Direct processing, Wet bypass, validation-scenario isolation, F6 phases/marker, and Editor 1/2/4 m plus Off/Default/Stress controls.
+2. Passed the final static gates: callback audit `39/40/1718` with all forbidden-operation counts `0`, Python `64/64`, and whitespace validation.
+3. Passed the prescribed Development build, then fresh NullRHI Automation at ConfigurableDirect `15/15`, Audio `38/38`, and full plugin `55/55`, all with zero failed tests.
+4. Passed the prescribed Shipping build and proved `WITH_UERAYTRACINGAUDIO_VALIDATION=0`; exact executable/receipt scans contain no validation entry, HUD, F6, or strict-marker strings, while the receipt and Direct/Indirect/SDK artifacts retain the normal runtime.
+5. Passed the exact launcher and extra raw-log gates: both non-fallback hardware markers, one passing strict Direct marker, `200 cm`, clear/occluded visibility, positive soft gain, bounded step, zero dropout, restored Source, continuous three-mode Wet, and hard realtime `1600/0/0`. Editor PID `10276` remains open and ready.
+
+Next:
+
+1. The user enters PIE, waits for hardware/data-source gates, presses F8, then uses F3/F6 and records target-device Human Pass/Fail for recovery, restart, click/pop, silence/timing, moving occlusion, and audible distance/air differences.
+2. Run true multi-PIE hardware isolation and the OpenSpace/NearWall/Enclosed R3 matrix; neither automated R2 evidence nor fixture telemetry closes them.
+3. Triage the enumerated Task 1-4 and Task 7 deferred technical items. Do not declare the overall plugin complete while these manual/R3 gates remain open.

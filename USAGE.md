@@ -334,3 +334,42 @@ That explicit action is the only way an untagged Source enters the panel's selec
 Persistent fixture component additions are normal Editor transactions: Geometry, Source, Audio, and Listener components can be undone/redone, and the level is marked dirty. The transient Automation fixture creates a World context only after the World exists and fully destroys the World/context before garbage collection.
 
 Fix Round 1 verification used the exact default launcher. It exited `0`, left responding Editor PID `13344` open, and parsed `200 cm / default / (0.0002,0.0006,0.0012)`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785491460999842900.log`. Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785491641704854400.log`. This remains configuration/runtime evidence, not a target-device Human Pass.
+
+## Task 8: Product configuration and final validation workflow
+
+### Normal product configuration
+
+In **Project Settings -> Plugins -> UE Ray Tracing Audio**, configure these cached physical parameters:
+
+- `ReferenceDistanceCm=100`, constrained to `>= 1`.
+- `MaxDistanceCm=5000`, constrained to `>= ReferenceDistanceCm`.
+- `SpeedOfSoundCmPerSecond=34300`, constrained to `> 0`.
+- `AirAbsorptionLowMidCrossoverHz=500`, constrained to `20..Nyquist`.
+- `AirAbsorptionMidHighCrossoverHz=4000`, constrained to `LowMid..Nyquist`.
+
+Restart the Editor or reinitialize the audio device after changing them; existing audio-plugin instances retain their startup configuration. On each `UUERayTracingAudioSourceComponent`, set `AirAbsorptionPerMeter` and enable **Apply Air Absorption** when frequency-dependent Direct attenuation is wanted. `SetIndirectDataSource` and `SetBakedImpulseResponseAsset` are Blueprint-callable for Realtime/Baked/Hybrid selection and baked-asset replacement.
+
+Listener ownership is per `UWorld`: the first valid registered `UUERayTracingAudioListenerComponent` owns that World, and later duplicates are ignored until ownership changes. The Direct processor uses complementary low/mid/high bands, so three unity gains reconstruct the input; distance/occlusion remain broadband while air absorption shapes the three Direct bands. Wet/Indirect audio bypasses this Direct air-absorption filter.
+
+### Opt-in validation fixture
+
+`-UERayTracingAudioValidationScenario` is a non-Shipping validation fixture, not a product requirement for ordinary projects. The fixed Game flow also supplies `-UERayTracingAudioValidationDirectSweep`; the Editor omits that automatic flag and leaves F6 as the explicit sweep action. The sweep runs clear hold -> outbound wall traversal -> Soft Occluded hold -> return traversal -> final clear hold -> exact Source/settings restoration, then emits one parsed `UERayTracingAudio direct sweep:` marker.
+
+The Bake panel's fixture-only controls are **Clear 1 m / Clear 2 m / Clear 4 m** and **Off / Default / Stress** air absorption. Their exact per-meter vectors are Off `(0,0,0)`, Default `(0.0002,0.0006,0.0012)`, and Stress `(0.01,0.04,0.12)`. These controls mutate only the tagged validation fixture and are disabled during Bake/offline rendering; they are not general Source presets.
+
+Run the technical flow with:
+
+```powershell
+uv run script\build_and_validate.py
+uv run script\launch_runtime_validation.py
+```
+
+For the remaining Human check in the Editor left open by the launcher:
+
+1. Enter PIE and wait for the hardware Direct/Indirect and data-source gates.
+2. Press F8 to enter the interactive view.
+3. Press F3 to compare Original and Rendered, then F6 to listen through Clear -> wall -> Soft Occluded -> Clear.
+4. Confirm there is no playback restart, click/pop, unexpected silence, timing jump, or failed recovery while moving the player/occlusion path.
+5. In the Bake panel, compare Clear 1/2/4 m and Default/Stress air absorption on the same target headphones/speakers.
+
+Only the user performing that listening may record Human Pass. True multi-PIE hardware isolation, moving-player/moving-occlusion listening, audible distance/air comparison, click/pop judgment, and the OpenSpace/NearWall/Enclosed R3 matrix remain open.
