@@ -222,7 +222,7 @@ Editor PID `22952` is left open for manual PIE/listening. The moving Direct swee
 
 The validation-only Direct sweep uses a fixed listener origin and moves the validation source along a 200 cm quarter arc from the clear side of the wall to the occluded side and back. It holds each endpoint long enough to collect fresh Direct generations, displays phase/distance/visibility/gain/air bands in the HUD, and emits exactly one terminal line beginning with `UERayTracingAudio direct sweep:`.
 
-For automatic Game validation, both `-UERayTracingAudioValidationScenario` and `-UERayTracingAudioValidationDirectSweep` are required. Task 6 will add the latter flag to `script\launch_runtime_validation.py` and parse the terminal marker; until then, the fixed launcher does not exercise this sweep.
+For automatic Game validation, both `-UERayTracingAudioValidationScenario` and `-UERayTracingAudioValidationDirectSweep` are required. `script\launch_runtime_validation.py` now supplies both flags to every fixed Game command. It deliberately omits the automatic sweep flag from the Editor command, where F6 remains the explicit user action.
 
 The first successfully created validation scenario is the process diagnostics owner. Only that World runs the automatic sweep, subsequent data-source diagnostics, F6 sweep, and sweep HUD, preventing process-global audio counters or terminal markers from being mixed across multi-world sessions. If no hardware Direct generation arrives within the acoustic-startup deadline, the owner emits one failed strict summary with `hardware=0` and marks the automatic sweep terminal instead of waiting indefinitely.
 
@@ -230,4 +230,32 @@ In the interactive validation scenario, press F6 after the first hardware Direct
 
 On success, timeout, actor destruction, world teardown, or validation stop, the fixture restores the source transform, hard-occlusion state, `OccludedGain`, `IndirectMix`, and indirect data source exactly once. A normal success waits for a fresh post-restore Direct generation before reporting. The fixture is compiled only when `WITH_UERAYTRACINGAUDIO_VALIDATION=1`, is additionally gated by the validation scenario, and does nothing in ordinary projects.
 
-Automated Task 5 evidence is build `48/48`, callback audit `39/40` with zero forbidden operations, and ConfigurableDirect `15/15` at `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\TestProject\UeVersion1\Saved\Logs\Task5-FINAL-ConfigurableDirect.log`. The hardware runtime marker/parser is pending Task 6, and target-device click/pop and audible-quality Human Pass remains pending.
+Automated Task 5 evidence is build `48/48`, callback audit `39/40` with zero forbidden operations, and ConfigurableDirect `15/15` at `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\TestProject\UeVersion1\Saved\Logs\Task5-FINAL-ConfigurableDirect.log`. Task 6 has now supplied the hardware runtime marker/parser gate; target-device click/pop and audible-quality Human Pass remains pending.
+
+### Task 6 fixed-launcher Direct gate
+
+Run the normal fixed flow:
+
+```powershell
+uv run script\build_and_validate.py
+uv run script\launch_runtime_validation.py
+```
+
+The Game phase must produce exactly one fully parseable `UERayTracingAudio direct sweep:` terminal line. The launcher rejects a failed marker, fewer than eight generations, distance outside `198-202 cm`, visibility that does not reach both `<= 0.10` and `>= 0.90`, zero Soft Occlusion gain, a gain step above `0.01`, any Direct dropout, unrestored Source state, CPU fallback, non-finite numbers, partial lines, or multiple marker lines. This gate runs before the existing Baked/Realtime/Hybrid and hard-real-time acceptance checks.
+
+The first integrated run correctly failed instead of weakening those gates: the sweep moved Source before the baseline CPU reference was calculated, so an old hardware Indirect result (`171` paths) was compared with a different-position CPU result (`953` paths). Automatic movement now waits until the baseline validation result and CPU reference have been logged. The final Game log proves the intended order:
+
+```text
+baseline result -> CPU reference -> Direct sweep -> data-source Bake -> data-source result
+```
+
+Final automatic evidence:
+
+- baseline hardware/CPU paths `171/171`, gain `0.001625/0.001625`, both relative deltas `0`;
+- Direct sweep: `213` generations, distance `200.000 / 200.000 cm`, visibility `0.000040 / 0.996630`, gain `0.174780 / 0.498240`, maximum step `0.00004591`, dropouts `0`, restored `1`, hardware `1`;
+- Baked/Realtime/Hybrid passed with kernels `2/2/4`, `non_finite=0`;
+- hard realtime callbacks/misses/drops `1583/0/0`;
+- Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785475390548759300.log`;
+- Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`.
+
+Editor PID `35468` was left initialized for manual PIE/listening. Use F6 for an interactive repeat, then record target-device recovery and click/pop as Human Pass/Fail. Automated marker success does not replace that Human Pass.

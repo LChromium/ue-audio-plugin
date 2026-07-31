@@ -106,3 +106,13 @@
 - Review-fix RED failed on the intentionally absent owner/hardware/deadline policy (`C2653`/`C3861`). The implemented policy bounds no-hardware wait, accepts hardware evidence only after warmup, rejects any accepted CPU fallback, and gives one World exclusive process diagnostics/sweep/HUD ownership.
 - Final verification passed: prescribed build `48/48`; callback audit `39 functions / 40 bodies / 0 forbidden operations`; ConfigurableDirect `15/15` at `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\TestProject\UeVersion1\Saved\Logs\Task5-FINAL-ConfigurableDirect.log`.
 - The Task 6 launcher flag/parser and hardware terminal-marker evidence are pending. Human Pass for target-device recovery and click/pop absence is pending.
+
+## 2026-07-31 - Configurable Direct Audio Task 6
+
+- Python RED produced `16` expected failures: the Game flag and strict Direct-sweep parser/gate were absent.
+- Added the Game-only automatic flag, exactly-one strict parser, finite/threshold/restoration/hardware checks, and Direct-first data-source gating. Full Python passed `58/58`; callback audit remained `39/40/1718` with zero violations.
+- The first runtime run failed the existing CPU-reference gate without a crash. Crash-workflow evidence found automatic Source motion preceding baseline CPU comparison (`171` hardware paths versus `953` CPU paths).
+- Added a pure baseline-admission regression (RED C2660) and required baseline result logging before sweep movement. Final build passed `48/48`; ConfigurableDirect passed `15/15`.
+- Final fixed runtime passed: baseline `171/171`; Direct sweep `213` generations at `200 cm`, endpoint visibility, nonzero gain, bounded step, no dropout, restored/hardware; data sources passed; callbacks/misses/drops `1583/0/0`.
+- Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785475390548759300.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`; Editor PID `35468` is responding.
+- Target-device Human Pass/click-pop listening, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open.

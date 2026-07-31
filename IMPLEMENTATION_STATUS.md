@@ -191,7 +191,7 @@ Remaining limitations are unchanged. The moving Direct sweep, target-device PIE 
 
 ### Task 5: validation-only hardware Direct sweep
 
-Implementation status: code-complete and build/test verified; hardware runtime acceptance is pending Task 6.
+Implementation status: code-complete, build/test verified, and accepted by the Task 6 fixed hardware runtime gate.
 
 The runtime validator now owns one non-reentrant Direct-sweep state machine with clear hold, outbound motion, occluded hold, reverse motion, final clear hold, restoration, and terminal phases. The source follows a deterministic 200 cm quarter arc around a fixed listener. Pure helpers accumulate fresh-generation observations and require clear -> occluded -> clear ordering, near-200 cm distance, visibility range, non-zero Direct gain, bounded per-sample gain steps, no Direct dropout/non-finite/over-unit samples, hardware execution, and a fresh post-restore Direct result.
 
@@ -207,4 +207,21 @@ Task 5 evidence:
 - Review-fix RED: the prescribed build failed on the intentionally absent pure owner/hardware/deadline policy (`C2653`/`C3861`) before that policy was implemented; the metrics regression also requires mixed hardware/CPU accepted generations to fail.
 - GREEN: ConfigurableDirect passed `15/15`, including trajectory, metrics, all-hardware provenance, owner admission, and deadline assertions; `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\TestProject\UeVersion1\Saved\Logs\Task5-FINAL-ConfigurableDirect.log`.
 
-The fixed runtime launcher was deliberately not run in Task 5. Its Direct-sweep flag and exact terminal-marker parser are pending Task 6, as is hardware Game-log evidence. Target-device audible quality, recovery, and click/pop Human Pass are also pending; the overall plugin is not complete.
+The fixed runtime launcher was deliberately not run in Task 5. Task 6 has now added its Direct-sweep flag and exact terminal-marker parser and recorded passing hardware Game-log evidence. Target-device audible quality, recovery, and click/pop Human Pass are still pending; the overall plugin is not complete.
+
+### Task 6: strict fixed-launcher Direct sweep acceptance
+
+Implementation status: complete and automatically verified. Every fixed Game command now requests the automatic Direct sweep, while Editor commands remain manual through F6. `validate_direct_sweep` requires exactly one complete marker line, rejects malformed/partial/ambiguous evidence and non-finite floats, aggregates all threshold failures, and is evaluated before the existing Realtime/Baked/Hybrid gate.
+
+The first integrated runtime run entered the prescribed crash-debugging workflow after the pre-existing CPU-reference gate failed. There was no crash artifact or Fatal/Assertion. Historical evidence showed stationary runs at hardware/CPU `171/171`; the failing run started the sweep before baseline logging and compared asynchronous hardware `171` against the moved Source's CPU `953`. The pure admission policy now requires `bResultLogged`, so baseline result/CPU evidence is captured before Source motion and the sweep still completes before data-source Bake.
+
+Task 6 evidence:
+
+- Python RED: `42` tests, `16` expected failures for the absent flag/parser.
+- C++ regression RED: prescribed build failed with C2660 at the new baseline-admission parameter.
+- GREEN: Python `58/58`; callback audit `39 functions / 40 bodies / 1718 lines / 0 forbidden operations`; prescribed build `48/48`; ConfigurableDirect `15/15`.
+- Fixed launcher exit `0`: baseline hardware/CPU paths `171/171`, gain `0.001625/0.001625`, both deltas `0`; Direct sweep `passed=1`, `213` generations, `200.000 cm`, visibility `0.000040-0.996630`, gain `0.174780-0.498240`, maximum step `0.00004591`, no dropout, restored and hardware-backed.
+- Data sources passed with kernels `2/2/4` and `non_finite=0`; hard realtime callbacks/misses/drops were `1583/0/0`.
+- Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785475390548759300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`.
+
+Remaining limitations: Editor PID `35468` is ready for a target-device Human Pass, but audible recovery and click/pop have not been judged by a person. Task 2 multi-PIE hardware isolation, the ledgered Task 4 Minors, and later plan tasks also remain open; the overall plugin is not complete.

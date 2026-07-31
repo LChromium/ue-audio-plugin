@@ -138,6 +138,22 @@ Completed:
 
 Next:
 
-1. Task 6 must add `-UERayTracingAudioValidationDirectSweep` to the fixed launcher, parse the exact terminal summary, run hardware validation, and ledger the Game/Editor evidence.
+1. Task 6 has added `-UERayTracingAudioValidationDirectSweep`, the exact strict terminal parser, and passing Game/Editor evidence.
 2. Record target-device PIE Human Pass/Fail for audible recovery and click/pop absence. Automated numeric evidence does not close this gate.
+3. Retain Task 2 multi-PIE hardware isolation and the ledgered Task 4 Minors as separate follow-ups.
+
+### Task 6: fixed-launcher Direct sweep parser gate
+
+Completed:
+
+1. Added the automatic sweep flag to fixed Game commands only and a strict exactly-one marker parser with all approved thresholds, non-finite rejection, and combined failure reasons.
+2. Made a passing hardware Direct sweep a prerequisite for accepting the existing Baked/Realtime/Hybrid and hard-real-time evidence.
+3. Recorded Python RED (`42` tests, `16` expected failures), then Python GREEN `58/58` and callback audit `39/40/1718` with zero forbidden operations.
+4. Followed crash-debugging when the first integrated run exposed Source-motion/CPU-reference temporal mismatch. Added a pure baseline-admission RED (C2660), required `bResultLogged`, and passed build `48/48` plus ConfigurableDirect `15/15`.
+5. Ran the exact fixed runtime successfully: baseline paths `171/171`; Direct sweep `passed=1` with `213` generations, fixed `200 cm`, endpoint visibility, nonzero gain, bounded step, no dropout, restoration, and hardware provenance; data sources and `1583/0/0` hard-realtime counters passed. Editor PID `35468` remains open.
+
+Next:
+
+1. Continue Task 7 Editor controls and fixture maintenance from the approved plan.
+2. Record target-device PIE Human Pass/Fail for Direct recovery and click/pop absence.
 3. Retain Task 2 multi-PIE hardware isolation and the ledgered Task 4 Minors as separate follow-ups.

@@ -177,5 +177,16 @@ v1 必须同时满足：
 - [x] Prescribed build passed with `48/48` actions and the hard-realtime callback audit remained `39 functions / 40 bodies / 0 forbidden operations`.
 - [x] Closed review integrity findings with regression coverage: hardware wait terminates once with `hardware=0`; only accepted post-warmup generations establish all-hardware provenance; one process-owner World owns sweep/data-source diagnostics and HUD; rejected F6 cannot move a non-owner Pawn.
 - [x] Focused ConfigurableDirect NullRHI verification passed `15/15`; log: `D:\Labs\2602-unreal\ue-audio-plugin\.worktrees\configurable-direct-audio-validation\TestProject\UeVersion1\Saved\Logs\Task5-FINAL-ConfigurableDirect.log`.
-- [ ] Task 6 must add the fixed-launcher flag/parser and produce the required hardware Game-log terminal marker. Task 5 intentionally did not run the full runtime launcher.
+- [x] Task 6 added the fixed-launcher flag/parser and produced one passing hardware Game-log terminal marker. The final fixed Game run reported `213` generations, `200.000 / 200.000 cm`, visibility `0.000040 / 0.996630`, gain `0.174780 / 0.498240`, maximum step `0.00004591`, zero Direct dropouts, restored Source state, and hardware provenance.
 - [ ] Human Pass is pending for target-device PIE listening, click/pop absence, and audible clear -> occluded -> clear recovery. Automated metrics are not Human Pass.
+
+## Task 6: Direct sweep launcher and strict parser gate (2026-07-31)
+
+- [x] RED: `RuntimeValidationTests` ran `42` tests and failed the expected `16` assertions because the fixed Game command lacked `-UERayTracingAudioValidationDirectSweep` and the strict parser seam did not exist.
+- [x] Added the Direct-sweep flag to every fixed Game command while keeping Editor commands free of the automatic flag; Editor continues to expose F6.
+- [x] Added an exactly-one strict terminal-marker parser with explicit combined reasons for missing/malformed/ambiguous markers, every approved numeric threshold, non-finite values, restoration, dropout, and hardware provenance.
+- [x] Made the Direct sweep a prerequisite of the existing Realtime/Baked/Hybrid and hard-real-time runtime evidence.
+- [x] Crash-workflow diagnosis found the first integrated run comparing an old asynchronous hardware Indirect result against a CPU reference after the sweep had already moved Source. A pure-policy RED failed with C2660; automatic movement now waits for baseline result/CPU-reference logging, while still preceding Bake/data-source validation.
+- [x] Final gates passed: Python `58/58`; callback audit `39 functions / 40 bodies / 0 forbidden operations`; prescribed build `48/48`; ConfigurableDirect `15/15`.
+- [x] The exact launcher exited `0`: baseline hardware/CPU paths `171/171` and gain `0.001625/0.001625`; Direct sweep passed; all three data sources passed; hard realtime reported callbacks/misses/drops `1583/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785475390548759300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`.
+- [ ] Complete target-device Human Pass for audible clear -> occluded -> clear recovery and click/pop absence. Task 2 multi-PIE hardware isolation and the ledgered Task 4 Minors also remain open.
