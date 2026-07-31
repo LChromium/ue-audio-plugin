@@ -161,6 +161,26 @@ EDITOR_AB_ARTIFACTS_FAILURE_MARKER = "UERayTracingAudioEditor A/B artifacts fail
 EDITOR_LISTENING_UI_MARKER = "UERayTracingAudioEditor listening acceptance ready:"
 EDITOR_DIRECT_PRESETS = ("clear", "soft_occluded", "hard_occluded")
 EDITOR_REFLECTION_ENVIRONMENTS = ("enclosed", "open_space", "near_wall")
+EDITOR_VALIDATION_DISTANCES_CM = (100, 200, 400)
+EDITOR_AIR_ABSORPTION_PROFILES = ("off", "default", "stress")
+EDITOR_AIR_ABSORPTION_VECTORS = {
+    "off": (0.0, 0.0, 0.0),
+    "default": (0.0002, 0.0006, 0.0012),
+    "stress": (0.01, 0.04, 0.12),
+}
+EDITOR_VISIBLE_SCENE_PATTERN = re.compile(
+    r"UERayTracingAudioEditor validation scene ready: "
+    r"source=1 listener=1 geometry=(?P<geometry>[0-9]+) "
+    r"lighting=1 bake_ui=1 "
+    r"direct_preset=(?P<direct_preset>[a-z_]+) "
+    r"reflection_environment=(?P<reflection_environment>[a-z_]+) "
+    r"source_listener_distance_cm=(?P<distance_cm>[0-9.eE+-]+) "
+    r"air_absorption_profile=(?P<air_absorption_profile>[a-z_]+) "
+    r"air_absorption_per_meter=\("
+    r"(?P<air_low>[0-9.eE+-]+),"
+    r"(?P<air_mid>[0-9.eE+-]+),"
+    r"(?P<air_high>[0-9.eE+-]+)\)\."
+)
 EDITOR_AB_ARTIFACTS_PATTERN = re.compile(
     r"UERayTracingAudioEditor A/B artifacts ready: "
     r"hardware=(?P<hardware>[01]) auto_checks=(?P<auto_checks>[01]) "
@@ -240,6 +260,17 @@ def parse_args() -> argparse.Namespace:
         choices=EDITOR_DIRECT_PRESETS,
         default="clear",
     )
+    parser.add_argument(
+        "--editor-distance-cm",
+        type=int,
+        choices=EDITOR_VALIDATION_DISTANCES_CM,
+        default=200,
+    )
+    parser.add_argument(
+        "--editor-air-absorption-profile",
+        choices=EDITOR_AIR_ABSORPTION_PROFILES,
+        default="default",
+    )
     parser.add_argument("--editor-ready-timeout-seconds", type=float, default=DEFAULT_EDITOR_READY_TIMEOUT_SECONDS)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -254,6 +285,116 @@ def is_original_project_input_asset(asset_path: str) -> bool:
         asset_path.startswith("/Game/")
         and not asset_path.startswith("/Game/UERayTracingAudio/Validation")
     )
+
+
+def validate_editor_scene_ready(
+    log_text: str,
+    *,
+    expected_direct_preset: str,
+    expected_reflection_environment: str,
+    expected_distance_cm: int,
+    expected_air_absorption_profile: str,
+) -> dict[str, object]:
+    if expected_direct_preset not in EDITOR_DIRECT_PRESETS:
+        raise ValueError(
+            f"Unknown Editor direct preset {expected_direct_preset!r}; "
+            f"expected one of {EDITOR_DIRECT_PRESETS}."
+        )
+    if expected_reflection_environment not in EDITOR_REFLECTION_ENVIRONMENTS:
+        raise ValueError(
+            "Unknown Editor reflection environment "
+            f"{expected_reflection_environment!r}; "
+            f"expected one of {EDITOR_REFLECTION_ENVIRONMENTS}."
+        )
+    if expected_distance_cm not in EDITOR_VALIDATION_DISTANCES_CM:
+        raise ValueError(
+            f"Unknown Editor validation distance {expected_distance_cm!r}; "
+            f"expected one of {EDITOR_VALIDATION_DISTANCES_CM}."
+        )
+    if expected_air_absorption_profile not in EDITOR_AIR_ABSORPTION_PROFILES:
+        raise ValueError(
+            "Unknown Editor air absorption profile "
+            f"{expected_air_absorption_profile!r}; "
+            f"expected one of {EDITOR_AIR_ABSORPTION_PROFILES}."
+        )
+
+    marker_lines: list[str] = []
+    for line in log_text.splitlines():
+        marker_index = line.find(EDITOR_VISIBLE_SCENE_MARKER)
+        if marker_index < 0:
+            continue
+        marker_lines.append(line[marker_index:].strip())
+
+    if len(marker_lines) != 1:
+        raise RuntimeError(
+            "fixed Editor validation requires exactly one strict Editor "
+            f"validation scene marker (found {len(marker_lines)})"
+        )
+
+    match = EDITOR_VISIBLE_SCENE_PATTERN.fullmatch(marker_lines[0])
+    if not match:
+        raise RuntimeError(
+            "fixed Editor validation requires exactly one strict Editor "
+            "validation scene marker (found 0 parseable)"
+        )
+
+    distance_cm = float(match.group("distance_cm"))
+    profile = match.group("air_absorption_profile")
+    air_absorption = tuple(
+        float(match.group(group))
+        for group in ("air_low", "air_mid", "air_high")
+    )
+    failures: list[str] = []
+    if match.group("direct_preset") != expected_direct_preset:
+        failures.append(
+            "direct preset "
+            f"({match.group('direct_preset')} != {expected_direct_preset})"
+        )
+    if (
+        match.group("reflection_environment")
+        != expected_reflection_environment
+    ):
+        failures.append(
+            "reflection environment "
+            f"({match.group('reflection_environment')} != "
+            f"{expected_reflection_environment})"
+        )
+    if abs(distance_cm - expected_distance_cm) > 0.1:
+        failures.append(
+            f"effective distance ({distance_cm} != {expected_distance_cm})"
+        )
+    if profile != expected_air_absorption_profile:
+        failures.append(
+            "air absorption profile "
+            f"({profile} != {expected_air_absorption_profile})"
+        )
+    expected_vector = EDITOR_AIR_ABSORPTION_VECTORS[
+        expected_air_absorption_profile
+    ]
+    if any(
+        abs(actual - expected) > 0.0000005
+        for actual, expected in zip(air_absorption, expected_vector)
+    ):
+        failures.append(
+            "air absorption vector "
+            f"({air_absorption} != {expected_vector})"
+        )
+    if failures:
+        raise RuntimeError(
+            "Editor validation scene evidence failed: "
+            + "; ".join(failures)
+        )
+
+    return {
+        "geometry": int(match.group("geometry")),
+        "direct_preset": match.group("direct_preset"),
+        "reflection_environment": match.group(
+            "reflection_environment"
+        ),
+        "distance_cm": distance_cm,
+        "air_absorption_profile": profile,
+        "air_absorption_per_meter": air_absorption,
+    }
 
 
 def validate_direct_sweep(log_text: str) -> dict[str, float | int]:
@@ -415,6 +556,8 @@ def build_editor_command(
     bake_repeatability: bool = False,
     editor_ab_artifacts: bool = False,
     editor_direct_preset: str = "clear",
+    editor_distance_cm: int = 200,
+    editor_air_absorption_profile: str = "default",
     editor_reflection_bounces: int = 8,
     interactive_runtime: bool = False,
 ) -> list[str]:
@@ -422,6 +565,17 @@ def build_editor_command(
         raise ValueError(
             f"Unknown Editor direct preset {editor_direct_preset!r}; "
             f"expected one of {EDITOR_DIRECT_PRESETS}."
+        )
+    if editor_distance_cm not in EDITOR_VALIDATION_DISTANCES_CM:
+        raise ValueError(
+            f"Unknown Editor validation distance {editor_distance_cm!r}; "
+            f"expected one of {EDITOR_VALIDATION_DISTANCES_CM}."
+        )
+    if editor_air_absorption_profile not in EDITOR_AIR_ABSORPTION_PROFILES:
+        raise ValueError(
+            "Unknown Editor air absorption profile "
+            f"{editor_air_absorption_profile!r}; "
+            f"expected one of {EDITOR_AIR_ABSORPTION_PROFILES}."
         )
     command = [
         str(editor_exe),
@@ -431,6 +585,9 @@ def build_editor_command(
         "-raytracing",
         "-UERayTracingAudioValidationScenario",
         f"-UERayTracingAudioValidationDirectPreset={editor_direct_preset}",
+        f"-UERayTracingAudioValidationDistanceCm={editor_distance_cm:g}",
+        "-UERayTracingAudioValidationAirAbsorptionProfile="
+        f"{editor_air_absorption_profile}",
         f"-UERayTracingAudioValidationReflectionBounces={max(1, min(editor_reflection_bounces, 64))}",
         f"-UERayTracingAudioValidationSourceCount={max(2, min(source_count, 32))}",
         *VALIDATION_AUDIO_OVERRIDES,
@@ -1191,6 +1348,8 @@ def start_editor_for_user(
     bake_repeatability: bool,
     editor_ab_artifacts: bool,
     editor_direct_preset: str,
+    editor_distance_cm: int,
+    editor_air_absorption_profile: str,
     interactive_runtime: bool,
     dry_run: bool,
 ) -> None:
@@ -1204,6 +1363,8 @@ def start_editor_for_user(
         bake_repeatability=bake_repeatability,
         editor_ab_artifacts=editor_ab_artifacts,
         editor_direct_preset=editor_direct_preset,
+        editor_distance_cm=editor_distance_cm,
+        editor_air_absorption_profile=editor_air_absorption_profile,
         interactive_runtime=interactive_runtime,
     )
     print("\n=== Launch Editor For User ===")
@@ -1254,6 +1415,15 @@ def start_editor_for_user(
         print(f"  - {interactive_line}")
         print("  - Press Play, wait for the IR mode gate, then use WASD+Mouse; F3 toggles Rendered/Original and F1/F2/F5 select the IR source.")
     else:
+        editor_scene_values = validate_editor_scene_ready(
+            editor_log,
+            expected_direct_preset=editor_direct_preset,
+            expected_reflection_environment="enclosed",
+            expected_distance_cm=editor_distance_cm,
+            expected_air_absorption_profile=(
+                editor_air_absorption_profile
+            ),
+        )
         editor_scene_line = next(
             line.strip()
             for line in editor_log.splitlines()
@@ -1261,6 +1431,14 @@ def start_editor_for_user(
         )
         print("Editor A/B scene evidence:")
         print(f"  - {editor_scene_line}")
+        print(
+            "  - Parsed validation fixture: "
+            f"distance_cm={editor_scene_values['distance_cm']:.2f} "
+            "air_absorption_profile="
+            f"{editor_scene_values['air_absorption_profile']} "
+            "air_absorption_per_meter="
+            f"{editor_scene_values['air_absorption_per_meter']}"
+        )
 
     if editor_ab_artifacts:
         artifacts_match = EDITOR_AB_ARTIFACTS_PATTERN.search(editor_log)
@@ -1449,6 +1627,11 @@ def main() -> int:
     print(f"Interactive runtime  : {args.interactive_runtime}")
     print(f"Interactive smoke    : {args.interactive_smoke}")
     print(f"Editor direct preset : {args.editor_direct_preset}")
+    print(f"Editor distance cm   : {args.editor_distance_cm}")
+    print(
+        "Editor air profile   : "
+        f"{args.editor_air_absorption_profile}"
+    )
     print(f"Editor ready timeout : {args.editor_ready_timeout_seconds}")
     print(f"Dry run              : {args.dry_run}")
 
@@ -1470,6 +1653,10 @@ def main() -> int:
         bake_repeatability=args.bake_repeatability,
         editor_ab_artifacts=args.editor_ab_artifacts,
         editor_direct_preset=args.editor_direct_preset,
+        editor_distance_cm=args.editor_distance_cm,
+        editor_air_absorption_profile=(
+            args.editor_air_absorption_profile
+        ),
         interactive_runtime=args.interactive_runtime,
         dry_run=args.dry_run,
     )

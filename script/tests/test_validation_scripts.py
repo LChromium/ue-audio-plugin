@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
@@ -252,6 +253,149 @@ class RuntimeValidationTests(unittest.TestCase):
             launch_runtime_validation.EDITOR_VALIDATION_MARKERS,
         )
         self.assertNotIn("-UERayTracingAudioValidationDirectSweep", command)
+
+    def test_editor_cli_applies_distance_and_air_profile_only_to_editor(
+        self,
+    ) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "launch_runtime_validation.py",
+                "--editor-distance-cm",
+                "400",
+                "--editor-air-absorption-profile",
+                "stress",
+            ],
+        ):
+            args = launch_runtime_validation.parse_args()
+        self.assertEqual(args.editor_distance_cm, 400)
+        self.assertEqual(args.editor_air_absorption_profile, "stress")
+
+        editor_command = launch_runtime_validation.build_editor_command(
+            Path("UnrealEditor.exe"),
+            Path("Test.uproject"),
+            Path("Editor.log"),
+            editor_distance_cm=400,
+            editor_air_absorption_profile="stress",
+        )
+        self.assertIn(
+            "-UERayTracingAudioValidationDistanceCm=400",
+            editor_command,
+        )
+        self.assertIn(
+            "-UERayTracingAudioValidationAirAbsorptionProfile=stress",
+            editor_command,
+        )
+
+        game_command = launch_runtime_validation.build_game_command(
+            Path("UnrealEditor.exe"),
+            Path("Test.uproject"),
+            Path("Game.log"),
+        )
+        self.assertFalse(
+            any(
+                argument.startswith(
+                    "-UERayTracingAudioValidationDistanceCm="
+                )
+                for argument in game_command
+            )
+        )
+        self.assertFalse(
+            any(
+                argument.startswith(
+                    "-UERayTracingAudioValidationAirAbsorptionProfile="
+                )
+                for argument in game_command
+            )
+        )
+
+    def test_editor_scene_ready_marker_requires_requested_fixture_fields(
+        self,
+    ) -> None:
+        marker = (
+            "LogTemp: Display: UERayTracingAudioEditor validation scene ready: "
+            "source=1 listener=1 geometry=0 lighting=1 bake_ui=1 "
+            "direct_preset=clear reflection_environment=open_space "
+            "source_listener_distance_cm=400.00 "
+            "air_absorption_profile=stress "
+            "air_absorption_per_meter=(0.010000,0.040000,0.120000)."
+        )
+        values = launch_runtime_validation.validate_editor_scene_ready(
+            marker,
+            expected_direct_preset="clear",
+            expected_reflection_environment="open_space",
+            expected_distance_cm=400,
+            expected_air_absorption_profile="stress",
+        )
+        self.assertEqual(values["distance_cm"], 400.0)
+        self.assertEqual(values["air_absorption_profile"], "stress")
+        self.assertEqual(
+            values["air_absorption_per_meter"],
+            (0.01, 0.04, 0.12),
+        )
+
+        legacy_marker = (
+            "UERayTracingAudioEditor validation scene ready: source=1 "
+            "listener=1 geometry=7 lighting=1 bake_ui=1 "
+            "direct_preset=clear reflection_environment=enclosed "
+            "source_listener_distance_cm=200.00."
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "strict Editor validation scene marker",
+        ):
+            launch_runtime_validation.validate_editor_scene_ready(
+                legacy_marker,
+                expected_direct_preset="clear",
+                expected_reflection_environment="enclosed",
+                expected_distance_cm=200,
+                expected_air_absorption_profile="default",
+            )
+
+        wrong_vector_marker = marker.replace(
+            "(0.010000,0.040000,0.120000)",
+            "(0.000200,0.000600,0.001200)",
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "air absorption vector",
+        ):
+            launch_runtime_validation.validate_editor_scene_ready(
+                wrong_vector_marker,
+                expected_direct_preset="clear",
+                expected_reflection_environment="open_space",
+                expected_distance_cm=400,
+                expected_air_absorption_profile="stress",
+            )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "direct preset",
+        ):
+            launch_runtime_validation.validate_editor_scene_ready(
+                marker,
+                expected_direct_preset="hard_occluded",
+                expected_reflection_environment="open_space",
+                expected_distance_cm=400,
+                expected_air_absorption_profile="stress",
+            )
+
+        duplicate_marker = marker + "\n" + marker.replace(
+            "air_absorption_profile=stress ",
+            "air_absorption_profile=malformed ",
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "exactly one strict Editor validation scene marker",
+        ):
+            launch_runtime_validation.validate_editor_scene_ready(
+                duplicate_marker,
+                expected_direct_preset="clear",
+                expected_reflection_environment="open_space",
+                expected_distance_cm=400,
+                expected_air_absorption_profile="stress",
+            )
 
     def test_direct_sweep_gate_accepts_one_strict_hardware_marker(self) -> None:
         values = self.validate_direct_sweep(

@@ -346,7 +346,7 @@ namespace
                             SNew(SButton)
                             .Text(FText::FromString(TEXT("Create / Select Actual A/B Validation Scene")))
                             .ToolTipText(FText::FromString(TEXT("Creates a visible enclosed acoustic room with Source, Listener, center occlusion wall, seven geometry components, lights, and a camera. Repeated clicks reuse the same tagged scene.")))
-                            .IsEnabled_Lambda([this]() { return !IsJobRunning() && !bOfflineRenderActive; })
+                            .IsEnabled_Lambda([this]() { return CanMutateValidationFixture(); })
                             .OnClicked_Lambda([this]()
                             {
                                 return CreateValidationScene(EUERayTracingAudioEditorDirectPreset::Clear);
@@ -360,7 +360,7 @@ namespace
                                 SNew(SButton)
                                 .Text(FText::FromString(TEXT("Clear Path (2 m)")))
                                 .ToolTipText(FText::FromString(TEXT("Places Source and Listener 2 m apart on the same side of the center wall.")))
-                                .IsEnabled_Lambda([this]() { return !IsJobRunning() && !bOfflineRenderActive; })
+                                .IsEnabled_Lambda([this]() { return CanMutateValidationFixture(); })
                                 .OnClicked_Lambda([this]()
                                 {
                                     return CreateValidationScene(EUERayTracingAudioEditorDirectPreset::Clear);
@@ -371,7 +371,7 @@ namespace
                                 SNew(SButton)
                                 .Text(FText::FromString(TEXT("Soft Occluded (2 m)")))
                                 .ToolTipText(FText::FromString(TEXT("Moves the Source behind the center wall at the same 2 m distance and preserves an explicit 0.35 acoustic direct floor.")))
-                                .IsEnabled_Lambda([this]() { return !IsJobRunning() && !bOfflineRenderActive; })
+                                .IsEnabled_Lambda([this]() { return CanMutateValidationFixture(); })
                                 .OnClicked_Lambda([this]()
                                 {
                                     return CreateValidationScene(EUERayTracingAudioEditorDirectPreset::SoftOccluded);
@@ -382,12 +382,94 @@ namespace
                                 SNew(SButton)
                                 .Text(FText::FromString(TEXT("Hard Occluded (2 m)")))
                                 .ToolTipText(FText::FromString(TEXT("Moves the Source behind the center wall at the same 2 m distance with no soft direct floor.")))
-                                .IsEnabled_Lambda([this]() { return !IsJobRunning() && !bOfflineRenderActive; })
+                                .IsEnabled_Lambda([this]() { return CanMutateValidationFixture(); })
                                 .OnClicked_Lambda([this]()
                                 {
                                     return CreateValidationScene(EUERayTracingAudioEditorDirectPreset::HardOccluded);
                                 })
                             ]
+                        ]
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 6.0f)
+                        [
+                            SNew(SHorizontalBox)
+                            + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+                            [
+                                SNew(STextBlock)
+                                .Text(FText::FromString(TEXT("Validation Distance:")))
+                            ]
+                            + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                            [
+                                SNew(SButton)
+                                .Text(FText::FromString(TEXT("Clear 1 m")))
+                                .IsEnabled_Lambda([this]() { return CanMutateValidationFixture(); })
+                                .OnClicked_Lambda([this]() { return SetValidationDistanceCm(100.0f); })
+                            ]
+                            + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                            [
+                                SNew(SButton)
+                                .Text(FText::FromString(TEXT("Clear 2 m")))
+                                .IsEnabled_Lambda([this]() { return CanMutateValidationFixture(); })
+                                .OnClicked_Lambda([this]() { return SetValidationDistanceCm(200.0f); })
+                            ]
+                            + SHorizontalBox::Slot().AutoWidth()
+                            [
+                                SNew(SButton)
+                                .Text(FText::FromString(TEXT("Clear 4 m")))
+                                .IsEnabled_Lambda([this]() { return CanMutateValidationFixture(); })
+                                .OnClicked_Lambda([this]() { return SetValidationDistanceCm(400.0f); })
+                            ]
+                        ]
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 6.0f)
+                        [
+                            SNew(SHorizontalBox)
+                            + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+                            [
+                                SNew(STextBlock)
+                                .Text(FText::FromString(TEXT("Validation Air Absorption:")))
+                            ]
+                            + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                            [
+                                SNew(SButton)
+                                .Text(FText::FromString(TEXT("Off")))
+                                .IsEnabled_Lambda([this]() { return CanMutateValidationFixture(); })
+                                .OnClicked_Lambda([this]()
+                                {
+                                    return SetValidationAirAbsorptionProfile(
+                                        EUERayTracingAudioEditorAirAbsorptionProfile::Off);
+                                })
+                            ]
+                            + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                            [
+                                SNew(SButton)
+                                .Text(FText::FromString(TEXT("Default")))
+                                .IsEnabled_Lambda([this]() { return CanMutateValidationFixture(); })
+                                .OnClicked_Lambda([this]()
+                                {
+                                    return SetValidationAirAbsorptionProfile(
+                                        EUERayTracingAudioEditorAirAbsorptionProfile::Default);
+                                })
+                            ]
+                            + SHorizontalBox::Slot().AutoWidth()
+                            [
+                                SNew(SButton)
+                                .Text(FText::FromString(TEXT("Stress")))
+                                .IsEnabled_Lambda([this]() { return CanMutateValidationFixture(); })
+                                .OnClicked_Lambda([this]()
+                                {
+                                    return SetValidationAirAbsorptionProfile(
+                                        EUERayTracingAudioEditorAirAbsorptionProfile::Stress);
+                                })
+                            ]
+                        ]
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
+                        [
+                            SNew(STextBlock)
+                            .Text_Lambda([this]()
+                            {
+                                return FText::FromString(
+                                    GetValidationFixtureSummary());
+                            })
+                            .AutoWrapText(true)
                         ]
                         + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 12.0f)
                         [
@@ -839,6 +921,23 @@ namespace
                     || Job->GetState() == EUERayTracingAudioBakeJobState::Running);
         }
 
+        bool CanMutateValidationFixture() const
+        {
+            return !IsJobRunning() && !bOfflineRenderActive;
+        }
+
+        FString GetValidationFixtureSummary() const
+        {
+            return FString::Printf(
+                TEXT("Validation fixture only | Effective distance: %.0f cm | Air absorption (%s): (%.6f, %.6f, %.6f)"),
+                EffectiveValidationDistanceCm,
+                FUERayTracingAudioEditorValidationScene::
+                    GetAirAbsorptionProfileName(ValidationAirProfile),
+                EffectiveValidationAirAbsorption.X,
+                EffectiveValidationAirAbsorption.Y,
+                EffectiveValidationAirAbsorption.Z);
+        }
+
         bool HasSelectedBakedAsset() const
         {
             const UUERayTracingAudioSourceComponent* Source = SelectedSource.Get();
@@ -898,7 +997,7 @@ namespace
             const FScopedTransaction Transaction(
                 FText::FromString(TEXT("Change UE Ray Tracing Audio Runtime IR Data Source")));
             Source->Modify();
-            Source->IndirectDataSource = DataSource;
+            Source->SetIndirectDataSource(DataSource);
             Source->GetOwner()->MarkPackageDirty();
             LastStatus = GetRuntimeDataSourceSummary();
             return FReply::Handled();
@@ -914,6 +1013,60 @@ namespace
             UWorld* World = GetEditorWorld();
             SelectedSource = FindSource(World);
             SelectedListener = FindListener(World);
+
+            FString AirProfileValue;
+            FParse::Value(
+                FCommandLine::Get(),
+                TEXT("UERayTracingAudioValidationAirAbsorptionProfile="),
+                AirProfileValue);
+            ValidationAirProfile =
+                FUERayTracingAudioEditorValidationScene::
+                    ParseAirAbsorptionProfile(AirProfileValue);
+            FParse::Value(
+                FCommandLine::Get(),
+                TEXT("UERayTracingAudioValidationDistanceCm="),
+                ValidationDistanceCm);
+            if (!FMath::IsNearlyEqual(ValidationDistanceCm, 100.0f)
+                && !FMath::IsNearlyEqual(ValidationDistanceCm, 400.0f))
+            {
+                ValidationDistanceCm = 200.0f;
+            }
+
+            FString ReflectionEnvironmentValue;
+            FParse::Value(
+                FCommandLine::Get(),
+                TEXT("UERayTracingAudioValidationReflectionEnvironment="),
+                ReflectionEnvironmentValue);
+            ValidationReflectionEnvironment =
+                FUERayTracingAudioEditorValidationScene::
+                    ParseReflectionEnvironment(ReflectionEnvironmentValue);
+
+            FString DirectPresetValue;
+            FParse::Value(
+                FCommandLine::Get(),
+                TEXT("UERayTracingAudioValidationDirectPreset="),
+                DirectPresetValue);
+            ValidationDirectPreset =
+                FUERayTracingAudioEditorValidationScene::ParseDirectPreset(
+                    DirectPresetValue);
+
+            const AActor* SourceActor = SelectedSource.IsValid()
+                ? SelectedSource->GetOwner()
+                : nullptr;
+            if (IsValid(SourceActor)
+                && SourceActor->ActorHasTag(
+                    FName(TEXT("VRTA_EditorValidationScene")))
+                && SelectedListener.IsValid()
+                && IsValid(SelectedListener->GetOwner())
+                && SelectedListener->GetOwner()->ActorHasTag(
+                    FName(TEXT("VRTA_EditorValidationScene"))))
+            {
+                EffectiveValidationDistanceCm = FVector::Distance(
+                    SourceActor->GetActorLocation(),
+                    SelectedListener->GetOwner()->GetActorLocation());
+                EffectiveValidationAirAbsorption =
+                    SelectedSource->GetAirAbsorptionPerMeter();
+            }
 
             if (!FParse::Param(FCommandLine::Get(), TEXT("UERayTracingAudioValidationScenario")))
             {
@@ -967,7 +1120,15 @@ namespace
                 FUERayTracingAudioEditorValidationScene::EnsureScene(
                     *World,
                     EUERayTracingAudioEditorValidationSceneMode::Persistent,
-                    DirectPreset);
+                    DirectPreset,
+                    ValidationReflectionEnvironment,
+                    ValidationDistanceCm,
+                    ValidationAirProfile);
+            ValidationDirectPreset = DirectPreset;
+            EffectiveValidationDistanceCm =
+                SceneResult.SourceListenerDistanceCm;
+            EffectiveValidationAirAbsorption =
+                SceneResult.AirAbsorptionPerMeter;
             SelectedSource = SceneResult.Source;
             SelectedListener = SceneResult.Listener;
             if (GEditor && SelectedSource.IsValid() && SelectedSource->GetOwner())
@@ -977,6 +1138,28 @@ namespace
             }
             LastStatus = SceneResult.Message;
             return FReply::Handled();
+        }
+
+        FReply SetValidationDistanceCm(const float DistanceCm)
+        {
+            if (!CanMutateValidationFixture())
+            {
+                return FReply::Handled();
+            }
+            ValidationDistanceCm = DistanceCm;
+            return CreateValidationScene(
+                EUERayTracingAudioEditorDirectPreset::Clear);
+        }
+
+        FReply SetValidationAirAbsorptionProfile(
+            const EUERayTracingAudioEditorAirAbsorptionProfile AirProfile)
+        {
+            if (!CanMutateValidationFixture())
+            {
+                return FReply::Handled();
+            }
+            ValidationAirProfile = AirProfile;
+            return CreateValidationScene(ValidationDirectPreset);
         }
 
         UUERayTracingAudioSourceComponent* FindSelectedSource() const
@@ -1252,8 +1435,9 @@ namespace
                 const FScopedTransaction Transaction(
                     FText::FromString(TEXT("Assign UE Ray Tracing Audio Baked IR")));
                 Source->Modify();
-                Source->BakedImpulseResponseAsset = Asset;
-                Source->IndirectDataSource = EUERayTracingAudioIndirectDataSource::Hybrid;
+                Source->SetBakedImpulseResponseAsset(Asset);
+                Source->SetIndirectDataSource(
+                    EUERayTracingAudioIndirectDataSource::Hybrid);
                 if (AActor* SourceOwner = Source->GetOwner())
                 {
                     SourceOwner->MarkPackageDirty();
@@ -1724,6 +1908,17 @@ namespace
         FString ActiveBakeSourceActorPath;
         FString ActiveBakeListenerActorPath;
         float ActiveBakeWetSend = 1.0f;
+        float ValidationDistanceCm = 200.0f;
+        float EffectiveValidationDistanceCm = 200.0f;
+        FVector EffectiveValidationAirAbsorption =
+            FVector(0.0002f, 0.0006f, 0.0012f);
+        EUERayTracingAudioEditorDirectPreset ValidationDirectPreset =
+            EUERayTracingAudioEditorDirectPreset::Clear;
+        EUERayTracingAudioEditorReflectionEnvironment
+            ValidationReflectionEnvironment =
+                EUERayTracingAudioEditorReflectionEnvironment::Enclosed;
+        EUERayTracingAudioEditorAirAbsorptionProfile ValidationAirProfile =
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default;
         TSoftObjectPtr<USoundWave> ComparisonReference;
         TSoftObjectPtr<USoundWave> ComparisonDirect;
         TSoftObjectPtr<USoundWave> ComparisonWet;
@@ -1913,6 +2108,11 @@ bool FUERayTracingAudioEditorModule::TickValidationScene(const float DeltaTime)
         FCommandLine::Get(),
         TEXT("UERayTracingAudioValidationDistanceCm="),
         DistanceCmOverride);
+    FString AirAbsorptionProfileValue;
+    FParse::Value(
+        FCommandLine::Get(),
+        TEXT("UERayTracingAudioValidationAirAbsorptionProfile="),
+        AirAbsorptionProfileValue);
 
     const FUERayTracingAudioEditorValidationSceneResult SceneResult =
         FUERayTracingAudioEditorValidationScene::EnsureScene(
@@ -1928,7 +2128,9 @@ bool FUERayTracingAudioEditorModule::TickValidationScene(const float DeltaTime)
                 return FUERayTracingAudioEditorValidationScene::ParseDirectPreset(DirectPresetValue);
             }(),
             FUERayTracingAudioEditorValidationScene::ParseReflectionEnvironment(ReflectionEnvironmentValue),
-            DistanceCmOverride);
+            DistanceCmOverride,
+            FUERayTracingAudioEditorValidationScene::
+                ParseAirAbsorptionProfile(AirAbsorptionProfileValue));
     if (!SceneResult.bSucceeded)
     {
         UE_LOG(
@@ -1944,11 +2146,16 @@ bool FUERayTracingAudioEditorModule::TickValidationScene(const float DeltaTime)
     UE_LOG(
         LogTemp,
         Display,
-        TEXT("UERayTracingAudioEditor validation scene ready: source=1 listener=1 geometry=%d lighting=1 bake_ui=1 direct_preset=%s reflection_environment=%s source_listener_distance_cm=%.2f."),
+        TEXT("UERayTracingAudioEditor validation scene ready: source=1 listener=1 geometry=%d lighting=1 bake_ui=1 direct_preset=%s reflection_environment=%s source_listener_distance_cm=%.2f air_absorption_profile=%s air_absorption_per_meter=(%.6f,%.6f,%.6f)."),
         SceneResult.GeometryCount,
         FUERayTracingAudioEditorValidationScene::GetDirectPresetName(SceneResult.DirectPreset),
         FUERayTracingAudioEditorValidationScene::GetReflectionEnvironmentName(SceneResult.ReflectionEnvironment),
-        SceneResult.SourceListenerDistanceCm);
+        SceneResult.SourceListenerDistanceCm,
+        FUERayTracingAudioEditorValidationScene::GetAirAbsorptionProfileName(
+            SceneResult.AirAbsorptionProfile),
+        SceneResult.AirAbsorptionPerMeter.X,
+        SceneResult.AirAbsorptionPerMeter.Y,
+        SceneResult.AirAbsorptionPerMeter.Z);
 
     if (FParse::Param(FCommandLine::Get(), TEXT("UERayTracingAudioValidationEditorBake")))
     {

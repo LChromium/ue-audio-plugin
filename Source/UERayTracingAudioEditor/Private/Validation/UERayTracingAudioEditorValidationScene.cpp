@@ -1,5 +1,6 @@
 #include "Validation/UERayTracingAudioEditorValidationScene.h"
 
+#include "Algo/AnyOf.h"
 #include "Camera/CameraActor.h"
 #include "Components/AudioComponent.h"
 #include "Components/PointLightComponent.h"
@@ -67,6 +68,33 @@ namespace
         }
     }
 
+    float GetValidationDistanceCm(const float DistanceCmOverride)
+    {
+        if (FMath::IsNearlyEqual(DistanceCmOverride, 100.0f))
+        {
+            return 100.0f;
+        }
+        if (FMath::IsNearlyEqual(DistanceCmOverride, 400.0f))
+        {
+            return 400.0f;
+        }
+        return 200.0f;
+    }
+
+    FVector GetAirAbsorptionPerMeter(
+        const EUERayTracingAudioEditorAirAbsorptionProfile AirProfile)
+    {
+        switch (AirProfile)
+        {
+        case EUERayTracingAudioEditorAirAbsorptionProfile::Off:
+            return FVector::ZeroVector;
+        case EUERayTracingAudioEditorAirAbsorptionProfile::Stress:
+            return FVector(0.01f, 0.04f, 0.12f);
+        default:
+            return FVector(0.0002f, 0.0006f, 0.0012f);
+        }
+    }
+
     EObjectFlags GetObjectFlags(const EUERayTracingAudioEditorValidationSceneMode Mode)
     {
         return Mode == EUERayTracingAudioEditorValidationSceneMode::Transient
@@ -84,6 +112,59 @@ namespace
             }
         }
         return nullptr;
+    }
+
+    bool RemoveStaleTaggedGeometry(
+        UWorld& World,
+        const TArrayView<const FGeometryDefinition> DesiredDefinitions,
+        const EUERayTracingAudioEditorValidationSceneMode Mode,
+        bool& bOutMutated)
+    {
+        TArray<TWeakObjectPtr<AActor>> ActorsToDestroy;
+        for (TActorIterator<AActor> ActorIt(&World); ActorIt; ++ActorIt)
+        {
+            AActor* Actor = *ActorIt;
+            if (!Actor->ActorHasTag(ValidationSceneTag)
+                || !Actor->FindComponentByClass<
+                    UUERayTracingAudioGeometryComponent>())
+            {
+                continue;
+            }
+
+            const bool bRoleIsDesired = Algo::AnyOf(
+                DesiredDefinitions,
+                [Actor](const FGeometryDefinition& Definition)
+                {
+                    return Actor->ActorHasTag(FName(Definition.Role));
+                });
+            if (!bRoleIsDesired)
+            {
+                ActorsToDestroy.Add(Actor);
+            }
+        }
+
+        for (const TWeakObjectPtr<AActor>& ActorPtr : ActorsToDestroy)
+        {
+            AActor* Actor = ActorPtr.Get();
+            if (!IsValid(Actor))
+            {
+                continue;
+            }
+            if (Mode == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+            {
+                Actor->Modify();
+            }
+            if (!World.DestroyActor(
+                    Actor,
+                    false,
+                    Mode
+                        == EUERayTracingAudioEditorValidationSceneMode::Persistent))
+            {
+                return false;
+            }
+            bOutMutated = true;
+        }
+        return true;
     }
 
     void TagActor(AActor& Actor, const FName Role, const TCHAR* Label)
@@ -171,10 +252,20 @@ namespace
         const float Intensity,
         const float Radius,
         const EUERayTracingAudioEditorValidationSceneMode Mode,
-        bool& bOutCreated)
+        bool& bOutCreated,
+        bool& bOutMutated)
     {
         if (APointLight* Existing = Cast<APointLight>(FindTaggedActor(World, FName(Role))))
         {
+            if (Mode
+                == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+            {
+                Existing->Modify();
+                if (Existing->PointLightComponent)
+                {
+                    Existing->PointLightComponent->Modify();
+                }
+            }
             Existing->SetActorLocation(Location);
             if (Existing->PointLightComponent)
             {
@@ -183,6 +274,7 @@ namespace
                 Existing->PointLightComponent->SetLightColor(Color);
                 Existing->PointLightComponent->SetCastShadows(true);
             }
+            bOutMutated = true;
             return;
         }
 
@@ -220,11 +312,14 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
     const EUERayTracingAudioEditorValidationSceneMode Mode,
     const EUERayTracingAudioEditorDirectPreset DirectPreset,
     const EUERayTracingAudioEditorReflectionEnvironment ReflectionEnvironment,
-    const float DistanceCmOverride)
+    const float DistanceCmOverride,
+    const EUERayTracingAudioEditorAirAbsorptionProfile AirProfile)
 {
     FUERayTracingAudioEditorValidationSceneResult Result;
     Result.DirectPreset = DirectPreset;
     Result.ReflectionEnvironment = ReflectionEnvironment;
+    Result.AirAbsorptionProfile = AirProfile;
+    Result.AirAbsorptionPerMeter = GetAirAbsorptionPerMeter(AirProfile);
     if (World.IsGameWorld())
     {
         Result.Message = TEXT("The Editor A/B validation scene can only be created in an editor world.");
@@ -248,6 +343,18 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
     }
 
     const TArrayView<const FGeometryDefinition> GeometryDefinitions = GetGeometryDefinitions(ReflectionEnvironment);
+    bool bMutatedActors = false;
+    if (!RemoveStaleTaggedGeometry(
+            World,
+            GeometryDefinitions,
+            Mode,
+            bMutatedActors))
+    {
+        Result.Message =
+            TEXT("Could not remove stale tagged validation geometry.");
+        return Result;
+    }
+
     FBox SceneBounds(ForceInit);
     for (const FGeometryDefinition& Definition : GeometryDefinitions)
     {
@@ -285,20 +392,37 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
     // along the existing listener-to-source line of sight so the R2 distance-scan and
     // air-absorption validation can compare several distances without disturbing the
     // occluded presets' geometry-relative offsets.
-    FVector ClearOffsetForThisRun = ClearSourceOffset;
-    if (DistanceCmOverride > 0.0f)
+    const float ClearDistanceCm =
+        GetValidationDistanceCm(DistanceCmOverride);
+    const FVector Direction =
+        (ClearSourceOffset - ListenerOffset).GetSafeNormal();
+    const FVector ClearOffsetForThisRun =
+        ListenerOffset + (Direction * ClearDistanceCm);
+    const FVector DesiredSourceLocation =
+        ValidationOrigin
+        + (DirectPreset == EUERayTracingAudioEditorDirectPreset::Clear
+            ? ClearOffsetForThisRun
+            : OccludedSourceOffset);
+    const FString DesiredSourceLabel = FString::Printf(
+        TEXT("VRTA A-B Primary Source (Orange) - %s"),
+        GetDirectPresetName(DirectPreset));
+    const bool bSourceActorChanged =
+        !SourceActor->GetActorLocation().Equals(
+            DesiredSourceLocation,
+            UE_KINDA_SMALL_NUMBER)
+        || SourceActor->GetActorLabel() != DesiredSourceLabel
+        || SourceActor->GetStaticMeshComponent()->GetMobility()
+            != EComponentMobility::Movable;
+    if (bSourceActorChanged
+        && Mode == EUERayTracingAudioEditorValidationSceneMode::Persistent)
     {
-        const FVector Direction = (ClearSourceOffset - ListenerOffset).GetSafeNormal();
-        ClearOffsetForThisRun = ListenerOffset + (Direction * DistanceCmOverride);
+        SourceActor->Modify();
+        SourceActor->GetStaticMeshComponent()->Modify();
     }
     SourceActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
-    SourceActor->SetActorLocation(
-        ValidationOrigin + (DirectPreset == EUERayTracingAudioEditorDirectPreset::Clear
-            ? ClearOffsetForThisRun
-            : OccludedSourceOffset));
-    SourceActor->SetActorLabel(FString::Printf(
-        TEXT("VRTA A-B Primary Source (Orange) - %s"),
-        GetDirectPresetName(DirectPreset)));
+    SourceActor->SetActorLocation(DesiredSourceLocation);
+    SourceActor->SetActorLabel(DesiredSourceLabel);
+    bMutatedActors |= bSourceActorChanged;
     UUERayTracingAudioSourceComponent* Source =
         SourceActor->FindComponentByClass<UUERayTracingAudioSourceComponent>();
     if (!Source)
@@ -309,20 +433,48 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
             GetObjectFlags(Mode));
         SourceActor->AddInstanceComponent(Source);
         Source->RegisterComponent();
+        Result.bCreatedActors = true;
+    }
+    const bool bSourceSettingsChanged =
+        !FMath::IsNearlyEqual(Source->OccludedGain, 0.35f)
+        || !FMath::IsNearlyEqual(Source->SourceRadiusCm, 30.0f)
+        || Source->NumOcclusionSamples != 8
+        || !Source->bUseVolumetricOcclusion
+        || Source->bHardOcclusion
+            != (DirectPreset
+                == EUERayTracingAudioEditorDirectPreset::HardOccluded)
+        || !Source->AirAbsorptionPerMeter.Equals(
+            Result.AirAbsorptionPerMeter,
+            UE_KINDA_SMALL_NUMBER)
+        || Source->NumReflectionRays != 4096
+        || Source->MaxReflectionBounces != 8
+        || !FMath::IsNearlyEqual(Source->IndirectDurationSeconds, 2.0f)
+        || Source->IndirectMode
+            != EUERayTracingAudioIndirectMode::HybridReverb
+        || Source->IndirectDataSource
+            != EUERayTracingAudioIndirectDataSource::Realtime
+        || !FMath::IsNearlyEqual(Source->IndirectMix, 1.0f);
+    if (bSourceSettingsChanged
+        && Mode == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+    {
+        Source->Modify();
     }
     Source->OccludedGain = 0.35f;
     Source->SourceRadiusCm = 30.0f;
     Source->NumOcclusionSamples = 8;
     Source->bUseVolumetricOcclusion = true;
     Source->bHardOcclusion = DirectPreset == EUERayTracingAudioEditorDirectPreset::HardOccluded;
+    Source->AirAbsorptionPerMeter = Result.AirAbsorptionPerMeter;
     Source->NumReflectionRays = 4096;
     Source->MaxReflectionBounces = 8;
     Source->IndirectDurationSeconds = 2.0f;
     Source->IndirectMode = EUERayTracingAudioIndirectMode::HybridReverb;
-    Source->IndirectDataSource = EUERayTracingAudioIndirectDataSource::Realtime;
+    Source->SetIndirectDataSource(
+        EUERayTracingAudioIndirectDataSource::Realtime);
     // This scene is an explicit listening fixture, so reflections and the
     // late-reverb tail should be readily audible without hiding the direct cue.
     Source->IndirectMix = 1.0f;
+    bMutatedActors |= bSourceSettingsChanged;
     if (!SourceActor->FindComponentByClass<UAudioComponent>())
     {
         UAudioComponent* Audio = NewObject<UAudioComponent>(
@@ -349,8 +501,23 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         Result.Message = TEXT("Could not create the Editor A/B listener actor.");
         return Result;
     }
+    const FVector DesiredListenerLocation =
+        ValidationOrigin + ListenerOffset;
+    const bool bListenerActorChanged =
+        !ListenerActor->GetActorLocation().Equals(
+            DesiredListenerLocation,
+            UE_KINDA_SMALL_NUMBER)
+        || ListenerActor->GetStaticMeshComponent()->GetMobility()
+            != EComponentMobility::Movable;
+    if (bListenerActorChanged
+        && Mode == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+    {
+        ListenerActor->Modify();
+        ListenerActor->GetStaticMeshComponent()->Modify();
+    }
     ListenerActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
-    ListenerActor->SetActorLocation(ValidationOrigin + ListenerOffset);
+    ListenerActor->SetActorLocation(DesiredListenerLocation);
+    bMutatedActors |= bListenerActorChanged;
     UUERayTracingAudioListenerComponent* Listener =
         ListenerActor->FindComponentByClass<UUERayTracingAudioListenerComponent>();
     if (!Listener)
@@ -376,7 +543,8 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         12000.0f,
         1400.0f,
         Mode,
-        Result.bCreatedActors);
+        Result.bCreatedActors,
+        bMutatedActors);
     EnsurePointLight(
         World,
         TEXT("VRTA A-B Source Light (Orange)"),
@@ -386,7 +554,8 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         2600.0f,
         420.0f,
         Mode,
-        Result.bCreatedActors);
+        Result.bCreatedActors,
+        bMutatedActors);
     EnsurePointLight(
         World,
         TEXT("VRTA A-B Listener Light (Blue)"),
@@ -396,7 +565,8 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         2200.0f,
         380.0f,
         Mode,
-        Result.bCreatedActors);
+        Result.bCreatedActors,
+        bMutatedActors);
 
     if (!FindTaggedActor(World, FName(TEXT("VRTA_AB_Camera"))))
     {
@@ -419,7 +589,8 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
     SceneBounds += ListenerActor->GetComponentsBoundingBox(true);
     FocusEditorView(SceneBounds);
 
-    if (Mode == EUERayTracingAudioEditorValidationSceneMode::Persistent && Result.bCreatedActors)
+    if (Mode == EUERayTracingAudioEditorValidationSceneMode::Persistent
+        && (Result.bCreatedActors || bMutatedActors))
     {
         World.MarkPackageDirty();
     }
@@ -429,11 +600,15 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         && Result.GeometryCount == GeometryDefinitions.Num();
     Result.Message = Result.bSucceeded
         ? FString::Printf(
-            TEXT("Editor A/B validation scene ready: source=1 listener=1 geometry=%d lighting=1 direct_preset=%s reflection_environment=%s source_listener_distance_cm=%.2f."),
+            TEXT("Editor A/B validation scene ready: source=1 listener=1 geometry=%d lighting=1 direct_preset=%s reflection_environment=%s source_listener_distance_cm=%.2f air_absorption_profile=%s air_absorption_per_meter=(%.6f,%.6f,%.6f)."),
             Result.GeometryCount,
             GetDirectPresetName(DirectPreset),
             GetReflectionEnvironmentName(ReflectionEnvironment),
-            Result.SourceListenerDistanceCm)
+            Result.SourceListenerDistanceCm,
+            GetAirAbsorptionProfileName(AirProfile),
+            Result.AirAbsorptionPerMeter.X,
+            Result.AirAbsorptionPerMeter.Y,
+            Result.AirAbsorptionPerMeter.Z)
         : TEXT("Editor A/B validation scene is incomplete.");
     return Result;
 }
@@ -491,5 +666,35 @@ const TCHAR* FUERayTracingAudioEditorValidationScene::GetReflectionEnvironmentNa
         return TEXT("near_wall");
     default:
         return TEXT("enclosed");
+    }
+}
+
+EUERayTracingAudioEditorAirAbsorptionProfile
+FUERayTracingAudioEditorValidationScene::ParseAirAbsorptionProfile(
+    const FString& Value)
+{
+    if (Value.Equals(TEXT("off"), ESearchCase::IgnoreCase))
+    {
+        return EUERayTracingAudioEditorAirAbsorptionProfile::Off;
+    }
+    if (Value.Equals(TEXT("stress"), ESearchCase::IgnoreCase))
+    {
+        return EUERayTracingAudioEditorAirAbsorptionProfile::Stress;
+    }
+    return EUERayTracingAudioEditorAirAbsorptionProfile::Default;
+}
+
+const TCHAR*
+FUERayTracingAudioEditorValidationScene::GetAirAbsorptionProfileName(
+    const EUERayTracingAudioEditorAirAbsorptionProfile AirProfile)
+{
+    switch (AirProfile)
+    {
+    case EUERayTracingAudioEditorAirAbsorptionProfile::Off:
+        return TEXT("off");
+    case EUERayTracingAudioEditorAirAbsorptionProfile::Stress:
+        return TEXT("stress");
+    default:
+        return TEXT("default");
     }
 }

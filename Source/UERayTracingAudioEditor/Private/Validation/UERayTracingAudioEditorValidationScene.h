@@ -32,6 +32,13 @@ enum class EUERayTracingAudioEditorReflectionEnvironment : uint8
     NearWall
 };
 
+enum class EUERayTracingAudioEditorAirAbsorptionProfile : uint8
+{
+    Off,
+    Default,
+    Stress
+};
+
 struct FUERayTracingAudioEditorValidationSceneResult
 {
     bool bSucceeded = false;
@@ -42,6 +49,9 @@ struct FUERayTracingAudioEditorValidationSceneResult
     int32 GeometryCount = 0;
     EUERayTracingAudioEditorDirectPreset DirectPreset = EUERayTracingAudioEditorDirectPreset::Clear;
     EUERayTracingAudioEditorReflectionEnvironment ReflectionEnvironment = EUERayTracingAudioEditorReflectionEnvironment::Enclosed;
+    EUERayTracingAudioEditorAirAbsorptionProfile AirAbsorptionProfile =
+        EUERayTracingAudioEditorAirAbsorptionProfile::Default;
+    FVector AirAbsorptionPerMeter = FVector::ZeroVector;
     float SourceListenerDistanceCm = 0.0f;
 };
 
@@ -57,10 +67,16 @@ public:
         EUERayTracingAudioEditorValidationSceneMode Mode,
         EUERayTracingAudioEditorDirectPreset DirectPreset = EUERayTracingAudioEditorDirectPreset::Clear,
         EUERayTracingAudioEditorReflectionEnvironment ReflectionEnvironment = EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
-        float DistanceCmOverride = -1.0f);
+        float DistanceCmOverride = -1.0f,
+        EUERayTracingAudioEditorAirAbsorptionProfile AirProfile =
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default);
 
     static EUERayTracingAudioEditorDirectPreset ParseDirectPreset(const FString& Value);
     static const TCHAR* GetDirectPresetName(EUERayTracingAudioEditorDirectPreset DirectPreset);
     static EUERayTracingAudioEditorReflectionEnvironment ParseReflectionEnvironment(const FString& Value);
     static const TCHAR* GetReflectionEnvironmentName(EUERayTracingAudioEditorReflectionEnvironment ReflectionEnvironment);
+    static EUERayTracingAudioEditorAirAbsorptionProfile ParseAirAbsorptionProfile(
+        const FString& Value);
+    static const TCHAR* GetAirAbsorptionProfileName(
+        EUERayTracingAudioEditorAirAbsorptionProfile AirProfile);
 };

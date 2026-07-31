@@ -1,10 +1,204 @@
 #include "Bake/UERayTracingAudioOfflineRenderer.h"
 
+#include "Components/SceneComponent.h"
+#include "Components/UERayTracingAudioGeometryComponent.h"
+#include "Components/UERayTracingAudioListenerComponent.h"
+#include "Components/UERayTracingAudioSourceComponent.h"
+#include "Engine/World.h"
+#include "EngineUtils.h"
+#include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Paths.h"
+#include "Validation/UERayTracingAudioEditorValidationScene.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioEditorValidationFixtureControlsTest,
+    "UERayTracingAudio.Editor.ValidationFixtureControls",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioEditorValidationFixtureControlsTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::Editor,
+        false,
+        TEXT("UERayTracingAudioEditorValidationFixtureControls"));
+    TestNotNull(TEXT("Transient Editor World"), World);
+    if (!World)
+    {
+        return false;
+    }
+
+    AActor* UntaggedActor = World->SpawnActor<AActor>();
+    TestNotNull(TEXT("Untagged Source actor"), UntaggedActor);
+    if (!UntaggedActor)
+    {
+        World->DestroyWorld(false);
+        return false;
+    }
+
+    USceneComponent* UntaggedRoot =
+        NewObject<USceneComponent>(UntaggedActor, TEXT("UntaggedRoot"));
+    UntaggedActor->AddInstanceComponent(UntaggedRoot);
+    UntaggedActor->SetRootComponent(UntaggedRoot);
+    UntaggedRoot->RegisterComponent();
+    const FVector UntaggedLocation(123.0f, 456.0f, 789.0f);
+    UntaggedActor->SetActorLocation(UntaggedLocation);
+
+    UUERayTracingAudioSourceComponent* UntaggedSource =
+        NewObject<UUERayTracingAudioSourceComponent>(
+            UntaggedActor,
+            TEXT("UntaggedSource"));
+    UntaggedActor->AddInstanceComponent(UntaggedSource);
+    UntaggedSource->AirAbsorptionPerMeter = FVector(9.0f, 8.0f, 7.0f);
+    UntaggedSource->RegisterComponent();
+
+    UUERayTracingAudioGeometryComponent* UntaggedGeometry =
+        NewObject<UUERayTracingAudioGeometryComponent>(
+            UntaggedActor,
+            TEXT("UntaggedGeometry"));
+    UntaggedActor->AddInstanceComponent(UntaggedGeometry);
+    UntaggedGeometry->RegisterComponent();
+
+    const auto CountTaggedGeometry = [World]()
+    {
+        int32 Count = 0;
+        for (TActorIterator<AActor> ActorIt(World); ActorIt; ++ActorIt)
+        {
+            if (ActorIt->ActorHasTag(
+                    FName(TEXT("VRTA_EditorValidationScene")))
+                && ActorIt->FindComponentByClass<
+                    UUERayTracingAudioGeometryComponent>())
+            {
+                ++Count;
+            }
+        }
+        return Count;
+    };
+
+    const FUERayTracingAudioEditorValidationSceneResult OneMeterOff =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+            100.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Off);
+    TestTrue(TEXT("One-meter Off fixture succeeds"), OneMeterOff.bSucceeded);
+    TestTrue(
+        TEXT("Clear fixture distance is exactly 100 cm"),
+        FMath::IsNearlyEqual(
+            OneMeterOff.SourceListenerDistanceCm,
+            100.0f,
+            0.1f));
+    TestEqual(TEXT("Enclosed fixture owns seven geometry actors"), CountTaggedGeometry(), 7);
+    TestEqual(
+        TEXT("Off profile is exact"),
+        OneMeterOff.Source.IsValid()
+            ? OneMeterOff.Source->GetAirAbsorptionPerMeter()
+            : FVector(-1.0f),
+        FVector::ZeroVector);
+
+    AActor* TaggedSourceActor = OneMeterOff.Source.IsValid()
+        ? OneMeterOff.Source->GetOwner()
+        : nullptr;
+    AActor* TaggedListenerActor = OneMeterOff.Listener.IsValid()
+        ? OneMeterOff.Listener->GetOwner()
+        : nullptr;
+
+    const FUERayTracingAudioEditorValidationSceneResult TwoMeterDefault =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+            200.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default);
+    TestTrue(
+        TEXT("Clear fixture distance is exactly 200 cm"),
+        FMath::IsNearlyEqual(
+            TwoMeterDefault.SourceListenerDistanceCm,
+            200.0f,
+            0.1f));
+    TestTrue(
+        TEXT("Tagged validation Source is reused at 200 cm"),
+        TwoMeterDefault.Source.IsValid()
+            && TwoMeterDefault.Source->GetOwner() == TaggedSourceActor);
+    TestEqual(
+        TEXT("Default profile is exact"),
+        TwoMeterDefault.Source.IsValid()
+            ? TwoMeterDefault.Source->GetAirAbsorptionPerMeter()
+            : FVector(-1.0f),
+        FVector(0.0002f, 0.0006f, 0.0012f));
+
+    const FUERayTracingAudioEditorValidationSceneResult FourMeterStress =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+            400.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Stress);
+    TestTrue(
+        TEXT("Clear fixture distance is exactly 400 cm"),
+        FMath::IsNearlyEqual(
+            FourMeterStress.SourceListenerDistanceCm,
+            400.0f,
+            0.1f));
+    TestTrue(
+        TEXT("Tagged validation Source is moved rather than duplicated"),
+        FourMeterStress.Source.IsValid()
+            && FourMeterStress.Source->GetOwner() == TaggedSourceActor);
+    TestEqual(
+        TEXT("Stress profile is exact"),
+        FourMeterStress.Source.IsValid()
+            ? FourMeterStress.Source->GetAirAbsorptionPerMeter()
+            : FVector(-1.0f),
+        FVector(0.01f, 0.04f, 0.12f));
+
+    const FUERayTracingAudioEditorValidationSceneResult OpenSpace =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::OpenSpace,
+            400.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Stress);
+    TestTrue(TEXT("Open-space fixture succeeds"), OpenSpace.bSucceeded);
+    TestEqual(
+        TEXT("Switching to OpenSpace actually destroys stale tagged geometry actors"),
+        CountTaggedGeometry(),
+        0);
+    TestTrue(
+        TEXT("Tagged non-geometry Source survives environment cleanup"),
+        OpenSpace.Source.IsValid()
+            && OpenSpace.Source->GetOwner() == TaggedSourceActor);
+    TestTrue(
+        TEXT("Tagged non-geometry Listener survives environment cleanup"),
+        OpenSpace.Listener.IsValid()
+            && OpenSpace.Listener->GetOwner() == TaggedListenerActor);
+    TestTrue(
+        TEXT("Untagged geometry actor survives fixture cleanup"),
+        IsValid(UntaggedActor)
+            && IsValid(UntaggedGeometry)
+            && UntaggedActor->FindComponentByClass<
+                UUERayTracingAudioGeometryComponent>() == UntaggedGeometry);
+    TestEqual(
+        TEXT("Untagged Source location is never mutated"),
+        UntaggedActor->GetActorLocation(),
+        UntaggedLocation);
+    TestEqual(
+        TEXT("Untagged Source air absorption is never mutated"),
+        UntaggedSource->GetAirAbsorptionPerMeter(),
+        FVector(9.0f, 8.0f, 7.0f));
+
+    World->DestroyWorld(false);
+    return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUERayTracingAudioOfflineComparisonContractTest,
