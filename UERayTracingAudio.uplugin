@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
-  "Version": 1,
-  "VersionName": "0.1.0",
+  "Version": 2,
+  "VersionName": "0.2.0",
   "FriendlyName": "UE Ray Tracing Audio",
   "Description": "Hardware ray tracing driven audio propagation plugin for Unreal Engine.",
   "Category": "Audio",
@@ -15,30 +15,24 @@
       "Name": "UERayTracingAudioSDK",
       "Type": "Runtime",
       "LoadingPhase": "PostConfigInit",
-      "WhitelistPlatforms": [
-        "Win64",
-        "Linux",
-        "Mac"
+      "PlatformAllowList": [
+        "Win64"
       ]
     },
     {
       "Name": "UERayTracingAudio",
       "Type": "Runtime",
       "LoadingPhase": "PreDefault",
-      "WhitelistPlatforms": [
-        "Win64",
-        "Linux",
-        "Mac"
+      "PlatformAllowList": [
+        "Win64"
       ]
     },
     {
       "Name": "UERayTracingAudioEditor",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit",
-      "WhitelistPlatforms": [
-        "Win64",
-        "Linux",
-        "Mac"
+      "PlatformAllowList": [
+        "Win64"
       ]
     }
   ]

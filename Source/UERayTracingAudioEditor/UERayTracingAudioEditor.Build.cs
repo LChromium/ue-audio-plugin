@@ -13,10 +13,14 @@ public class UERayTracingAudioEditor : ModuleRules
 
         PrivateDependencyModuleNames.AddRange(new[]
         {
+            "AssetRegistry",
+            "AssetTools",
             "CoreUObject",
             "Engine",
             "InputCore",
+            "Json",
             "LevelEditor",
+            "PropertyEditor",
             "Slate",
             "SlateCore",
             "ToolMenus",

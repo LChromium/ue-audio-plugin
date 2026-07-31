@@ -1,217 +1,141 @@
-# UERayTracingAudio 当前使用说明
+# UERayTracingAudio 使用说明
 
-## 1. 当前可用范围
+## 当前状态
 
-当前插件处于 Phase 1、Phase 2 和 Phase 3.1 / 3.2 / 3.3 的第一版可用阶段，已经具备：
+插件处于重新验收阶段。硬件光追 Direct/Indirect、DSP 和 Bake 代码路径仍在，但旧的合成四模式录音已被人耳判定失败并移除。当前版本不得宣称声音质量已经通过。
 
-- 插件模块可编译
-- Listener / Source / Geometry 组件
-- 最小直接声参数计算
-- 基于 UE Ray Tracing RHI 的最小体积遮挡后端
-- 基于 Minimal EnergyField 的第一版实时间接声链路
-- 基于 EnergyField 的第一版 IR 重建
-- 基于 EnergyField 的第一版 Parametric / Hybrid 导出
-- Occlusion 插件增益处理
-- Editor 中的 Bake 窗口骨架入口
+## 在 Unreal Editor 中启用
 
-当前还不具备：
+1. 将 `Saved/Packages/UERayTracingAudio-0.2.0-Win64` 复制为项目的 `Plugins/UERayTracingAudio`；也可以直接使用源码插件目录进行开发。
+2. 在 Plugins 面板启用 **UE Ray Tracing Audio**。
+3. 项目使用 DX12，并启用硬件 Ray Tracing。
+4. 在 Windows Target Settings 中选择：
+   - Spatialization Plugin：`UE Ray Tracing Audio Spatialization`
+   - Occlusion Plugin：`UE Ray Tracing Audio Occlusion`
+5. 重启 Editor。
 
-- 生产级的 UE Ray Tracing RHI 场景接入
-- 完整双耳空间化
-- 生产级反射、混响、烘焙链路
+交付包仅面向 UE 5.7 / Win64，descriptor 版本为 `0.2.0` Beta。完整内容、严格 non-unity 构建门禁和已知限制见 `PACKAGE_AUDIT.md`。
 
-## 2. 已验证的编译方式
+## 设置场景
 
-当前已经用以下环境验证过插件编译：
-
-- Unreal Engine: `C:\Projects\ZeroEngine`
-- 测试工程: `C:\Projects\MyProject\MyProject.uproject`
-
-使用的编译命令是：
-
-```powershell
-& 'C:\Projects\ZeroEngine\Engine\Build\BatchFiles\Build.bat' `
-  MyProjectEditor Win64 Development `
-  -Project="C:\Projects\MyProject\MyProject.uproject" `
-  -plugin="C:\tasks\ue-audio-plugin\UERayTracingAudio.uplugin" `
-  -BuildPlugin=UERayTracingAudio `
-  -WaitMutex -FromMsBuild
-```
-
-这个命令已经验证通过，并实际编译了：
-
-- `UERayTracingAudioSDK`
-- `UERayTracingAudio`
-- `UERayTracingAudioEditor`
-
-## 3. 如何在测试工程中挂接插件
-
-如果要在 `MyProject` 里实际启用并测试，建议：
-
-1. 把当前仓库同步到：
-   - `C:\Projects\MyProject\Plugins\UERayTracingAudio`
-2. 在 `MyProject.uproject` 中启用插件 `UERayTracingAudio`
-3. 重新生成工程文件或直接重新编译 Editor
-4. 启动 Unreal Editor
-
-## 4. 当前阶段在 UE Editor 中的最小使用方法
-
-### 4.1 放置 Listener
-
-在场景中创建一个 Actor，并给它添加：
+在监听者 Actor 上添加：
 
 - `UUERayTracingAudioListenerComponent`
 
-当前这个组件负责：
+在声音 Actor 上添加：
 
-- 向 Manager 注册当前监听器
-- 提供监听器位置
-
-### 4.2 放置 Source
-
-在场景中创建一个带 `AudioComponent` 的 Actor，并给它添加：
-
+- `UAudioComponent`
 - `UUERayTracingAudioSourceComponent`
 
-当前这个组件负责：
-
-- 每帧请求直接声模拟结果
-- 每帧请求间接声模拟结果
-- 保存当前直接声状态
-- 保存当前间接声状态
-- 提供体积遮挡相关参数配置
-- 驱动 Minimal EnergyField 结果更新
-
-当前可观察的关键量包括：
-
-- `bIsOccluded`
-- `DistanceAttenuation`
-- `DirectVisibility`
-- `OverallGain`
-- `IndirectGain`
-- `EarlyReflectionGain`
-- `LateReverbGain`
-- `AverageReflectionDelaySeconds`
-- `ReverbTimes`
-
-当前可调的关键直接声参数包括：
-
-- `OccludedGain`
-- `SourceRadiusCm`
-- `NumOcclusionSamples`
-- `bUseVolumetricOcclusion`
-
-当前可调的关键间接声参数包括：
-
-- `bEnableIndirectSound`
-- `IndirectMode`
-  - `Minimal Convolution`
-  - `Parametric Reverb`
-  - `Hybrid Reverb`
-- `NumReflectionRays`
-- `MaxReflectionBounces`
-- `IndirectDurationSeconds`
-- `MaxEarlyReflectionTaps`
-- `HybridTransitionRatio`
-- `IndirectMix`
-
-### 4.3 放置遮挡物
-
-在用于遮挡声源和监听器的 Actor 上添加：
+在墙体、地面、天花板等静态几何 Actor 上添加：
 
 - `UUERayTracingAudioGeometryComponent`
 
-当前这个组件会把宿主 Actor 的 `UPrimitiveComponent` 信息导出到声学场景中。
+Geometry 可先使用 `Bounding Box` 验证链路，再使用 `Static Mesh Triangles` 验证实际网格。设置三频 Absorption、Transmission 和 Scattering 后，运行时会发布新的声学场景版本。
 
-当前几何组件的重要选项包括：
+## 可交互实时验收
 
-- `ExportMode`
-  - `Bounding Box`
-  - `Static Mesh Triangles`
+蓝/橙密闭空间中，橙色球体是 Primary Source，蓝色球体是 Listener，不是两个声源。固定相机只用于自动测试；人工移动验收使用独立交互模式：
 
-建议：
+当前测试工程的 `Content/FirstPerson/Audio` 只保留 `MarchingBand.uasset`；Ravel 已移除。实时 Rendered 与 Original 两条链路都读取这一个 MarchingBand 输入。
 
-- 快速验证链路时先用 `Bounding Box`
-- 想验证更接近真实遮挡时，对 `UStaticMeshComponent` 使用 `Static Mesh Triangles`
+### 持续播放语义
 
-建议先用最简单的静态网格墙体测试。
+- `MarchingBand`、Rendered 和 Original 两条运行时链路均持续循环。距离、空气吸收和 Soft Occlusion 只改变 Direct 音量，不会停止 AudioComponent；只有显式 Hard Occlusion 的完全遮挡允许 Direct 接近静音。
+- Original 与 Rendered 从同一采样零点同时启动；硬件 Direct/Indirect/左右 IR 快照未就绪时 Original 立即可听，Rendered 保持静音。主屏出现 `Rendered playback ready` 后才会自动淡入 Rendered，F3 在此之前不会用未初始化的 Rendered 替换 Original。
+- Direct 距离项是线性样本幅度：参考距离内为 `1.0`，2 m 为 `0.5`，4 m 为 `0.25`。反射仿真内部仍使用能量语义，进入音频渲染器时再转换为线性幅度。
+- F3 的 Rendered 侧是 **Realtime Full = Direct + early reflections + late reverb**，不是 Direct-only。完成自动门禁后场景会恢复 `HybridReverb` 处理模式和 Realtime 数据源。
+- 新 Realtime IR 到达时，正在播放的卷积历史和尾音不会被清空；更新只进入一个 last-wins pending 槽，当前过渡结束后再采用最新 IR。
 
-### 4.4 当前间接声模式说明
+### Wet Send
 
-当前间接声内部已经不再直接把每条路径粗暴累积成几个 gain，而是先进入一个 Minimal EnergyField：
+Details 面板中的 `Wet Send` 对应原有 C++ 属性 `IndirectMix`，公式是：
 
-- delay bins
-- 3-band energy accumulation
-- earliest/latest split
-- temporal smoothing
+`Full = Direct + WetSend × Wet`
 
-然后再从这个 EnergyField 导出：
+- 默认值为 `1.0`，表示 unity Wet Send；`0` 关闭间接声，`0..4` 为允许范围。
+- 大于 `1.0` 是显式 makeup gain，不是“100% Wet”的百分比。运行时主验收夹具使用 `1.75`，用于让低能量 Realtime Wet 更容易辨识。
+- Wet Send 不会反向降低 Direct。若使用大于 `1.0` 的值，应降低 AudioComponent 或上游电平并检查 Full 峰值，避免削波；不要用硬限幅掩盖 gain-staging 问题。
+- 新建 Source 和 Editor 验收场景默认 `1.0`。已有资产若曾显式保存旧值（例如 `0.3`），不会因 C++ 构造默认改变而自动迁移，请在 Details 中检查并重新保存。
+- Editor Bake 会在点击 **Bake Selected Source** 时冻结输入 SoundWave、Source/Listener 和 Wet Send；Bake 期间切换选中 Actor 不会改变本次离线 A/B 参数。
 
-- `IndirectGain`
-- `EarlyReflectionGain`
-- `LateReverbGain`
-- `ReverbTimes`
+```powershell
+uv run script\launch_runtime_validation.py `
+  --project TestProject\UeVersion1\UeVersion1.uproject `
+  --game-seconds 180 `
+  --interactive-smoke `
+  --interactive-runtime
+```
 
-当前还会继续导出：
+脚本先完成固定 `-game` 硬件门禁，再打开 Editor。点击 **Play** 后等待主屏显示 IR Modes `PASSED` 和 View `INTERACTIVE`，随后使用：
 
-- `ReconstructedImpulseResponse`
-- `ParametricDelaySeconds`
-- `ParametricEq`
+首次启动本地复制的测试工程时，Shader/Asset Registry 冷启动可能接近 60 秒；当前固定流程使用 180 秒窗口，并继续观察约 8 秒的 `MarchingBand` 多次循环与 17 秒 A/B 稳定性。这不是声学计算延迟。
 
-- 当前第一阶段流程已经按 Steam Audio 风格拆成：
-  - generate listener rays
-  - QueryIntersection
-  - QueryOcclusion
-  - shadeAndBounce
-  - gatherEnergyField
+- `WASD + 鼠标`：移动玩家；Listener 每帧跟随玩家相机。
+- `F1`：Realtime IR。
+- `F2`：Baked IR。
+- `F3`：在 **RENDERED DIRECT+WET** 与 **ORIGINAL UNRENDERED** 之间 A/B 切换。
+- `F4`：返回本次 Baked IR 的 Listener 烘焙原点。
+- `F5`：Hybrid IR。
+- `F8`：在固定自动测试相机和交互视角之间切换。
 
-- 当前第二阶段已经把单 bounce 的：
-  - shadeAndBounce
-  - gatherEnergyField
-  迁到了 UE compute shader 路径
+`F3` 比较的是同一个 SoundWave、同一启动时刻的两条同步链路：Rendered 链路经过硬件光追 Direct/Wet，Original 链路关闭空间化、遮挡和间接声插件；切换使用 50 ms 交叉淡变。进入交互模式后其余验证音会静音，避免干扰主声源判断。
 
-- 当前第三阶段已经开始把硬件反射模拟收拢到设备级单次调用：
-  - `SimulateIndirectEnergyField(...)`
-  - 这样不会每个 bounce 都回到 game thread 拿 `TArray` 结果
-  - 并且会在该设备级路径中复用单次构建的声学场景，而不是每个 bounce 重建一次
-  - 当前设备级路径内部已经进一步按 Radeon Rays 循环组织成：
-    - generateListenerRays
-    - QueryIntersection
-    - shadeAndBounce
-    - QueryOcclusion
-    - gatherEnergyField
-    - swap buffers
-  - 其中 `generateListenerRays` 与 `shadeAndBounce + gatherEnergyField` 当前已经有 shader 实现
+主屏的 `CURRENT MODE` 是实际 Source 数据源，`A/B PLAYBACK` 显示当前听到 Rendered 还是 Original；`Baked asset` 显示位置/场景是否仍匹配。移动后 Baked/Hybrid 可能显示 `STALE PLACEMENT`，这是位置相关 IR 的正确警告，不应通过 `bAllowStaleBakedAsset` 掩盖。回到 F4 原点或重新 Bake 后再比较 Baked/Hybrid。
 
-`UUERayTracingAudioSourceComponent` 的 `IndirectMode` 当前支持三种模式：
+## 在 Editor 中进行真实 SoundWave A/B
 
-- `Minimal Convolution`
-  - 从 EnergyField 重建第一版 IR
-  - 适合先验证脉冲响应式早反是否存在
-- `Parametric Reverb`
-  - 输出 Parametric delay / EQ / RT60 估计
-  - 适合先验证尾部混响量级是否变化
-- `Hybrid Reverb`
-  - 同时启用 IR 早期部分和参数化尾部
-  - 是当前阶段最接近完整间接声体验的模式
+1. 在当前测试工程中使用唯一预置输入 `/Game/FirstPerson/Audio/MarchingBand.MarchingBand`。在其他项目中可改用自己的 10–20 秒 PCM16 SoundWave，但不要选择 `/Game/UERayTracingAudio/Validation*` 下由验证器生成的资产作为输入。
+2. 打开 **UE Ray Tracing Audio Bake**。若关卡中还没有完整验证场景，点击 **Create / Select Actual A/B Validation Scene**；面板会创建并选中可见的封闭房间、中央遮挡墙、橙色 Source、蓝色 Listener、7 个声学 Geometry、灯光和相机。可用 **Clear Path (2 m)**、**Soft Occluded (2 m)**、**Hard Occluded (2 m)** 切换等距 Direct 预设。
+3. 在关卡中选择带 `UUERayTracingAudioSourceComponent` 的 Actor，点击 Source 行的 **Use Selected Actor**。
+4. 选择带 `UUERayTracingAudioListenerComponent` 的 Actor，点击 Listener 行的 **Use Selected Actor**；确认 Geometry 摘要包含要参与 Bake 的房间和遮挡体。
+5. 在 **Input SoundWave** 选择 `MarchingBand`，设置 IR Asset Package、Baked Audio Folder、Rays、Bounces、Duration 和 Sample Rate。
+6. 点击 **Bake Selected Source**。硬件 IR 完成后，面板会在后台从同一采样起点生成、写入并导入等长的 Reference / Direct / Wet / Full。
+7. Bake 保存成功后，面板会把新 IR 绑定到所选 Source 并默认选择 **[Active] Hybrid**。也可以用紧邻场景选择区的 **Realtime IR / Baked IR / Hybrid** 按钮切换同一 Source；当前模式和 IR 资产路径显示在按钮下方。
+8. 查看 Listening Acceptance 摘要中的自动检查、Direct/Full dry correlation、电平比例、模式差异和公共缩放系数。摘要下方的四轨波形按同一起点、同一长度和同一 full-scale 纵轴显示：Reference 灰色、Direct 蓝色、Wet 紫色、Full 绿色。它用于定位掉音、尾声、削波和时间错位，不代替试听。
+9. 分别播放四种模式，使用 **A/B Reference ↔ Direct**、**A/B Reference ↔ Full** 和 **Replay** 比较。点 **Clear Path (2 m)** 验证无遮挡；点 **Soft Occluded (2 m)** 或 **Hard Occluded (2 m)** 后重新 Bake 验证实体墙遮挡。预设保持 200 cm 距离，避免把距离衰减误当遮挡效果。
+10. 只有在目标耳机/扬声器上确认 Direct/Full 保留原始主体、Wet 是合理空间尾部，且没有削波、掉音、噪声或时间跳变后，才点击 **Human Pass**；否则点击 **Human Fail**。
 
-## 5. 当前阶段推荐测试场景
+Reference / Direct / Wet / Full 四个按钮现在都会从采样零点循环播放，直到切换模式或点击 **Stop**。因此 Direct 播完一次后停止不再是正常行为；若 UI 仍显示模式但听不到声音，应先确认是否选择了 Hard Occluded，再查看运行时的 Direct gain 和持续 Wet 统计。
 
-建议先做一个最小验证：
+运行时 `IR Modes PASSED` 中的 80% 指输入有效缓冲里 Wet 真正非静音的 presence，不表示 80% 缓冲都要逐块达到 5%。5% 阈值用于整个观察窗口按帧积分的 Wet/Input RMS（同时要求至少一个缓冲的最大比例达到该值）；这些数值门禁用于排除断流和近静音，最终是否可辨识仍以目标设备上的 Human Pass 为准。
 
-- 一个 Listener
-- 一个带音频的 Source
-- 一面可以挡在两者之间的墙
-- 一个更大的封闭或半封闭房间
+同一门禁还记录最终 Full 输出峰值和绝对值大于 `1.0` 的样本数。双声道源绕过自定义 Spatialization 时读取 Occlusion 最终输出；进入 Spatialization 的源读取 L/R 重组后的最终输出。正式验收要求三种 IR 的 `full_peak <= 1.0`、`over_unit=0`、`non_finite=0`。
 
-验证目标：
+### 三种运行时 IR 数据源
 
-- 墙挡住时，`bIsOccluded` 变为 true
-- 墙挡住时，`DirectVisibility` 下降到小于 `1.0`
-- 挡住时 `OverallGain` 下降
-- 挪开墙之后 `OverallGain` 恢复
-- 在封闭空间里 `IndirectGain` 和 `LateReverbGain` 高于开阔空间
-- 增加 `NumReflectionRays` 后，早期反射与尾部结果更稳定
+- **Realtime IR**：只使用当前硬件光追仿真生成的左右卷积核；不需要 Baked IR 资产。
+- **Baked IR**：只使用保存资产中的左右卷积核；资产必须匹配当前 world、scene/material signature 以及 Source/Listener placement。
+- **Hybrid**：用 Baked IR 覆盖 early field，用 Realtime IR 覆盖 tail；两段在 `HybridTransitionRatio` 对应时间附近使用互补淡入淡出，因此相加权重保持为 1。没有有效 Baked IR 时，运行时会安全退回完整 Realtime IR，不会丢失 early field。
+
+切换时四个卷积器和总 Wet Send 都会平滑过渡，不应产生 click/pop 或突然切断尾声。若 Details 面板中的 `BakedAssetStatus` 不是 `Ready`，先按状态文本修复 world、scene/material 或 placement 不匹配，再使用 Baked/Hybrid；不要用 `bAllowStaleBakedAsset` 掩盖正式验收中的 stale 资产。
+
+### 实时卷积预算与晚期尾声
+
+- 运行时每个左右声道最多直接卷积 `4 × 1024 = 4096` 个 IR 样本；48 kHz 时约覆盖前 85.33 ms。该限制只约束实时音频线程使用的 kernel，不会裁剪保存的 Baked IR 或离线 Reference/Direct/Wet/Full 资产。
+- 如果 IR 超过实时头部，Source 会估计被截断部分的双声道能量，并由 parametric late reverb 承接尾声。因此预期结果是“确定成本的早期卷积 + 持续晚期混响”，不是 85 ms 后突然静音。
+- kernel 与 crossfade 状态在非音频线程准备；音频回调只采用已经准备好的状态。Bridge 使用轮转服务和有界 PrepareBudget，在大量 Source 更新时保持公平。
+- 运行时日志必须出现 `UERayTracingAudio hard realtime: passed=1`，且 `callback_capacity_misses=0`、`convolution_prepare_drops=0`。任一值非零都视为验证失败。
+
+可独立运行源码审计与脚本回归：
+
+```powershell
+uv run script\validate_audio_realtime_safety.py
+uv run python -m unittest discover -s script\tests -v
+```
+
+完整构建仍必须使用：
+
+```powershell
+uv run script\build_and_validate.py
+```
+
+已移除且不要再使用：
+
+- `--record-listening`
+- `script/analyze_listening_recordings.py`
+- `script/run_listening_acceptance.py`
+- 旧的 `20260722-*` 四模式 WAV 作为通过证据
 
 ## Task 2：在多个 World 中使用 Listener 与声学场景
 

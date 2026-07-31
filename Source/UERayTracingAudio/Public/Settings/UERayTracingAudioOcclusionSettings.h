@@ -20,4 +20,5 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = DirectSound)
     bool bApplyOcclusion;
+
 };

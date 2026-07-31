@@ -1,9 +1,47 @@
 #include "Audio/UERayTracingAudioOcclusion.h"
 
-#include "Components/AudioComponent.h"
-#include "Components/UERayTracingAudioSourceComponent.h"
+#include "Audio/UERayTracingAudioAudioDiagnostics.h"
+#include "Audio/UERayTracingAudioSimulationSnapshot.h"
+#include "Audio/UERayTracingAudioIndirectAudioBridge.h"
+#include "Managers/UERayTracingAudioManager.h"
 #include "Settings/UERayTracingAudioOcclusionSettings.h"
 #include "UERayTracingAudioModule.h"
+
+namespace
+{
+    constexpr float MaxRuntimeParametricPreDelaySeconds = 4.0f;
+
+    void ResetOcclusionSourceState(
+        FUERayTracingAudioOcclusionSource& Source,
+        const int32 SampleRate)
+    {
+        Source.bApplyDistanceAttenuation = true;
+        Source.bApplyAirAbsorption = true;
+        Source.bApplyOcclusion = true;
+        Source.bHasAppliedSnapshotGain = false;
+        Source.bHasRenderedAudio = false;
+        Source.PreviousBandGains = FVector::OneVector;
+        Source.NumChannels = 0;
+        Source.SampleRate = SampleRate;
+        Source.ActiveAudioComponentId = 0;
+        Source.AirAbsorptionProcessor.Reset();
+        Source.IndirectRenderer.Reset(SampleRate);
+    }
+}
+
+FUERayTracingAudioOcclusionPlugin::FUERayTracingAudioOcclusionPlugin(
+    TSharedRef<
+        FUERayTracingAudioSimulationSnapshotRegistry,
+        ESPMode::ThreadSafe> InSnapshotRegistry,
+    TSharedRef<FUERayTracingAudioIndirectAudioBridge, ESPMode::ThreadSafe> InIndirectAudioBridge,
+    const FVector2f& InCrossoversHz,
+    FAudioDevice* InOwningDevice)
+    : SnapshotRegistry(MoveTemp(InSnapshotRegistry))
+    , IndirectAudioBridge(MoveTemp(InIndirectAudioBridge))
+    , CrossoversHz(InCrossoversHz)
+    , OwningDevice(InOwningDevice)
+{
+}
 
 FUERayTracingAudioOcclusionPlugin::FUERayTracingAudioOcclusionPlugin(
     TSharedRef<
@@ -12,25 +50,59 @@ FUERayTracingAudioOcclusionPlugin::FUERayTracingAudioOcclusionPlugin(
     TSharedRef<
         FUERayTracingAudioIndirectAudioBridge,
         ESPMode::ThreadSafe> InIndirectAudioBridge,
-    const FVector2f& InCrossoversHz,
     FAudioDevice* InOwningDevice)
-    : CrossoversHz(InCrossoversHz)
-    , OwningDevice(InOwningDevice)
-{
-}
-
-FUERayTracingAudioOcclusionPlugin::FUERayTracingAudioOcclusionPlugin(
-    const FVector2f& InCrossoversHz,
-    FAudioDevice* InOwningDevice)
-    : CrossoversHz(InCrossoversHz)
-    , OwningDevice(InOwningDevice)
+    : FUERayTracingAudioOcclusionPlugin(
+        MoveTemp(InSnapshotRegistry),
+        MoveTemp(InIndirectAudioBridge),
+        FVector2f(500.0f, 4000.0f),
+        InOwningDevice)
 {
 }
 
 void FUERayTracingAudioOcclusionPlugin::Initialize(const FAudioPluginInitializationParams InitializationParams)
 {
-    SampleRate = static_cast<int32>(InitializationParams.SampleRate);
+    SampleRate = FMath::Max(static_cast<int32>(InitializationParams.SampleRate), 8000);
+    Sources.Reset();
     Sources.SetNum(InitializationParams.NumSources);
+    for (FUERayTracingAudioOcclusionSource& Source : Sources)
+    {
+        Source.IndirectRenderer.Initialize(
+            SampleRate,
+            MaxRuntimeParametricPreDelaySeconds);
+        ResetOcclusionSourceState(Source, SampleRate);
+    }
+    IndirectAudioBridge->Initialize(
+        static_cast<int32>(InitializationParams.NumSources),
+        static_cast<int32>(InitializationParams.BufferLength),
+        SampleRate);
+    bShutdown = false;
+}
+
+void FUERayTracingAudioOcclusionPlugin::Shutdown()
+{
+    if (bShutdown)
+    {
+        return;
+    }
+    bShutdown = true;
+    for (int32 SourceId = 0;
+        SourceId < Sources.Num();
+        ++SourceId)
+    {
+        Sources[SourceId].IndirectRenderer.
+            ReleasePreparedStates(
+                IndirectAudioBridge.Get(),
+                SourceId);
+    }
+    IndirectAudioBridge->ServiceConvolutionGameThread(
+        MAX_int32);
+    Sources.Reset();
+    if (OwningDevice)
+    {
+        FUERayTracingAudioModule::Get().
+            UnregisterAudioDevice(OwningDevice);
+        OwningDevice = nullptr;
+    }
 }
 
 void FUERayTracingAudioOcclusionPlugin::OnInitSource(const uint32 SourceId, const FName& AudioComponentUserId, const uint32 NumChannels, UOcclusionPluginSourceSettingsBase* InSettings)
@@ -41,22 +113,20 @@ void FUERayTracingAudioOcclusionPlugin::OnInitSource(const uint32 SourceId, cons
     }
 
     FUERayTracingAudioOcclusionSource& Source = Sources[SourceId];
+    Source.IndirectRenderer.ReleasePreparedStates(
+        IndirectAudioBridge.Get(),
+        static_cast<int32>(SourceId));
+    ResetOcclusionSourceState(Source, SampleRate);
     const UUERayTracingAudioOcclusionSettings* Settings = Cast<UUERayTracingAudioOcclusionSettings>(InSettings);
     Source.bApplyDistanceAttenuation = Settings ? Settings->bApplyDistanceAttenuation : true;
     Source.bApplyAirAbsorption = Settings ? Settings->bApplyAirAbsorption : true;
     Source.bApplyOcclusion = Settings ? Settings->bApplyOcclusion : true;
-    Source.PreviousBandGains = FVector::OneVector;
     Source.NumChannels = static_cast<int32>(NumChannels);
-    Source.SampleRate = SampleRate;
-    Source.DelayWriteIndex = 0;
     Source.AirAbsorptionProcessor.Initialize(
         SampleRate,
         Source.NumChannels,
         CrossoversHz.X,
         CrossoversHz.Y);
-    Source.DelayBuffer.Reset();
-    Source.CombBuffers.Reset();
-    Source.CombWriteIndices.Reset();
 }
 
 void FUERayTracingAudioOcclusionPlugin::OnReleaseSource(const uint32 SourceId)
@@ -66,192 +136,182 @@ void FUERayTracingAudioOcclusionPlugin::OnReleaseSource(const uint32 SourceId)
         return;
     }
 
-    Sources[SourceId].PreviousBandGains = FVector::OneVector;
-    Sources[SourceId].DelayWriteIndex = 0;
-    Sources[SourceId].AirAbsorptionProcessor.Reset();
-    Sources[SourceId].DelayBuffer.Reset();
-    Sources[SourceId].CombBuffers.Reset();
-    Sources[SourceId].CombWriteIndices.Reset();
-}
-
-void FUERayTracingAudioOcclusionPlugin::EnsureDelayCapacity(FUERayTracingAudioOcclusionSource& SourceState, float DurationSeconds)
-{
-    const int32 RequiredDelaySamples = FMath::Max(
-        512,
-        FMath::CeilToInt(FMath::Max(DurationSeconds, 0.25f) * static_cast<float>(SourceState.SampleRate)) + 256);
-
-    if (SourceState.DelayBuffer.Num() != RequiredDelaySamples)
-    {
-        SourceState.DelayBuffer.SetNumZeroed(RequiredDelaySamples);
-        SourceState.DelayWriteIndex = 0;
-    }
-
-    const int32 CombSizes[] =
-    {
-        FMath::Max(64, FMath::RoundToInt(static_cast<float>(SourceState.SampleRate) * 0.031f)),
-        FMath::Max(64, FMath::RoundToInt(static_cast<float>(SourceState.SampleRate) * 0.047f)),
-        FMath::Max(64, FMath::RoundToInt(static_cast<float>(SourceState.SampleRate) * 0.071f))
-    };
-
-    if (SourceState.CombBuffers.Num() != UE_ARRAY_COUNT(CombSizes))
-    {
-        SourceState.CombBuffers.SetNum(UE_ARRAY_COUNT(CombSizes));
-        SourceState.CombWriteIndices.Init(0, UE_ARRAY_COUNT(CombSizes));
-    }
-
-    for (int32 CombIndex = 0; CombIndex < UE_ARRAY_COUNT(CombSizes); ++CombIndex)
-    {
-        if (SourceState.CombBuffers[CombIndex].Num() != CombSizes[CombIndex])
-        {
-            SourceState.CombBuffers[CombIndex].SetNumZeroed(CombSizes[CombIndex]);
-            SourceState.CombWriteIndices[CombIndex] = 0;
-        }
-    }
-}
-
-float FUERayTracingAudioOcclusionPlugin::ReadDelayedSample(const FUERayTracingAudioOcclusionSource& SourceState, int32 DelaySamples) const
-{
-    if (SourceState.DelayBuffer.IsEmpty())
-    {
-        return 0.0f;
-    }
-
-    const int32 ClampedDelaySamples = FMath::Clamp(DelaySamples, 1, SourceState.DelayBuffer.Num() - 1);
-    int32 ReadIndex = SourceState.DelayWriteIndex - ClampedDelaySamples;
-    if (ReadIndex < 0)
-    {
-        ReadIndex += SourceState.DelayBuffer.Num() * (1 + (-ReadIndex / SourceState.DelayBuffer.Num()));
-    }
-
-    return SourceState.DelayBuffer[ReadIndex % SourceState.DelayBuffer.Num()];
-}
-
-float FUERayTracingAudioOcclusionPlugin::RenderIndirectSample(
-    FUERayTracingAudioOcclusionSource& SourceState,
-    const FUERayTracingAudioIndirectSimulationResult& IndirectResult,
-    float MonoInput,
-    float IndirectMix)
-{
-    if (SourceState.DelayBuffer.Num() == 0 || !IndirectResult.bHasValidPaths || IndirectMix <= 0.0f)
-    {
-        return 0.0f;
-    }
-
-    const int32 DelayBufferSize = SourceState.DelayBuffer.Num();
-    SourceState.DelayBuffer[SourceState.DelayWriteIndex] = MonoInput;
-
-    float ImpulseWet = 0.0f;
-    for (int32 BinIndex = 0; BinIndex < IndirectResult.ReconstructedImpulseResponse.Num(); ++BinIndex)
-    {
-        const float TapAmplitude = IndirectResult.ReconstructedImpulseResponse[BinIndex];
-        if (TapAmplitude <= KINDA_SMALL_NUMBER)
-        {
-            continue;
-        }
-
-        const float DelaySeconds = (static_cast<float>(BinIndex) + 0.5f) * IndirectResult.ImpulseResponseBinDurationSeconds;
-        const int32 DelaySamples = FMath::Clamp(
-            FMath::RoundToInt(DelaySeconds * static_cast<float>(SourceState.SampleRate)),
-            1,
-            DelayBufferSize - 1);
-        ImpulseWet += ReadDelayedSample(SourceState, DelaySamples) * TapAmplitude;
-    }
-
-    float LateWet = 0.0f;
-    if (IndirectResult.bUsedParametricTail && SourceState.CombBuffers.Num() == 3)
-    {
-        const int32 PreDelaySamples = FMath::Clamp(
-            FMath::RoundToInt(IndirectResult.ParametricDelaySeconds * static_cast<float>(SourceState.SampleRate)),
-            1,
-            DelayBufferSize - 1);
-        const float PreDelayedInput = ReadDelayedSample(SourceState, PreDelaySamples);
-
-        for (int32 CombIndex = 0; CombIndex < SourceState.CombBuffers.Num(); ++CombIndex)
-        {
-            TArray<float>& CombBuffer = SourceState.CombBuffers[CombIndex];
-            int32& WriteIndex = SourceState.CombWriteIndices[CombIndex];
-            const int32 BufferSize = CombBuffer.Num();
-            const float BandRT60 = FMath::Max(IndirectResult.ReverbTimes[CombIndex], 0.1f);
-            const float BandEq = IndirectResult.ParametricEq[CombIndex];
-            const float DelaySeconds = static_cast<float>(BufferSize) / static_cast<float>(SourceState.SampleRate);
-            const float Feedback = FMath::Clamp(FMath::Pow(0.001f, DelaySeconds / BandRT60), 0.0f, 0.97f);
-
-            const float DelayedSample = CombBuffer[WriteIndex];
-            CombBuffer[WriteIndex] = (PreDelayedInput * BandEq) + (DelayedSample * Feedback);
-            WriteIndex = (WriteIndex + 1) % BufferSize;
-            LateWet += DelayedSample * BandEq;
-        }
-
-        LateWet = (LateWet / static_cast<float>(SourceState.CombBuffers.Num())) * IndirectResult.LateReverbGain;
-    }
-
-    SourceState.DelayWriteIndex = (SourceState.DelayWriteIndex + 1) % DelayBufferSize;
-    return (ImpulseWet + LateWet) * IndirectMix;
+    Sources[SourceId].IndirectRenderer.ReleasePreparedStates(
+        IndirectAudioBridge.Get(),
+        static_cast<int32>(SourceId));
+    ResetOcclusionSourceState(
+        Sources[SourceId],
+        SampleRate);
+    IndirectAudioBridge->ClearSource(static_cast<int32>(SourceId));
 }
 
 void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInputData& InputData, FAudioPluginSourceOutputData& OutputData)
 {
-    if (!Sources.IsValidIndex(static_cast<int32>(InputData.SourceId)))
+    FUERayTracingAudioAudioDiagnostics::
+        RecordHardRealtimeCallback();
+    if (!InputData.AudioBuffer)
     {
-        for (int32 SampleIndex = 0; SampleIndex < OutputData.AudioBuffer.Num(); ++SampleIndex)
+        if (!OutputData.AudioBuffer.IsEmpty())
+        {
+            FMemory::Memzero(
+                OutputData.AudioBuffer.GetData(),
+                OutputData.AudioBuffer.Num() * sizeof(float));
+        }
+        return;
+    }
+
+    const int32 NumInputSamples = InputData.AudioBuffer->Num();
+    const int32 NumOutputSamples = OutputData.AudioBuffer.Num();
+    if (!Sources.IsValidIndex(static_cast<int32>(InputData.SourceId)) || InputData.NumChannels <= 0)
+    {
+        const int32 NumSamplesToCopy = FMath::Min(NumInputSamples, NumOutputSamples);
+        for (int32 SampleIndex = 0; SampleIndex < NumSamplesToCopy; ++SampleIndex)
         {
             OutputData.AudioBuffer[SampleIndex] = (*InputData.AudioBuffer)[SampleIndex];
+        }
+        for (int32 SampleIndex = NumSamplesToCopy; SampleIndex < NumOutputSamples; ++SampleIndex)
+        {
+            OutputData.AudioBuffer[SampleIndex] = 0.0f;
         }
         return;
     }
 
     FUERayTracingAudioOcclusionSource& SourceState = Sources[InputData.SourceId];
+    const int32 NumChannels = InputData.NumChannels;
+    if (SourceState.ActiveAudioComponentId
+        != InputData.AudioComponentId)
+    {
+        const bool bApplyDistanceAttenuation = SourceState.bApplyDistanceAttenuation;
+        const bool bApplyAirAbsorption = SourceState.bApplyAirAbsorption;
+        const bool bApplyOcclusion = SourceState.bApplyOcclusion;
+        SourceState.IndirectRenderer.ReleasePreparedStates(
+            IndirectAudioBridge.Get(),
+            InputData.SourceId);
+        ResetOcclusionSourceState(SourceState, SampleRate);
+        SourceState.bApplyDistanceAttenuation = bApplyDistanceAttenuation;
+        SourceState.bApplyAirAbsorption = bApplyAirAbsorption;
+        SourceState.bApplyOcclusion = bApplyOcclusion;
+        SourceState.NumChannels = NumChannels;
+        SourceState.ActiveAudioComponentId =
+            InputData.AudioComponentId;
+    }
+    else if (SourceState.NumChannels != NumChannels
+        || SourceState.SampleRate != SampleRate)
+    {
+        const bool bApplyDistanceAttenuation =
+            SourceState.bApplyDistanceAttenuation;
+        const bool bApplyAirAbsorption =
+            SourceState.bApplyAirAbsorption;
+        const bool bApplyOcclusion =
+            SourceState.bApplyOcclusion;
+        const uint64 ActiveAudioComponentId =
+            SourceState.ActiveAudioComponentId;
+        SourceState.IndirectRenderer.ReleasePreparedStates(
+            IndirectAudioBridge.Get(),
+            InputData.SourceId);
+        ResetOcclusionSourceState(
+            SourceState,
+            SampleRate);
+        SourceState.bApplyDistanceAttenuation =
+            bApplyDistanceAttenuation;
+        SourceState.bApplyAirAbsorption =
+            bApplyAirAbsorption;
+        SourceState.bApplyOcclusion =
+            bApplyOcclusion;
+        SourceState.NumChannels = NumChannels;
+        SourceState.ActiveAudioComponentId =
+            ActiveAudioComponentId;
+    }
 
     float TargetBroadbandGain = 1.0f;
     FVector TargetBandGains = FVector::OneVector;
-    float IndirectMix = 0.0f;
-    FUERayTracingAudioIndirectSimulationResult IndirectResult;
-    if (UAudioComponent* AudioComponent = UAudioComponent::GetAudioComponentFromID(InputData.AudioComponentId))
+    const FUERayTracingAudioSimulationSnapshotRegistry::FSnapshotPtr Snapshot =
+        SnapshotRegistry->Read(InputData.AudioComponentId);
+    const bool bHasValidDirectResult =
+        Snapshot.IsValid()
+        && Snapshot->DirectResult.bHasListener;
+    if (bHasValidDirectResult)
     {
-        if (AActor* Owner = AudioComponent->GetOwner())
+        const FUERayTracingAudioDirectSimulationResult& Result = Snapshot->DirectResult;
+        const float Broadband =
+            (SourceState.bApplyDistanceAttenuation
+                ? Result.DistanceAttenuation
+                : 1.0f)
+            * (SourceState.bApplyOcclusion
+                ? Result.Occlusion
+                : 1.0f);
+        const FVector Air = SourceState.bApplyAirAbsorption
+            ? Result.AirAbsorption
+            : FVector::OneVector;
+        const FVector UnclampedBandGains = Broadband * Air;
+        TargetBroadbandGain = FMath::IsFinite(Broadband)
+            ? FMath::Clamp(Broadband, 0.0f, 4.0f)
+            : 1.0f;
+        TargetBandGains.X = FMath::IsFinite(UnclampedBandGains.X)
+            ? FMath::Clamp(UnclampedBandGains.X, 0.0f, 4.0f)
+            : 1.0f;
+        TargetBandGains.Y = FMath::IsFinite(UnclampedBandGains.Y)
+            ? FMath::Clamp(UnclampedBandGains.Y, 0.0f, 4.0f)
+            : 1.0f;
+        TargetBandGains.Z = FMath::IsFinite(UnclampedBandGains.Z)
+            ? FMath::Clamp(UnclampedBandGains.Z, 0.0f, 4.0f)
+            : 1.0f;
+        if (!SourceState.bHasAppliedSnapshotGain)
         {
-            if (UUERayTracingAudioSourceComponent* SourceComponent = Owner->FindComponentByClass<UUERayTracingAudioSourceComponent>())
+            // If the first callback already has a valid acoustic result, begin
+            // at that physical gain. If audio previously rendered without one,
+            // preserve continuity and ramp from unity across this buffer.
+            if (!SourceState.bHasRenderedAudio)
             {
-                const FUERayTracingAudioDirectSimulationResult& Result = SourceComponent->GetDirectSoundResult();
-                const float Broadband =
-                    (SourceState.bApplyDistanceAttenuation
-                        ? Result.DistanceAttenuation
-                        : 1.0f)
-                    * (SourceState.bApplyOcclusion
-                        ? Result.Occlusion
-                        : 1.0f);
-                const FVector Air = SourceState.bApplyAirAbsorption
-                    ? Result.AirAbsorption
-                    : FVector::OneVector;
-                const FVector UnclampedBandGains = Broadband * Air;
-                TargetBroadbandGain = FMath::IsFinite(Broadband)
-                    ? FMath::Clamp(Broadband, 0.0f, 4.0f)
-                    : 1.0f;
-                TargetBandGains.X = FMath::IsFinite(UnclampedBandGains.X)
-                    ? FMath::Clamp(UnclampedBandGains.X, 0.0f, 4.0f)
-                    : 1.0f;
-                TargetBandGains.Y = FMath::IsFinite(UnclampedBandGains.Y)
-                    ? FMath::Clamp(UnclampedBandGains.Y, 0.0f, 4.0f)
-                    : 1.0f;
-                TargetBandGains.Z = FMath::IsFinite(UnclampedBandGains.Z)
-                    ? FMath::Clamp(UnclampedBandGains.Z, 0.0f, 4.0f)
-                    : 1.0f;
-
-                IndirectResult = SourceComponent->GetIndirectSoundResult();
-                IndirectMix = SourceComponent->GetIndirectMix();
-                EnsureDelayCapacity(SourceState, SourceComponent->GetIndirectDurationSeconds());
+                SourceState.PreviousBandGains =
+                    TargetBandGains;
             }
+            SourceState.bHasAppliedSnapshotGain = true;
         }
     }
+    SourceState.IndirectRenderer.ConfigurePrepared(
+        IndirectAudioBridge.Get(),
+        InputData.SourceId,
+        InputData.AudioComponentId,
+        Snapshot.Get());
 
-    const int32 NumSamples = OutputData.AudioBuffer.Num();
-    const int32 NumChannels = FMath::Max(InputData.NumChannels, 1);
+    const int32 NumFrames = FMath::Min(NumInputSamples, NumOutputSamples) / NumChannels;
     const bool bCanProcessThreeBand =
         SourceState.AirAbsorptionProcessor.CanProcess(
             NumChannels);
-    for (int32 SampleIndex = 0; SampleIndex < NumSamples; SampleIndex += NumChannels)
+    if (!bCanProcessThreeBand)
     {
-        const float Alpha = static_cast<float>(SampleIndex + NumChannels) / static_cast<float>(NumSamples);
+        FUERayTracingAudioAudioDiagnostics::
+            RecordHardRealtimeCapacityMiss();
+    }
+    TArrayView<FVector2f> StereoWetFrames = Snapshot
+        ? IndirectAudioBridge->BeginWrite(
+            InputData.SourceId,
+            InputData.AudioComponentId,
+            NumFrames,
+            Snapshot->DataSource)
+        : IndirectAudioBridge->BeginWrite(
+            InputData.SourceId,
+            InputData.AudioComponentId,
+            NumFrames);
+    const bool bCanBridgeStereoWet = StereoWetFrames.Num() == NumFrames;
+    float PeakAbsoluteInput = 0.0f;
+    float PeakAbsoluteWet = 0.0f;
+    float PeakAbsoluteOutput = 0.0f;
+    double InputSquareSum = 0.0;
+    double WetSquareSum = 0.0;
+    uint64 FiniteInputSampleCount = 0;
+    uint64 FiniteWetSampleCount = 0;
+    uint64 NonFiniteWetSampleCount = 0;
+    uint64 NonFiniteOutputSampleCount = 0;
+    uint64 OverUnitOutputSampleCount = 0;
+    const bool bRecordAudioDiagnostics =
+        FUERayTracingAudioAudioDiagnostics::IsEnabledFor(
+            InputData.AudioComponentId);
+    for (int32 FrameIndex = 0; FrameIndex < NumFrames; ++FrameIndex)
+    {
+        const int32 SampleIndex = FrameIndex * NumChannels;
+        const float Alpha = static_cast<float>(FrameIndex + 1) / static_cast<float>(FMath::Max(NumFrames, 1));
         const FVector BandGains = FMath::Lerp(
             SourceState.PreviousBandGains,
             TargetBandGains,
@@ -259,13 +319,73 @@ void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInp
         float MonoInput = 0.0f;
         for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ++ChannelIndex)
         {
-            MonoInput += (*InputData.AudioBuffer)[SampleIndex + ChannelIndex];
+            const float ChannelInput =
+                (*InputData.AudioBuffer)[SampleIndex + ChannelIndex];
+            MonoInput += ChannelInput;
+            if (bRecordAudioDiagnostics
+                && FMath::IsFinite(ChannelInput))
+            {
+                PeakAbsoluteInput = FMath::Max(
+                    PeakAbsoluteInput,
+                    FMath::Abs(ChannelInput));
+                InputSquareSum +=
+                    static_cast<double>(ChannelInput)
+                    * static_cast<double>(ChannelInput);
+                ++FiniteInputSampleCount;
+            }
         }
         MonoInput /= static_cast<float>(NumChannels);
 
-        const float IndirectWet = RenderIndirectSample(SourceState, IndirectResult, MonoInput, IndirectMix);
+        const FVector2f IndirectWet = SourceState.IndirectRenderer.ProcessSample(MonoInput);
+        if (!FMath::IsFinite(IndirectWet.X))
+        {
+            ++NonFiniteWetSampleCount;
+        }
+        else
+        {
+            if (bRecordAudioDiagnostics)
+            {
+                PeakAbsoluteWet = FMath::Max(
+                    PeakAbsoluteWet,
+                    FMath::Abs(IndirectWet.X));
+                WetSquareSum +=
+                    static_cast<double>(IndirectWet.X)
+                    * static_cast<double>(IndirectWet.X);
+                ++FiniteWetSampleCount;
+            }
+        }
+        if (!FMath::IsFinite(IndirectWet.Y))
+        {
+            ++NonFiniteWetSampleCount;
+        }
+        else
+        {
+            if (bRecordAudioDiagnostics)
+            {
+                PeakAbsoluteWet = FMath::Max(
+                    PeakAbsoluteWet,
+                    FMath::Abs(IndirectWet.Y));
+                WetSquareSum +=
+                    static_cast<double>(IndirectWet.Y)
+                    * static_cast<double>(IndirectWet.Y);
+                ++FiniteWetSampleCount;
+            }
+        }
+        if (StereoWetFrames.IsValidIndex(FrameIndex))
+        {
+            StereoWetFrames[FrameIndex] = IndirectWet;
+        }
         for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ++ChannelIndex)
         {
+            const float ChannelWet = NumChannels == 1 && !bCanBridgeStereoWet
+                ? 0.0f
+                : NumChannels == 1
+                ? 0.5f * (IndirectWet.X + IndirectWet.Y)
+                : (ChannelIndex == 0
+                    ? IndirectWet.X
+                    : (ChannelIndex == 1
+                        ? IndirectWet.Y
+                        : 0.5f * (IndirectWet.X + IndirectWet.Y)));
             const float DirectSample = bCanProcessThreeBand
                 ? SourceState.AirAbsorptionProcessor.ProcessSample(
                     (*InputData.AudioBuffer)[SampleIndex + ChannelIndex],
@@ -273,12 +393,69 @@ void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInp
                     BandGains)
                 : (*InputData.AudioBuffer)[SampleIndex + ChannelIndex]
                     * TargetBroadbandGain;
-            OutputData.AudioBuffer[SampleIndex + ChannelIndex] =
-                DirectSample + IndirectWet;
+            const float OutputSample = DirectSample + ChannelWet;
+            if (FMath::IsFinite(OutputSample))
+            {
+                OutputData.AudioBuffer[SampleIndex + ChannelIndex] =
+                    OutputSample;
+                if (bRecordAudioDiagnostics)
+                {
+                    const float AbsoluteOutput = FMath::Abs(OutputSample);
+                    PeakAbsoluteOutput = FMath::Max(
+                        PeakAbsoluteOutput,
+                        AbsoluteOutput);
+                    if (AbsoluteOutput > 1.0f)
+                    {
+                        ++OverUnitOutputSampleCount;
+                    }
+                }
+            }
+            else
+            {
+                OutputData.AudioBuffer[SampleIndex + ChannelIndex] = 0.0f;
+                ++NonFiniteOutputSampleCount;
+            }
         }
     }
 
-    SourceState.PreviousBandGains = TargetBandGains;
+    const int32 NumProcessedSamples = NumFrames * NumChannels;
+    for (int32 SampleIndex = NumProcessedSamples; SampleIndex < NumOutputSamples; ++SampleIndex)
+    {
+        OutputData.AudioBuffer[SampleIndex] = 0.0f;
+    }
+    if (Snapshot && bRecordAudioDiagnostics)
+    {
+        const float InputRms = FiniteInputSampleCount > 0
+            ? FMath::Sqrt(static_cast<float>(
+                InputSquareSum
+                / static_cast<double>(FiniteInputSampleCount)))
+            : 0.0f;
+        const float WetRms = FiniteWetSampleCount > 0
+            ? FMath::Sqrt(static_cast<float>(
+                WetSquareSum
+                / static_cast<double>(FiniteWetSampleCount)))
+            : 0.0f;
+        FUERayTracingAudioAudioDiagnostics::RecordBuffer(
+            Snapshot->DataSource,
+            InputData.AudioComponentId,
+            NumFrames,
+            PeakAbsoluteInput,
+            PeakAbsoluteWet,
+            InputRms,
+            WetRms,
+            NonFiniteWetSampleCount + NonFiniteOutputSampleCount,
+            PeakAbsoluteOutput,
+            OverUnitOutputSampleCount);
+    }
+
+    IndirectAudioBridge->EndWrite(InputData.SourceId, InputData.AudioComponentId);
+
+    if (NumFrames > 0)
+    {
+        SourceState.PreviousBandGains =
+            TargetBandGains;
+        SourceState.bHasRenderedAudio = true;
+    }
 }
 
 FUERayTracingAudioOcclusionPluginFactory::
@@ -306,7 +483,11 @@ UClass* FUERayTracingAudioOcclusionPluginFactory::GetCustomOcclusionSettingsClas
 TAudioOcclusionPtr FUERayTracingAudioOcclusionPluginFactory::CreateNewOcclusionPlugin(FAudioDevice* OwningDevice)
 {
     FUERayTracingAudioModule::Get().RegisterAudioDevice(OwningDevice);
+    FUERayTracingAudioModule& Module = FUERayTracingAudioModule::Get();
     return TAudioOcclusionPtr(new FUERayTracingAudioOcclusionPlugin(
+        FUERayTracingAudioModule::GetManager().
+            GetSnapshotRegistrySharedRef(),
+        Module.GetOrCreateIndirectAudioBridge(OwningDevice),
         CrossoversHz,
         OwningDevice));
 }

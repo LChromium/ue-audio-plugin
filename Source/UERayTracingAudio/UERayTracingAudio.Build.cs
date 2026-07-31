@@ -19,6 +19,7 @@ public class UERayTracingAudio : ModuleRules
             "AudioMixer",
             "CoreUObject",
             "Engine",
+            "InputCore",
             "Projects",
             "RHI",
             "RenderCore",

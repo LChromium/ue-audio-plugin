@@ -6,19 +6,23 @@ import sys
 from pathlib import Path
 
 import sync_plugin_to_test_project
-
-
-DEFAULT_ENGINE_ROOT = Path(r"C:\Projects\ZeroEngine")
-DEFAULT_PROJECT_PATH = Path(r"C:\Projects\MyProject\MyProject.uproject")
+import validate_audio_realtime_safety
+import validation_environment
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--engine-root", type=Path, default=DEFAULT_ENGINE_ROOT)
-    parser.add_argument("--project", type=Path, default=DEFAULT_PROJECT_PATH)
+    parser.add_argument("--engine-root", type=Path)
+    parser.add_argument("--project", type=Path)
     parser.add_argument("--target", type=str)
     parser.add_argument("--configuration", type=str, default="Development")
     parser.add_argument("--platform", type=str, default="Win64")
+    parser.add_argument(
+        "--max-parallel-actions",
+        type=int,
+        default=4,
+        help="Limit UnrealBuildTool parallelism to avoid exhausting memory during the standalone plugin build.",
+    )
     parser.add_argument("--skip-sync", action="store_true")
     parser.add_argument("--skip-project-build", action="store_true")
     parser.add_argument("--skip-plugin-build", action="store_true")
@@ -32,6 +36,7 @@ def build_command(
     platform: str,
     configuration: str,
     project_path: Path,
+    max_parallel_actions: int,
     plugin_path: Path | None = None,
     plugin_name: str | None = None,
 ) -> list[str]:
@@ -44,6 +49,7 @@ def build_command(
         "-NoXGE",
         "-WaitMutex",
         "-FromMsBuild",
+        f"-MaxParallelActions={max(1, max_parallel_actions)}",
     ]
     if plugin_path is not None:
         command.append(f"-plugin={plugin_path}")
@@ -67,8 +73,8 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
     plugin_file = sync_plugin_to_test_project.find_plugin_file(repo_root)
-    project_path = args.project.resolve()
-    engine_root = args.engine_root.resolve()
+    project_path = validation_environment.resolve_project_path(args.project, repo_root, plugin_file.stem)
+    engine_root = validation_environment.resolve_engine_root(args.engine_root)
     build_bat = engine_root / "Engine" / "Build" / "BatchFiles" / "Build.bat"
 
     if project_path.suffix.lower() != ".uproject":
@@ -88,7 +94,18 @@ def main() -> int:
     print(f"Target          : {target}")
     print(f"Platform        : {args.platform}")
     print(f"Configuration   : {args.configuration}")
+    print(f"Parallel actions: {max(1, args.max_parallel_actions)}")
     print(f"Dry run         : {args.dry_run}")
+
+    realtime_report = validate_audio_realtime_safety.validate_repo(
+        repo_root
+    )
+    print(
+        "Audio RT audit  : "
+        f"{realtime_report.audited_functions} functions, "
+        f"{realtime_report.audited_bodies} bodies, "
+        "0 forbidden operations"
+    )
 
     if not args.skip_sync:
         destination_root = project_path.parent / "Plugins" / plugin_name
@@ -103,6 +120,7 @@ def main() -> int:
             platform=args.platform,
             configuration=args.configuration,
             project_path=project_path,
+            max_parallel_actions=args.max_parallel_actions,
         )
         run_step("Build Project", project_build_command, repo_root, args.dry_run)
 
@@ -113,6 +131,7 @@ def main() -> int:
             platform=args.platform,
             configuration=args.configuration,
             project_path=project_path,
+            max_parallel_actions=args.max_parallel_actions,
             plugin_path=plugin_file,
             plugin_name=plugin_name,
         )

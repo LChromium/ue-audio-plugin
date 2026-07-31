@@ -1,4 +1,8 @@
 Binaries/
+BuildValidation/
 Intermediate/
 Saved/
+TestProject/
+.uv-cache/
 .workbuddy/
+__pycache__/

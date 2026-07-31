@@ -14,7 +14,6 @@ public:
     explicit FUERayTracingAudioReflectionSimulator(const FUERayTracingAudioContext& InContext);
 
     void Simulate(
-        const FUERayTracingAudioRayTracingDevice& RayTracingDevice,
         const FUERayTracingAudioIndirectSimulationInput& Input,
         float EarlyLateSplitSeconds,
         FUERayTracingAudioMinimalEnergyField& OutEnergyField,

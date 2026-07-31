@@ -14,4 +14,7 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Spatialization)
     bool bEnableDirectPathSpatialization;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Spatialization, meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float PanningStrength;
 };

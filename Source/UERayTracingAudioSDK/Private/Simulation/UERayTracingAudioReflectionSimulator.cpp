@@ -1,14 +1,10 @@
 #include "Simulation/UERayTracingAudioReflectionSimulator.h"
 
-#include "GameFramework/Actor.h"
-#include "RenderGraphUtils.h"
-#include "RHIResourceUtils.h"
 #include "Scene/UERayTracingAudioScene.h"
-#include "Simulation/UERayTracingAudioEnergyFieldShaders.h"
 
 namespace UERayTracingAudioReflectionSimulatorPrivate
 {
-    constexpr uint32 EnergyQuantizationScale = 1000000u;
+    constexpr float MinimumReflectionPathEnergy = 1e-8f;
 
     struct FAcousticSceneHit
     {
@@ -16,6 +12,8 @@ namespace UERayTracingAudioReflectionSimulatorPrivate
         FVector Location = FVector::ZeroVector;
         FVector Normal = FVector::UpVector;
         FVector Absorption = FVector::ZeroVector;
+        FVector Transmission = FVector::ZeroVector;
+        float Scattering = 0.0f;
         float Distance = 0.0f;
     };
 
@@ -23,16 +21,9 @@ namespace UERayTracingAudioReflectionSimulatorPrivate
     {
         FVector RayOrigin = FVector::ZeroVector;
         FVector RayDirection = FVector::ForwardVector;
+        FVector ListenerDirection = FVector::ForwardVector;
         FVector Throughput = FVector::OneVector;
         float TravelDistance = 0.0f;
-    };
-
-    struct FSourceGatherCandidate
-    {
-        FVector VisibilityStart = FVector::ZeroVector;
-        FVector Throughput = FVector::ZeroVector;
-        float TravelDistance = 0.0f;
-        int32 BounceIndex = 0;
     };
 
     float RadicalInverse(int32 Base, int32 Index)
@@ -62,6 +53,22 @@ namespace UERayTracingAudioReflectionSimulatorPrivate
             SinTheta * FMath::Cos(Phi),
             SinTheta * FMath::Sin(Phi),
             CosTheta).GetSafeNormal();
+    }
+
+    FVector GenerateMaterialBounceDirection(
+        const FVector& IncomingDirection,
+        const FVector& SurfaceNormal,
+        float Scattering,
+        int32 SampleIndex)
+    {
+        const FVector SpecularDirection = IncomingDirection.MirrorByVector(SurfaceNormal).GetSafeNormal();
+        FVector DiffuseDirection = GenerateSphereDirectionSample(SampleIndex);
+        if (FVector::DotProduct(DiffuseDirection, SurfaceNormal) < 0.0f)
+        {
+            DiffuseDirection *= -1.0f;
+        }
+        DiffuseDirection = (DiffuseDirection + SurfaceNormal).GetSafeNormal();
+        return FMath::Lerp(SpecularDirection, DiffuseDirection, FMath::Clamp(Scattering, 0.0f, 1.0f)).GetSafeNormal();
     }
 
     bool IntersectTriangle(
@@ -206,9 +213,9 @@ namespace UERayTracingAudioReflectionSimulatorPrivate
             {
                 for (int32 Index = 0; Index + 2 < GeometryExport.Indices.Num(); Index += 3)
                 {
-                    const FVector& A = GeometryExport.Vertices[GeometryExport.Indices[Index]];
-                    const FVector& B = GeometryExport.Vertices[GeometryExport.Indices[Index + 1]];
-                    const FVector& C = GeometryExport.Vertices[GeometryExport.Indices[Index + 2]];
+                    const FVector A = GeometryExport.GetVertexWorldPosition(GeometryExport.Indices[Index]);
+                    const FVector B = GeometryExport.GetVertexWorldPosition(GeometryExport.Indices[Index + 1]);
+                    const FVector C = GeometryExport.GetVertexWorldPosition(GeometryExport.Indices[Index + 2]);
 
                     float Distance = 0.0f;
                     FVector Normal = FVector::UpVector;
@@ -220,6 +227,8 @@ namespace UERayTracingAudioReflectionSimulatorPrivate
                         OutHit.Location = RayOrigin + (RayDirection * Distance);
                         OutHit.Normal = Normal;
                         OutHit.Absorption = GeometryExport.Absorption;
+                        OutHit.Transmission = GeometryExport.Transmission;
+                        OutHit.Scattering = GeometryExport.Scattering;
                         bHasHit = true;
                     }
                 }
@@ -236,6 +245,8 @@ namespace UERayTracingAudioReflectionSimulatorPrivate
                     OutHit.Location = RayOrigin + (RayDirection * Distance);
                     OutHit.Normal = Normal;
                     OutHit.Absorption = GeometryExport.Absorption;
+                    OutHit.Transmission = GeometryExport.Transmission;
+                    OutHit.Scattering = GeometryExport.Scattering;
                     bHasHit = true;
                 }
             }
@@ -246,7 +257,7 @@ namespace UERayTracingAudioReflectionSimulatorPrivate
 
     int32 GetDelayBinIndex(const FUERayTracingAudioMinimalEnergyField& EnergyField, float DelaySeconds)
     {
-        if (EnergyField.DelayBinEnergy.IsEmpty() || EnergyField.DelayBinDurationSeconds <= UE_KINDA_SMALL_NUMBER)
+        if (EnergyField.DelayBinEnergy.IsEmpty() || EnergyField.DelayBinDurationSeconds <= UE_SMALL_NUMBER)
         {
             return INDEX_NONE;
         }
@@ -257,190 +268,6 @@ namespace UERayTracingAudioReflectionSimulatorPrivate
             EnergyField.DelayBinEnergy.Num() - 1);
     }
 
-    bool DispatchShadeAndGatherOnGPU_RenderThread(
-        FRHICommandListImmediate& RHICmdList,
-        const TArray<FShadeAndGatherPathInputGPU>& PathInputs,
-        const FUERayTracingAudioIndirectSimulationInput& Input,
-        float SpeedOfSound,
-        float ReferenceDistance,
-        TArray<FReflectionPathState>& OutNextPaths,
-        TArray<FVector>& OutEnergyBins,
-        int32& OutContributionCount)
-    {
-        OutNextPaths.Reset();
-        OutEnergyBins.Init(FVector::ZeroVector, FMath::Max(Input.NumDelayBins, 1));
-        OutContributionCount = 0;
-
-        if (PathInputs.IsEmpty())
-        {
-            return true;
-        }
-
-        FBufferRHIRef InputBuffer = UE::RHIResourceUtils::CreateBufferFromArray(
-            RHICmdList,
-            TEXT("UERayTracingAudioShadeAndGatherInput"),
-            BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer,
-            ERHIAccess::SRVMask,
-            MakeConstArrayView(PathInputs));
-
-        FShaderResourceViewRHIRef InputBufferView = RHICmdList.CreateShaderResourceView(
-            InputBuffer,
-            FRHIViewDesc::CreateBufferSRV()
-                .SetType(FRHIViewDesc::EBufferType::Structured)
-                .SetStride(sizeof(FShadeAndGatherPathInputGPU))
-                .SetNumElements(PathInputs.Num()));
-
-        const FRHIBufferCreateDesc OutputBufferCreateDesc =
-            FRHIBufferCreateDesc::CreateStructured<FShadeAndGatherPathOutputGPU>(TEXT("UERayTracingAudioShadeAndGatherOutput"), PathInputs.Num())
-            .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::SourceCopy)
-            .SetInitialState(ERHIAccess::UAVCompute);
-        FBufferRHIRef OutputBuffer = RHICmdList.CreateBuffer(OutputBufferCreateDesc);
-        FUnorderedAccessViewRHIRef OutputBufferUAV = RHICmdList.CreateUnorderedAccessView(
-            OutputBuffer,
-            FRHIViewDesc::CreateBufferUAV()
-                .SetType(FRHIViewDesc::EBufferType::Structured)
-                .SetStride(sizeof(FShadeAndGatherPathOutputGPU))
-                .SetNumElements(PathInputs.Num()));
-
-        const uint32 NumEnergyValues = static_cast<uint32>(OutEnergyBins.Num() * 3);
-        const FRHIBufferCreateDesc EnergyBufferCreateDesc =
-            FRHIBufferCreateDesc::CreateStructured<uint32>(TEXT("UERayTracingAudioEnergyBins"), NumEnergyValues)
-            .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::SourceCopy)
-            .SetInitialState(ERHIAccess::UAVCompute);
-        FBufferRHIRef EnergyBuffer = RHICmdList.CreateBuffer(EnergyBufferCreateDesc);
-        FUnorderedAccessViewRHIRef EnergyBufferUAV = RHICmdList.CreateUnorderedAccessView(
-            EnergyBuffer,
-            FRHIViewDesc::CreateBufferUAV()
-                .SetType(FRHIViewDesc::EBufferType::Structured)
-                .SetStride(sizeof(uint32))
-                .SetNumElements(NumEnergyValues));
-
-        const FRHIBufferCreateDesc CounterBufferCreateDesc =
-            FRHIBufferCreateDesc::CreateStructured<uint32>(TEXT("UERayTracingAudioContributionCounter"), 1)
-            .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::SourceCopy)
-            .SetInitialState(ERHIAccess::UAVCompute);
-        FBufferRHIRef CounterBuffer = RHICmdList.CreateBuffer(CounterBufferCreateDesc);
-        FUnorderedAccessViewRHIRef CounterBufferUAV = RHICmdList.CreateUnorderedAccessView(
-            CounterBuffer,
-            FRHIViewDesc::CreateBufferUAV()
-                .SetType(FRHIViewDesc::EBufferType::Structured)
-                .SetStride(sizeof(uint32))
-                .SetNumElements(1));
-
-        RHICmdList.ClearUAVUint(EnergyBufferUAV, FUintVector4(0u, 0u, 0u, 0u));
-        RHICmdList.ClearUAVUint(CounterBufferUAV, FUintVector4(0u, 0u, 0u, 0u));
-
-        TShaderMapRef<FUERayTracingAudioShadeAndGatherCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-        FUERayTracingAudioShadeAndGatherCS::FParameters Parameters;
-        Parameters.PathInputs = InputBufferView;
-        Parameters.PathOutputs = OutputBufferUAV;
-        Parameters.EnergyBins = EnergyBufferUAV;
-        Parameters.ContributionCounter = CounterBufferUAV;
-        Parameters.NumPaths = static_cast<uint32>(PathInputs.Num());
-        Parameters.NumDelayBins = static_cast<uint32>(OutEnergyBins.Num());
-        Parameters.NumReflectionRays = static_cast<uint32>(Input.NumReflectionRays);
-        Parameters.SpeedOfSound = SpeedOfSound;
-        Parameters.ReferenceDistance = ReferenceDistance;
-        Parameters.DurationSeconds = Input.DurationSeconds;
-        Parameters.DelayBinDurationSeconds = Input.DurationSeconds / static_cast<float>(OutEnergyBins.Num());
-        Parameters.EnergyQuantizationScale = static_cast<float>(EnergyQuantizationScale);
-        Parameters.SourceLocation = FVector3f(Input.SourceLocation);
-        Parameters.AirAbsorptionPerMeter = FVector3f(Input.AirAbsorptionPerMeter);
-
-        FComputeShaderUtils::Dispatch(
-            RHICmdList,
-            ComputeShader,
-            Parameters,
-            FIntVector(FMath::DivideAndRoundUp(PathInputs.Num(), static_cast<int32>(FUERayTracingAudioShadeAndGatherCS::ThreadGroupSizeX)), 1, 1));
-
-        RHICmdList.Transition(FRHITransitionInfo(OutputBuffer, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
-        RHICmdList.Transition(FRHITransitionInfo(EnergyBuffer, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
-        RHICmdList.Transition(FRHITransitionInfo(CounterBuffer, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
-        RHICmdList.BlockUntilGPUIdle();
-
-        const FShadeAndGatherPathOutputGPU* OutputData = static_cast<const FShadeAndGatherPathOutputGPU*>(
-            RHICmdList.LockBuffer(OutputBuffer, 0, sizeof(FShadeAndGatherPathOutputGPU) * PathInputs.Num(), RLM_ReadOnly));
-        const uint32* EnergyData = static_cast<const uint32*>(
-            RHICmdList.LockBuffer(EnergyBuffer, 0, sizeof(uint32) * NumEnergyValues, RLM_ReadOnly));
-        const uint32* CounterData = static_cast<const uint32*>(
-            RHICmdList.LockBuffer(CounterBuffer, 0, sizeof(uint32), RLM_ReadOnly));
-
-        if (!OutputData || !EnergyData || !CounterData)
-        {
-            if (OutputData)
-            {
-                RHICmdList.UnlockBuffer(OutputBuffer);
-            }
-            if (EnergyData)
-            {
-                RHICmdList.UnlockBuffer(EnergyBuffer);
-            }
-            if (CounterData)
-            {
-                RHICmdList.UnlockBuffer(CounterBuffer);
-            }
-            return false;
-        }
-
-        OutContributionCount = static_cast<int32>(CounterData[0]);
-        for (int32 BinIndex = 0; BinIndex < OutEnergyBins.Num(); ++BinIndex)
-        {
-            const int32 BaseIndex = BinIndex * 3;
-            OutEnergyBins[BinIndex].X = static_cast<float>(EnergyData[BaseIndex]) / static_cast<float>(EnergyQuantizationScale);
-            OutEnergyBins[BinIndex].Y = static_cast<float>(EnergyData[BaseIndex + 1]) / static_cast<float>(EnergyQuantizationScale);
-            OutEnergyBins[BinIndex].Z = static_cast<float>(EnergyData[BaseIndex + 2]) / static_cast<float>(EnergyQuantizationScale);
-        }
-
-        OutNextPaths.Reserve(PathInputs.Num());
-        for (int32 PathIndex = 0; PathIndex < PathInputs.Num(); ++PathIndex)
-        {
-            const FShadeAndGatherPathOutputGPU& Output = OutputData[PathIndex];
-            if (Output.NextDirectionAndAlive.W < 0.5f)
-            {
-                continue;
-            }
-
-            FReflectionPathState& NextPath = OutNextPaths.AddDefaulted_GetRef();
-            NextPath.RayOrigin = FVector(Output.NextOriginAndTravelDistance.X, Output.NextOriginAndTravelDistance.Y, Output.NextOriginAndTravelDistance.Z);
-            NextPath.TravelDistance = Output.NextOriginAndTravelDistance.W;
-            NextPath.RayDirection = FVector(Output.NextDirectionAndAlive.X, Output.NextDirectionAndAlive.Y, Output.NextDirectionAndAlive.Z).GetSafeNormal();
-            NextPath.Throughput = FVector(Output.ThroughputAndPadding.X, Output.ThroughputAndPadding.Y, Output.ThroughputAndPadding.Z);
-        }
-
-        RHICmdList.UnlockBuffer(OutputBuffer);
-        RHICmdList.UnlockBuffer(EnergyBuffer);
-        RHICmdList.UnlockBuffer(CounterBuffer);
-        return true;
-    }
-
-    bool DispatchShadeAndGatherOnGPU(
-        const TArray<FShadeAndGatherPathInputGPU>& PathInputs,
-        const FUERayTracingAudioIndirectSimulationInput& Input,
-        float SpeedOfSound,
-        float ReferenceDistance,
-        TArray<FReflectionPathState>& OutNextPaths,
-        TArray<FVector>& OutEnergyBins,
-        int32& OutContributionCount)
-    {
-        bool bSucceeded = false;
-
-        ENQUEUE_RENDER_COMMAND(UERayTracingAudioShadeAndGather)(
-            [&PathInputs, &Input, SpeedOfSound, ReferenceDistance, &OutNextPaths, &OutEnergyBins, &OutContributionCount, &bSucceeded](FRHICommandListImmediate& RHICmdList)
-            {
-                bSucceeded = DispatchShadeAndGatherOnGPU_RenderThread(
-                    RHICmdList,
-                    PathInputs,
-                    Input,
-                    SpeedOfSound,
-                    ReferenceDistance,
-                    OutNextPaths,
-                    OutEnergyBins,
-                    OutContributionCount);
-            });
-
-        FlushRenderingCommands();
-        return bSucceeded;
-    }
 }
 
 using namespace UERayTracingAudioReflectionSimulatorPrivate;
@@ -451,7 +278,6 @@ FUERayTracingAudioReflectionSimulator::FUERayTracingAudioReflectionSimulator(con
 }
 
 void FUERayTracingAudioReflectionSimulator::Simulate(
-    const FUERayTracingAudioRayTracingDevice& RayTracingDevice,
     const FUERayTracingAudioIndirectSimulationInput& Input,
     float EarlyLateSplitSeconds,
     FUERayTracingAudioMinimalEnergyField& OutEnergyField,
@@ -462,6 +288,7 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
     OutEnergyField.DurationSeconds = Input.DurationSeconds;
     OutEnergyField.EarlyLateSplitSeconds = EarlyLateSplitSeconds;
     OutEnergyField.DelayBinEnergy.Init(FVector::ZeroVector, FMath::Max(Input.NumDelayBins, 1));
+    OutEnergyField.DelayBinDirection.Init(FVector::ZeroVector, OutEnergyField.DelayBinEnergy.Num());
     OutEnergyField.DelayBinDurationSeconds = Input.DurationSeconds / static_cast<float>(OutEnergyField.DelayBinEnergy.Num());
     OutEnergyField.EarliestArrivalSeconds = 0.0f;
 
@@ -470,7 +297,6 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
         return;
     }
 
-    const bool bCanUseHardwareRayTracing = RayTracingDevice.IsRayTracingAvailable();
     const float ReferenceDistance = FMath::Max(Context.GetReferenceDistanceCm(), 1.0f);
     const float SpeedOfSound = FMath::Max(Context.GetSpeedOfSoundCmPerSecond(), 1.0f);
     const float MaxTraceDistance = FMath::Max(Context.GetMaxDistanceCm(), 100.0f);
@@ -478,74 +304,9 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
         ? FVector::UpVector
         : Input.ListenerForward.GetSafeNormal();
 
-    if (bCanUseHardwareRayTracing)
-    {
-        FUERayTracingAudioEnergyFieldTraceRequest EnergyFieldTraceRequest;
-        EnergyFieldTraceRequest.World = Input.World;
-        EnergyFieldTraceRequest.Scene = Input.Scene;
-        EnergyFieldTraceRequest.ListenerLocation = Input.ListenerLocation;
-        EnergyFieldTraceRequest.ListenerForward = Input.ListenerForward;
-        EnergyFieldTraceRequest.SourceLocation = Input.SourceLocation;
-        EnergyFieldTraceRequest.AirAbsorptionPerMeter = Input.AirAbsorptionPerMeter;
-        EnergyFieldTraceRequest.ListenerActor = Input.ListenerActor;
-        EnergyFieldTraceRequest.SourceActor = Input.SourceActor;
-        EnergyFieldTraceRequest.NumReflectionRays = Input.NumReflectionRays;
-        EnergyFieldTraceRequest.MaxReflectionBounces = Input.MaxReflectionBounces;
-        EnergyFieldTraceRequest.NumDelayBins = Input.NumDelayBins;
-        EnergyFieldTraceRequest.DurationSeconds = Input.DurationSeconds;
-        EnergyFieldTraceRequest.ReferenceDistance = ReferenceDistance;
-        EnergyFieldTraceRequest.SpeedOfSound = SpeedOfSound;
-        EnergyFieldTraceRequest.MaxTraceDistance = MaxTraceDistance;
-
-        FUERayTracingAudioEnergyFieldTraceResult EnergyFieldTraceResult;
-        if (RayTracingDevice.SimulateIndirectEnergyField(EnergyFieldTraceRequest, EnergyFieldTraceResult))
-        {
-            OutEnergyField.DelayBinEnergy = MoveTemp(EnergyFieldTraceResult.DelayBinEnergy);
-            OutEnergyField.EarliestArrivalSeconds = EnergyFieldTraceResult.EarliestArrivalSeconds;
-            OutNumValidContributions = EnergyFieldTraceResult.NumValidContributions;
-            return;
-        }
-    }
-
-    FUERayTracingAudioTraceRequest TraceRequest;
-    TraceRequest.World = Input.World;
-    TraceRequest.Scene = Input.Scene;
-    TraceRequest.IgnoredActor = Input.ListenerActor;
-    TraceRequest.SecondaryIgnoredActor = Input.SourceActor;
-
-    auto BuildSceneHitFromDetailed = [Input](const FUERayTracingAudioDetailedTraceHit& DetailedHit, FAcousticSceneHit& OutHit) -> bool
-    {
-        if (!DetailedHit.bHit || !Input.Scene || !Input.Scene->GetStaticGeometry().IsValidIndex(DetailedHit.GeometryIndex))
-        {
-            return false;
-        }
-
-        const FUERayTracingAudioGeometryExport& GeometryExport = Input.Scene->GetStaticGeometry()[DetailedHit.GeometryIndex];
-        OutHit = FAcousticSceneHit();
-        OutHit.bHit = true;
-        OutHit.Location = DetailedHit.Location;
-        OutHit.Normal = DetailedHit.Normal;
-        OutHit.Distance = DetailedHit.Distance;
-        OutHit.Absorption = GeometryExport.Absorption;
-        return true;
-    };
-
     auto QueryIntersections = [&](const TArray<FUERayTracingAudioRay>& Rays, TArray<FAcousticSceneHit>& OutHits)
     {
         OutHits.SetNum(Rays.Num());
-
-        if (bCanUseHardwareRayTracing)
-        {
-            TArray<FUERayTracingAudioDetailedTraceHit> DetailedHits;
-            if (RayTracingDevice.TraceDetailedRays(TraceRequest, Rays, DetailedHits) && DetailedHits.Num() == Rays.Num())
-            {
-                for (int32 RayIndex = 0; RayIndex < Rays.Num(); ++RayIndex)
-                {
-                    BuildSceneHitFromDetailed(DetailedHits[RayIndex], OutHits[RayIndex]);
-                }
-                return;
-            }
-        }
 
         for (int32 RayIndex = 0; RayIndex < Rays.Num(); ++RayIndex)
         {
@@ -565,19 +326,6 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
     {
         OutOccluded.SetNum(Rays.Num());
 
-        if (bCanUseHardwareRayTracing)
-        {
-            TArray<FUERayTracingAudioDetailedTraceHit> DetailedHits;
-            if (RayTracingDevice.TraceDetailedRays(TraceRequest, Rays, DetailedHits) && DetailedHits.Num() == Rays.Num())
-            {
-                for (int32 RayIndex = 0; RayIndex < Rays.Num(); ++RayIndex)
-                {
-                    OutOccluded[RayIndex] = DetailedHits[RayIndex].bHit;
-                }
-                return;
-            }
-        }
-
         for (int32 RayIndex = 0; RayIndex < Rays.Num(); ++RayIndex)
         {
             const FVector Segment = Rays[RayIndex].End - Rays[RayIndex].Start;
@@ -593,12 +341,14 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
         }
     };
 
+    // add data structure
     TArray<FReflectionPathState> ActivePaths;
     ActivePaths.Reserve(Input.NumReflectionRays);
     for (int32 RayIndex = 0; RayIndex < Input.NumReflectionRays; ++RayIndex)
     {
         FReflectionPathState& Path = ActivePaths.AddDefaulted_GetRef();
         Path.RayDirection = GenerateSphereDirectionSample(RayIndex);
+        Path.ListenerDirection = Path.RayDirection;
         Path.RayOrigin = Input.ListenerLocation + (Path.RayDirection + ListenerOffset) * 1.0f;
     }
 
@@ -644,45 +394,6 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
             OccludedResults[PathIndex] = SourceOcclusionHits.IsValidIndex(SourceRayIndex) ? SourceOcclusionHits[SourceRayIndex] : true;
         }
 
-        if (bCanUseHardwareRayTracing)
-        {
-            TArray<FShadeAndGatherPathInputGPU> PathInputs;
-            PathInputs.Reserve(ActivePaths.Num());
-
-            for (int32 PathIndex = 0; PathIndex < ActivePaths.Num(); ++PathIndex)
-            {
-                const FReflectionPathState& Path = ActivePaths[PathIndex];
-                const FAcousticSceneHit& Hit = BounceHits[PathIndex];
-                const bool bOccluded = OccludedResults.IsValidIndex(PathIndex) ? OccludedResults[PathIndex] : true;
-
-                FShadeAndGatherPathInputGPU& PathInput = PathInputs.AddDefaulted_GetRef();
-                PathInput.RayOriginAndTravelDistance = FVector4f(FVector3f(Path.RayOrigin), Path.TravelDistance);
-                PathInput.RayDirectionAndBounceIndex = FVector4f(FVector3f(Path.RayDirection), static_cast<float>(BounceIndex));
-                PathInput.ThroughputAndHitDistance = FVector4f(FVector3f(Path.Throughput), Hit.Distance);
-                PathInput.HitLocationAndHitValid = FVector4f(FVector3f(Hit.Location), Hit.bHit ? 1.0f : 0.0f);
-                PathInput.HitNormalAndOccluded = FVector4f(FVector3f(Hit.Normal), bOccluded ? 1.0f : 0.0f);
-                PathInput.AbsorptionAndPadding = FVector4f(FVector3f(Hit.Absorption), 0.0f);
-            }
-
-            TArray<FVector> BounceEnergyBins;
-            int32 BounceContributionCount = 0;
-            if (DispatchShadeAndGatherOnGPU(PathInputs, Input, SpeedOfSound, ReferenceDistance, NextPaths, BounceEnergyBins, BounceContributionCount))
-            {
-                for (int32 BinIndex = 0; BinIndex < OutEnergyField.DelayBinEnergy.Num() && BinIndex < BounceEnergyBins.Num(); ++BinIndex)
-                {
-                    OutEnergyField.DelayBinEnergy[BinIndex] += BounceEnergyBins[BinIndex];
-                    if (OutEnergyField.EarliestArrivalSeconds <= 0.0f && !BounceEnergyBins[BinIndex].IsNearlyZero())
-                    {
-                        OutEnergyField.EarliestArrivalSeconds = (static_cast<float>(BinIndex) + 0.5f) * OutEnergyField.DelayBinDurationSeconds;
-                    }
-                }
-
-                OutNumValidContributions += BounceContributionCount;
-                ActivePaths = MoveTemp(NextPaths);
-                continue;
-            }
-        }
-
         for (int32 PathIndex = 0; PathIndex < ActivePaths.Num(); ++PathIndex)
         {
             const FAcousticSceneHit& Hit = BounceHits[PathIndex];
@@ -693,9 +404,10 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
 
             FReflectionPathState NextPath = ActivePaths[PathIndex];
             NextPath.TravelDistance += Hit.Distance;
-            NextPath.Throughput.X *= FMath::Clamp(1.0f - Hit.Absorption.X, 0.0f, 1.0f);
-            NextPath.Throughput.Y *= FMath::Clamp(1.0f - Hit.Absorption.Y, 0.0f, 1.0f);
-            NextPath.Throughput.Z *= FMath::Clamp(1.0f - Hit.Absorption.Z, 0.0f, 1.0f);
+            const FVector Reflection = FVector::OneVector - Hit.Absorption - Hit.Transmission;
+            NextPath.Throughput.X *= FMath::Clamp(Reflection.X, 0.0f, 1.0f);
+            NextPath.Throughput.Y *= FMath::Clamp(Reflection.Y, 0.0f, 1.0f);
+            NextPath.Throughput.Z *= FMath::Clamp(Reflection.Z, 0.0f, 1.0f);
 
             const FVector VisibilityStart = Hit.Location + (Hit.Normal * 1.0f);
             const bool bOccluded = OccludedResults.IsValidIndex(PathIndex) ? OccludedResults[PathIndex] : true;
@@ -723,12 +435,13 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
                             * (GeometricAttenuation * BounceAttenuation / static_cast<float>(Input.NumReflectionRays));
                         const float MonoEnergy = (BandGain.X + BandGain.Y + BandGain.Z) / 3.0f;
 
-                        if (MonoEnergy > KINDA_SMALL_NUMBER)
+                        if (MonoEnergy > UERayTracingAudioReflectionSimulatorPrivate::MinimumReflectionPathEnergy)
                         {
                             const int32 DelayBinIndex = GetDelayBinIndex(OutEnergyField, DelaySeconds);
                             if (DelayBinIndex != INDEX_NONE)
                             {
                                 OutEnergyField.DelayBinEnergy[DelayBinIndex] += BandGain;
+                                OutEnergyField.DelayBinDirection[DelayBinIndex] += NextPath.ListenerDirection * MonoEnergy;
                                 OutEnergyField.EarliestArrivalSeconds = (OutEnergyField.EarliestArrivalSeconds <= 0.0f)
                                     ? DelaySeconds
                                     : FMath::Min(OutEnergyField.EarliestArrivalSeconds, DelaySeconds);
@@ -740,7 +453,11 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
             }
 
             NextPath.RayOrigin = VisibilityStart;
-            NextPath.RayDirection = ActivePaths[PathIndex].RayDirection.MirrorByVector(Hit.Normal).GetSafeNormal();
+            NextPath.RayDirection = UERayTracingAudioReflectionSimulatorPrivate::GenerateMaterialBounceDirection(
+                ActivePaths[PathIndex].RayDirection,
+                Hit.Normal,
+                Hit.Scattering,
+                PathIndex + (BounceIndex * FMath::Max(ActivePaths.Num(), 1)));
             if (!NextPath.RayDirection.IsNearlyZero())
             {
                 NextPaths.Add(NextPath);
@@ -749,4 +466,5 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
 
         ActivePaths = MoveTemp(NextPaths);
     }
+
 }

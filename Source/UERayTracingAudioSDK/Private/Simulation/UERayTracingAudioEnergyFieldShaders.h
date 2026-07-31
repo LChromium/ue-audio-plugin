@@ -19,6 +19,8 @@ struct FShadeAndGatherPathInputGPU
     FVector4f HitLocationAndHitValid = FVector4f::Zero();
     FVector4f HitNormalAndOccluded = FVector4f::Zero();
     FVector4f AbsorptionAndPadding = FVector4f::Zero();
+    FVector4f TransmissionAndScattering = FVector4f::Zero();
+    FVector4f ListenerDirectionAndPadding = FVector4f::Zero();
 };
 
 struct FShadeAndGatherPathOutputGPU
@@ -26,6 +28,7 @@ struct FShadeAndGatherPathOutputGPU
     FVector4f NextOriginAndTravelDistance = FVector4f::Zero();
     FVector4f NextDirectionAndAlive = FVector4f::Zero();
     FVector4f ThroughputAndPadding = FVector4f::Zero();
+    FVector4f ListenerDirectionAndContribution = FVector4f::Zero();
 };
 
 class FUERayTracingAudioGenerateListenerRaysCS : public FGlobalShader

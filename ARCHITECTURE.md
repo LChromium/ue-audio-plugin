@@ -7,15 +7,14 @@
 - 直接声模拟：遮挡、透射、距离衰减、空气吸收、指向性。
 - 间接声模拟：早期反射、混响、路径传播。
 - 烘焙能力：基于场景几何和材质预计算脉冲响应、探针数据、反射数据，并在运行时复用。
-- UE 深度集成：遵循 Steam Audio UE 插件的模块划分和使用方式，但把 `SteamAudioSDK` 替换为项目内建的、基于 UE Ray Tracing RHI 的实现。
 - 核心算法分层：参考 Steam Audio `core` 的组织方式，把几何、场景、射线追踪、模拟、卷积、烘焙、序列化拆成独立子系统，而不是把逻辑直接写在 UE Runtime 模块里。
 
 ## 2. 对标关系
 
 ### 2.1 参考对象
 
-- UE 插件结构参考：`C:\tasks\steam-audio\unreal\src\SteamAudioUnreal\Plugins\SteamAudio`
-- 声学核心结构参考：`C:\tasks\steam-audio\core\src\core`
+- UE 插件结构参考：`D:/Labs\steam-audio\unreal\src\SteamAudioUnreal\Plugins\SteamAudio`
+- 声学核心结构参考：`D:/Labs\steam-audio\core\src\core`
 
 ### 2.2 本项目对应关系
 

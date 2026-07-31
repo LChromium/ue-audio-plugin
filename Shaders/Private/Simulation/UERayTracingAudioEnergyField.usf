@@ -15,6 +15,8 @@ struct FShadeAndGatherPathInputGPU
     float4 HitLocationAndHitValid;
     float4 HitNormalAndOccluded;
     float4 AbsorptionAndPadding;
+    float4 TransmissionAndScattering;
+    float4 ListenerDirectionAndPadding;
 };
 
 struct FShadeAndGatherPathOutputGPU
@@ -22,6 +24,7 @@ struct FShadeAndGatherPathOutputGPU
     float4 NextOriginAndTravelDistance;
     float4 NextDirectionAndAlive;
     float4 ThroughputAndPadding;
+    float4 ListenerDirectionAndContribution;
 };
 
 RWStructuredBuffer<FReflectionPathStateGPU> OutPaths;
@@ -43,6 +46,20 @@ float3 ListenerForward;
 float3 SourceLocation;
 float3 AirAbsorptionPerMeter;
 
+float RadicalInverse(uint Base, uint Index)
+{
+    float InverseBase = 1.0f / (float)Base;
+    float Fraction = InverseBase;
+    float Result = 0.0f;
+    while (Index > 0u)
+    {
+        Result += (float)(Index % Base) * Fraction;
+        Index /= Base;
+        Fraction *= InverseBase;
+    }
+    return Result;
+}
+
 [numthreads(THREADGROUP_SIZE_X, 1, 1)]
 void GenerateListenerRaysCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -52,8 +69,8 @@ void GenerateListenerRaysCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    const float U = (PathIndex + 0.5f) / max((float) NumPaths, 1.0f);
-    const float V = frac((PathIndex + 0.5f) * 0.61803398875f);
+    const float U = RadicalInverse(2u, PathIndex + 1u);
+    const float V = RadicalInverse(3u, PathIndex + 1u);
     const float CosTheta = 1.0f - 2.0f * U;
     const float SinTheta = sqrt(max(0.0f, 1.0f - CosTheta * CosTheta));
     const float Phi = 2.0f * PI * V;
@@ -84,6 +101,7 @@ void ShadeAndGatherCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     Output.NextOriginAndTravelDistance = 0.0f;
     Output.NextDirectionAndAlive = 0.0f;
     Output.ThroughputAndPadding = 0.0f;
+    Output.ListenerDirectionAndContribution = float4(Input.ListenerDirectionAndPadding.xyz, 0.0f);
 
     if (Input.HitLocationAndHitValid.w < 0.5f)
     {
@@ -91,11 +109,21 @@ void ShadeAndGatherCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    float3 Throughput = Input.ThroughputAndHitDistance.xyz * saturate(1.0f - Input.AbsorptionAndPadding.xyz);
+    float3 Reflection = saturate(1.0f - Input.AbsorptionAndPadding.xyz - Input.TransmissionAndScattering.xyz);
+    float3 Throughput = Input.ThroughputAndHitDistance.xyz * Reflection;
     float TravelDistance = Input.RayOriginAndTravelDistance.w + Input.ThroughputAndHitDistance.w;
     float3 HitNormal = normalize(Input.HitNormalAndOccluded.xyz);
     float3 NextOrigin = Input.HitLocationAndHitValid.xyz + HitNormal * 1.0f;
-    float3 NextDirection = normalize(reflect(Input.RayDirectionAndBounceIndex.xyz, HitNormal));
+    float3 SpecularDirection = normalize(reflect(Input.RayDirectionAndBounceIndex.xyz, HitNormal));
+    float SeedU = frac(sin(dot(float2((float)PathIndex + 1.0f, Input.RayDirectionAndBounceIndex.w + 1.0f), float2(12.9898f, 78.233f))) * 43758.5453f);
+    float SeedV = frac(sin(dot(float2((float)PathIndex + 17.0f, Input.RayDirectionAndBounceIndex.w + 3.0f), float2(39.3468f, 11.135f))) * 24634.6345f);
+    float Phi = 2.0f * PI * SeedU;
+    float CosTheta = sqrt(saturate(1.0f - SeedV));
+    float SinTheta = sqrt(saturate(SeedV));
+    float3 Tangent = normalize(abs(HitNormal.z) < 0.999f ? cross(float3(0.0f, 0.0f, 1.0f), HitNormal) : cross(float3(0.0f, 1.0f, 0.0f), HitNormal));
+    float3 Bitangent = cross(HitNormal, Tangent);
+    float3 DiffuseDirection = normalize(Tangent * (cos(Phi) * SinTheta) + Bitangent * (sin(Phi) * SinTheta) + HitNormal * CosTheta);
+    float3 NextDirection = normalize(lerp(SpecularDirection, DiffuseDirection, saturate(Input.TransmissionAndScattering.w)));
     bool bAlive = any(abs(NextDirection) > 1e-4f);
 
     Output.NextOriginAndTravelDistance = float4(NextOrigin, TravelDistance);
@@ -121,12 +149,20 @@ void ShadeAndGatherCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
                 if (MonoEnergy > 1e-8f)
                 {
-                    uint DelayBinIndex = min((uint)floor(DelaySeconds / max(DelayBinDurationSeconds, 1e-4f)), max(NumDelayBins - 1, 0));
+                    uint DelayBinIndex = min((uint)floor(DelaySeconds / max(DelayBinDurationSeconds, 1e-8f)), max(NumDelayBins - 1, 0));
                     uint BaseIndex = DelayBinIndex * 3;
-                    InterlockedAdd(EnergyBins[BaseIndex + 0], (uint)round(max(BandGain.x, 0.0f) * EnergyQuantizationScale));
-                    InterlockedAdd(EnergyBins[BaseIndex + 1], (uint)round(max(BandGain.y, 0.0f) * EnergyQuantizationScale));
-                    InterlockedAdd(EnergyBins[BaseIndex + 2], (uint)round(max(BandGain.z, 0.0f) * EnergyQuantizationScale));
-                    InterlockedAdd(ContributionCounter[0], 1u);
+                    uint3 QuantizedGain = (uint3)round(max(BandGain, 0.0f) * EnergyQuantizationScale);
+                    if (any(QuantizedGain > 0u))
+                    {
+                        InterlockedAdd(EnergyBins[BaseIndex + 0], QuantizedGain.x);
+                        InterlockedAdd(EnergyBins[BaseIndex + 1], QuantizedGain.y);
+                        InterlockedAdd(EnergyBins[BaseIndex + 2], QuantizedGain.z);
+                        InterlockedAdd(ContributionCounter[0], 1u);
+                        Output.ThroughputAndPadding.w = (float)(DelayBinIndex + 1u);
+                        Output.ListenerDirectionAndContribution.w =
+                            (float)(QuantizedGain.x + QuantizedGain.y + QuantizedGain.z)
+                            / (3.0f * EnergyQuantizationScale);
+                    }
                 }
             }
         }

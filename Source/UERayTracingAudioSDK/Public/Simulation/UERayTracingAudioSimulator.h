@@ -21,6 +21,7 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioDirectSimulationInput
     float SourceRadiusCm = 30.0f;
     int32 NumOcclusionSamples = 8;
     bool bUseVolumetricOcclusion = true;
+    bool bHardOcclusion = false;
     FVector AirAbsorptionPerMeter = FVector(0.0002f, 0.0006f, 0.0012f);
     UWorld* World = nullptr;
     const class FUERayTracingAudioScene* Scene = nullptr;
@@ -34,11 +35,21 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioDirectSimulationResult
     bool bIsOccluded = false;
     bool bRayTracingAvailable = false;
     float DistanceCm = 0.0f;
+    // Linear sound-pressure/amplitude gain. Acoustic intensity follows its
+    // square, so doubling distance halves amplitude rather than quartering it.
     float DistanceAttenuation = 1.0f;
     float DirectVisibility = 1.0f;
     float Occlusion = 1.0f;
     FVector AirAbsorption = FVector::OneVector;
     float OverallGain = 1.0f;
+};
+
+struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioDirectSimulationQuery
+{
+    FUERayTracingAudioDirectSimulationResult BaseResult;
+    TArray<FUERayTracingAudioRay> Rays;
+    int32 NumSamplePoints = 0;
+    bool bVolumetric = false;
 };
 
 struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioIndirectSimulationInput
@@ -48,12 +59,13 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioIndirectSimulationInput
     FVector SourceLocation = FVector::ZeroVector;
     FVector SourceForward = FVector::ForwardVector;
     float SourceRadiusCm = 30.0f;
-    int32 NumReflectionRays = 64;
+    int32 NumReflectionRays = 128;
     int32 MaxReflectionBounces = 2;
     float DurationSeconds = 1.0f;
     float DeltaTimeSeconds = 1.0f / 60.0f;
     int32 MaxEarlyReflectionTaps = 16;
     int32 NumDelayBins = 96;
+    float EarlyLateSplitSeconds = 0.08f;
     float HybridTransitionRatio = 0.35f;
     FVector AirAbsorptionPerMeter = FVector(0.0002f, 0.0006f, 0.0012f);
     UWorld* World = nullptr;
@@ -70,6 +82,8 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioMinimalEnergyField
     float EarliestArrivalSeconds = 0.0f;
     float EarlyLateSplitSeconds = 0.0f;
     TArray<FVector> DelayBinEnergy;
+    // World-space first directional moment, weighted by mono energy per delay bin.
+    TArray<FVector> DelayBinDirection;
 };
 
 struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioIndirectSimulationResult
@@ -90,6 +104,9 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioIndirectSimulationResult
     float ParametricDelaySeconds = 0.0f;
     FVector ParametricEq = FVector::OneVector;
     FVector ReverbTimes = FVector::ZeroVector;
+    FVector DominantArrivalDirection = FVector::ZeroVector;
+    float DirectionalEnergyRatio = 0.0f;
+    int32 DirectionalBinCount = 0;
     TArray<float> EarlyReflectionDelaySeconds;
     TArray<float> EarlyReflectionGains;
     TArray<float> ReconstructedImpulseResponse;
@@ -105,9 +122,22 @@ public:
         const FUERayTracingAudioRayTracingDevice& RayTracingDevice,
         const FUERayTracingAudioDirectSimulationInput& Input) const;
 
+    FUERayTracingAudioDirectSimulationQuery BuildDirectSoundQuery(
+        const FUERayTracingAudioRayTracingDevice& RayTracingDevice,
+        const FUERayTracingAudioDirectSimulationInput& Input) const;
+
+    FUERayTracingAudioDirectSimulationResult FinalizeDirectSound(
+        const FUERayTracingAudioDirectSimulationInput& Input,
+        FUERayTracingAudioDirectSimulationQuery&& Query,
+        TArray<bool>&& HitResults) const;
+
     FUERayTracingAudioIndirectSimulationResult SimulateIndirectSound(
         const FUERayTracingAudioRayTracingDevice& RayTracingDevice,
         const FUERayTracingAudioIndirectSimulationInput& Input) const;
+
+    FUERayTracingAudioIndirectSimulationResult FinalizeIndirectSound(
+        const FUERayTracingAudioIndirectSimulationInput& Input,
+        FUERayTracingAudioEnergyFieldTraceResult&& TraceResult) const;
 
 private:
     const FUERayTracingAudioContext& Context;

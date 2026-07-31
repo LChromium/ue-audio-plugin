@@ -2,5 +2,6 @@
 
 UUERayTracingAudioSpatializationSettings::UUERayTracingAudioSpatializationSettings()
     : bEnableDirectPathSpatialization(true)
+    , PanningStrength(1.0f)
 {
 }

@@ -1,259 +1,121 @@
-# TODO
-
-## 1. 当前阶段的重要限制
-
-### 1.1 当前是最小硬件光追后端，不是最终形态
-
-当前已经接入一版基于 UE Ray Tracing RHI 的遮挡检测实现，并支持并行射线批处理。
-
-当前实现方式是：
-
-- 支持把 `UUERayTracingAudioGeometryComponent` 导出的包围盒或真实静态网格三角形作为光追输入
-- `Static Mesh Triangles` 会以本地空间顶点导出，并保留实例 `LocalToWorld`
-- RHI 后端会按 `StaticMesh + LOD` 缓存 Static Mesh BLAS，cache hit 时 TLAS 只消费实例 transform
-- Bounding Box 和非缓存几何仍会按当前实例临时构建独立 BLAS / TLAS
-- 对声源球体采样得到一批遮挡射线
-- 通过 RHI 光追后端并行求交
-- 在硬件光追不可用时回退到 `LineTraceSingleByChannel`
-
-这说明它已经不是纯占位实现，但还不是最终生产级版本。
-
-对于间接声，当前后端策略是：
-
-- 硬件光追可用时：
-  - 用 UE Ray Tracing RHI shader 返回每条反射射线的命中距离、法线和几何索引
-  - UE compute shader 负责单 bounce 的 shadeAndBounce、gatherEnergyField
-  - 设备级硬件路径会在单次 render command 中推进多 bounce
-  - Static Mesh BLAS 会跨查询复用，TLAS 按当前声学实例重新组织
-  - CPU 侧继续负责 IR 重建和 Parametric / Hybrid 参数生成，以及 CPU fallback
-- 硬件光追不可用时：
-  - 回退到 CPU 声学场景求交
-
-### 1.2 当前不是完整空间音频
-
-目前真正生效的是：
-
-- 直接路径相关增益
-- 基于 Minimal EnergyField 的第一版 IR / Parametric / Hybrid 间接声链路
-- Phase 3 的 RHI 优先命中查询 + compute 单 bounce 累积 + CPU 后处理
-
-目前还没有：
-
-- HRTF
-- 双耳空间化
-- 生产级早期反射
-- 生产级混响
-- 完整 GPU EnergyField / IR 重建链路
-- 完整方向场 / 高阶球谐 EnergyField
-- 生产级长 IR 卷积器
-- 声像计算
-
-### 1.3 当前 Editor 窗口只是骨架
-
-菜单中已经有 Bake 窗口入口，但现在它只是占位，不代表烘焙功能已经可用。
-
-## 2. 下一步推荐使用顺序
-
-如果你想继续验证当前插件，建议顺序是：
-
-2.1. 先确认插件在测试工程中可启用
-2.2. 再确认场景内组件能正常挂载
-2.3. 对遮挡物优先试 `ExportMode = Static Mesh Triangles`
-2.4. Source 先试 `IndirectMode = Hybrid Reverb`
-2.5. 先观察 `bIsOccluded / DirectVisibility / OverallGain / IndirectGain / LateReverbGain`
-2.6. 再做遮挡试听和房间感验证
-
-## 1. Static Mesh BLAS 缓存优化
-
-### 背景
-
-当前 `GeometryComponent -> Scene Export -> RHI Backend` 的路径已经支持：
-
-- `BoundingBox` 导出
-- `StaticMeshTriangles` 导出
-
-但当前 `StaticMeshTriangles` 的实现仍然存在明显的中间复制成本：
-
-1. 从 `UStaticMesh` 的 LOD0 CPU 可访问数据读取顶点和索引
-2. 把数据复制到 `FUERayTracingAudioGeometryExport.Vertices / Indices`
-3. 在 `UERayTracingAudioRayTracingDevice.cpp` 中再次把这些数据拼接到统一数组
-4. 再用统一数组创建当前查询所需的 BLAS / TLAS
-
-
-### 目标
-
-把当前“世界空间三角形复制 + 每次重建”的路径升级为：
-
-- 按 `UStaticMesh + LODIndex` 缓存 BLAS
-- 场景侧只维护实例信息和变换
-- TLAS 构建只消费实例，不再重复复制整份三角形数据
-
-### 推荐实现方向
-
-#### 阶段 A：去掉重复拼接复制
-
-- 在 `FUERayTracingAudioGeometryExport` 中，不再优先保存世界空间三角形数组
-- 改为优先保存：
-  - `UStaticMesh` 标识或可缓存键
-  - `LODIndex`
-  - `LocalToWorld`
-  - 是否使用真实静态网格模式
-- 对 `BoundingBox` 模式保留现有轻量导出
-
-#### 阶段 B：建立 BLAS 缓存
-
-- 在 SDK / RHI 层新增静态网格 BLAS 缓存管理器
-- 缓存键建议包含：
-  - `UStaticMesh*`
-  - `LODIndex`
-  - 必要时包含 section/layout 相关信息
-- 每个缓存项至少维护：
-  - 顶点/索引底层来源
-  - `FRayTracingGeometryRHIRef`
-  - 有效性状态
-  - 最近使用信息
-
-#### 阶段 C：TLAS 只处理实例
-
-- Scene 导出保留每个几何实例的：
-  - `LocalToWorld`
-  - 吸收参数
-  - 直接声可见性标记
-  - 指向缓存 BLAS 的句柄或缓存键
-- 每次查询时：
-  - 不再拼接世界空间顶点
-  - 只基于实例构建 TLAS
-
-#### 阶段 D：向 UE 内部缓存几何靠拢
-
-- 调研并评估是否能安全地复用 UE 渲染器内部的：
-  - `FPrimitiveSceneInfo::GetStaticRayTracingGeometry`
-  - `GetCachedRayTracingGeometry`
-- 这一阶段要重点确认：
-  - 生命周期
-  - 游戏线程 / 渲染线程访问边界
-  - 插件模块是否能在不深度侵入 Renderer 的情况下拿到有效句柄
-
-### 当前已知限制
-
-- UE 内部确实存在缓存的 ray tracing geometry / instance
-- 但当前插件架构仍是“插件自建声学场景”，还没有直接接到渲染器的 cached scene
-- 因此短期最稳妥的优化路径不是直接复用最终 handle，而是：
-  - 先做 `StaticMesh BLAS` 缓存
-  - 再评估是否进一步复用 UE 内部缓存几何
-
-### 预期收益
-
-- 减少三角形 CPU 复制
-- 减少场景更新和查询前准备成本
-- 同一静态网格多实例场景下显著降低 BLAS 重建开销
-- 为后续真实生产级 RHI 后端打基础
-
-### 相关代码位置
-
-- `Source/UERayTracingAudio/Private/Components/UERayTracingAudioGeometryComponent.cpp`
-- `Source/UERayTracingAudioSDK/Public/Scene/UERayTracingAudioScene.h`
-- `Source/UERayTracingAudioSDK/Private/RayTracing/UERayTracingAudioRayTracingDevice.cpp`
-
-## 2. Direct / Indirect 声学行为修正
-
-### 背景
-
-当前在 UE 中实测发现两个明显行为问题：
-
-1. 直接声在“完全遮挡”时，`OverallGain` 仍然不是 `0`
-2. 间接声在 listener 和 source 位于墙体同侧时，靠墙时可能有有效反射路径，但离墙稍远后又会突然掉成 `0`
-
-这两个现象都符合当前实现逻辑，但不符合更理想的听感目标，因此应当作为后续修正项。
-
-### 直接声问题分析
-
-当前 `OverallGain` 的定义是：
-
-- `DistanceAttenuation * AirAbsorption * Occlusion`
-
-其中 `Occlusion` 当前不是硬遮挡，而是：
-
-- `Lerp(OccludedGain, 1.0, DirectVisibility)`
-
-这意味着：
-
-- 当 `DirectVisibility = 0` 时，结果不是 `0`
-- 而是退到 `OccludedGain`
-
-当前默认 `OccludedGain = 0.2`，所以“完全遮挡不为 0”是当前设定导致的，不是数值错误。
-
-### 直接声后续改进方向
-
-- 增加可选模式：
-  - 保留当前 soft occlusion
-  - 新增 hard occlusion，使完全遮挡时直接声更接近 `0`
-- 重新设计 `OccludedGain` 的语义：
-  - 作为艺术参数保留
-  - 或只对部分遮挡生效
-- 检查 `DirectVisibility` 的采样稳定性：
-  - 增加 sample 数
-  - 调整 source 半径与 sample 分布
-
-### 间接声问题分析
-
-当前间接声还不是基于 UE RHI shader 的多跳反射链路，而是：
-
-- CPU 侧简化多跳路径追踪
-- 稀疏球面方向采样
-- 多次镜面反射
-- 每帧独立求解
-
-当前会突然掉到 `0` 的主要原因包括：
-
-- `NumReflectionRays` 默认值较低，采样过 sparse
-- 没有针对 listener 的 importance sampling
-- 没有 image-source 一阶反射几何求解
-- 没有 temporal accumulation / smoothing
-- 小路径贡献会被阈值裁掉
-
-因此“远离墙后突然为 0”通常不是物理上真的没有反射，而是当前采样原型没有采到有效路径。
-
-### 间接声后续改进方向
-
-#### 阶段 A：先解决突变问题
-
-- 提高默认 `NumReflectionRays`
-- 给 `IndirectGain / EarlyReflectionGain / LateReverbGain` 增加时间平滑
-- 让 late reverb 有最小残留尾部而不是单帧直接清零
-- 降低或重构当前小路径裁剪逻辑
-
-#### 阶段 B：提升一阶反射稳定性
-
-- 对第一反射实现 image-source 或 listener-aware sampling
-- 针对“source / listener 同侧靠墙”场景提升稳定命中率
-- 区分早期反射和尾部反射的采样策略
-
-#### 阶段 C：迁移到正式 RHI 多跳反射链路
-
-- 使用 UE Ray Tracing RHI 的自定义 shader 做多 bounce 查询
-- 在 hit payload 中返回：
-  - hit distance
-  - normal
-  - material / absorption
-  - primitive / instance 信息
-- 在 GPU 上累计 path contributions / energy histogram
-- CPU 侧仅负责生成：
-  - early taps
-  - RT60 / EQ / delay
-  - hybrid 参数
-
-### 目标
-
-- 让直接声遮挡更符合“完全挡住时几乎听不到直达声”的预期
-- 让间接声不会因为 listener 稍微移动就突然归零
-- 让 Phase 3 从“可运行原型”升级为“更稳定、可试听调参”的实时反射系统
-
-### 相关代码位置
-
-- `Source/UERayTracingAudioSDK/Private/Simulation/UERayTracingAudioSimulator.cpp`
-- `Source/UERayTracingAudio/Private/Audio/UERayTracingAudioOcclusion.cpp`
-- `Source/UERayTracingAudio/Private/Components/UERayTracingAudioSourceComponent.cpp`
+# UERayTracingAudio 交付路线
+
+## 当前决策
+
+用户于 2026-07-22 对最新录音完成人耳复核，结论是：处理结果基本听不出原始音频。原来的四模式录音门禁只能证明 WAV 有能量和模式之间形状不同，不能证明输入内容仍可辨识，因此该门禁及监听补偿路线已回退。
+
+后续坚持以下原则：
+
+- 保留 `UERayTracingAudioSDK / UERayTracingAudio / UERayTracingAudioEditor` 三模块结构，以及已经接通的 UE Ray Tracing RHI、Direct/Indirect、DSP 和 Bake 核心。
+- 优先完成真实功能，再补完整测试；测试框架可以先简化，但默认必须提供 Editor 界面验证。
+- 不再用合成短脉冲、RMS 下限或任意监听增益替代真实输入音频和人耳验收。
+- 每个“完成”结论必须同时有代码、构建、运行时、可辨识录音和人耳证据。
+
+## Definition of Done
+
+v1 必须同时满足：
+
+- [x] UE 5.7 / Win64 测试工程与独立插件无编译错误。
+- [x] Static Mesh 声学场景优先走硬件 Ray Tracing RHI；fallback 原因和统计可观察。
+- [ ] Direct 输出保留可辨识原始内容，并正确表现距离、空气吸收、遮挡与方向。
+- [ ] Indirect 输出包含可辨识的早期反射和晚期混响；Full 不得淹没或破坏 Direct 内容。
+- [x] 实时音频线程不访问 UObject，Direct/Indirect 查询跨帧完成且无逐 source flush。
+- [x] Bake 窗口能把用户选择的真实 SoundWave 与硬件光追 IR 卷积，保存并重新播放空间音频资产。
+- [x] 固定 Editor 测试场景有 Listener、真实音频 Source、遮挡墙、封闭房间和可操作界面。
+- [x] 自动验收以原始参考音频为基准，校验采样对齐、dry 保留、异常噪声、削波和模式语义。
+- [ ] 目标耳机/扬声器上的人耳验收通过，并记录设备、输入资产、场景和结论。
+
+## 当前修复：持续 Direct 与间接声
+
+- [x] 把 Direct 距离样本增益从错误的 `1/r²` 改为线性声压 `1/r`，增加 1 m / 2 m / 4 m 持续非零回归。
+- [x] Clear / Soft / Hard 运行时预设统一为 2 m；Soft 保留透声下限，Hard 才允许完全遮挡静音。
+- [x] Reference / Direct / Wet / Full Editor Preview 统一循环，并同步 Stop、替换和面板销毁状态。
+- [x] Realtime IR 使用 last-wins pending kernel，当前卷积预热、交叉淡化和尾音不被高频 generation 重置。
+- [x] Baked 检查后恢复 `HybridReverb`；Realtime / Hybrid 要求 parametric tail 实际启用。
+- [x] 数据源门禁增加持续性要求：总缓冲和输入有效缓冲均至少 24，Wet presence `>= 80%`，最长完全静音段 `<= 20%`，窗口积分及最大 Wet/Input RMS 均 `>= 5%`。
+- [x] Python 回归 `50/50`。
+- [x] 重新完成 UE 5.7 项目/插件完整构建、UE 音频 Automation `23/23`、插件全量 Automation `38/38` 和固定硬件运行时验证。
+- [ ] 在 Editor PIE 中人工确认 Direct 持续、Wet/Full 可辨识且切换无 click/pop。
+
+## R0：回退失败的试听验收路线
+
+- [x] 复现门禁缺陷：最新目录只有 4 个处理结果，没有原始参考 WAV，无法验证原音可辨识。
+- [x] 确认验证输入是代码生成的三频短脉冲，不是用户原始音频。
+- [x] 移除 Occlusion `OutputGain`、90× component gain、16× output gain。
+- [x] 移除合成四模式录音状态机、波形假通过脚本和交互式假验收脚本。
+- [x] 保留固定硬件场景、RHI/CPU 数值对照、Bake 重复性和 Editor 启动流程。
+- [x] 回退后的 Python 测试、UE 构建与固定运行时验证全部通过。
+- [x] 复现固定启动黑屏，确认根因是加载空的 `/Engine/Maps/Entry`，并改为实际 First Person 关卡。
+- [x] 固定 Game 验证中生成可见封闭声学房间、遮挡墙、Listener/Source 标记、灯光、相机和硬件状态叠层。
+- [x] 明确蓝/橙密闭空间的实时语义：橙色是 Primary Source、蓝色是 Listener；`-game`/PIE 版本在 BeginPlay 后播放真实输入并使用 Realtime IR，Editor A/B 版本仅是 Bake 夹具，不能冒充实时验收。
+- [x] 固定相机自动测试与可交互实时验收已拆分：交互模式由 First Person Pawn 驱动 Listener，主屏显示当前模式；F1/F2/F5 切换 Realtime/Baked/Hybrid，F3 在同步的 Rendered Direct+Wet 与 Original Unrendered 之间 A/B，F4 返回烘焙原点，F8 切换视角。
+- [x] 自动交互 smoke 已覆盖 Pawn 移动、Listener/相机逐帧跟随、F1/F2/F5、F3 Rendered/Original、F4 烘焙原点和 F8 双视角；最近结果为移动 `50.900 cm`、Listener/相机与 F4 原点误差均 `0 cm`、A/B 重启 `0`。
+- [ ] 在 Editor 中进入 PIE，人工确认 WASD/鼠标移动、Listener 跟随、F1/F2/F3/F4/F5/F8、Rendered/Original 可听差异以及切换期间无 click/pop；该人工结果不能由固定相机自动测试替代。
+- [x] 修复固定启动器偶发静音：UE 5.7 默认 `[Audio] UnfocusedVolumeMultiplier=0.0`，工具启动的 Game 窗口失焦时会令 AudioDevice 主音量为 0、pre-distance 输入全零；固定 Game/Editor 命令现使用进程内 `-ini:Engine:[Audio]:UnfocusedVolumeMultiplier=1.0` 覆盖，不修改用户配置。
+
+## R1：真实输入音频验收闭环（当前最高优先级）
+
+已完成的验收基础设施（不等于人耳通过）：
+
+- [x] Bake 面板支持显式选择 Source、Listener、Geometry 和真实输入 SoundWave。
+- [x] 一次后台渲染生成同起点、同长度的 Reference / Direct / Wet / Full，并对四种模式只应用一个记录在 manifest 中的公共安全缩放系数。
+- [x] 面板支持四模式播放、Reference↔Direct/Full A/B、重播、停止和 Human Pass/Fail JSON 记录。
+- [x] UE Automation 覆盖四 WAV 存在/等长、Direct/Full dry correlation、公共缩放和 manifest。
+- [x] 固定 Editor 流程创建可见且可操作的实际 A/B 场景：1 个 Source、1 个 Listener、7 个声学几何体、封闭房间、中央遮挡墙、灯光、相机和 Bake UI。
+- [x] 使用原始项目资产 `/Game/FirstPerson/Audio/MarchingBand.MarchingBand` 完成一次硬件 IR Bake，保存 IR、Reference / Direct / Wet / Full 四个 SoundWave、四个 WAV 和 manifest；生成资产不会被递归选作下一次输入。
+- [x] 固定 Editor A/B 流程会把自动生成并导入的四个 SoundWave 交给已打开的 Bake 面板；Listening Acceptance 控件位于首屏，只有四资产全部加载后才启用，启动器要求 `human_verdict=enabled` 标记。
+
+- [ ] 在 Editor 验证界面中选择一段 10–20 秒、含清晰语音和瞬态/音乐的 SoundWave。
+- [x] 录制未经过插件处理的 reference，以及 direct、wet、full；四段来自同一资产和同一采样起点。
+- [x] 验收录音禁止逐模式补偿；四种模式只应用同一个记录在 manifest 中的公共安全缩放系数。
+- [ ] Direct/Full 必须保留原始语音或音乐主体；Wet-only 应呈现空间尾部但不能冒充完整输出。
+- [x] 自动门禁检查 reference 存在、格式/长度一致、起点对齐、Direct/Full dry 保留、电平比例、公共缩放、有限样本、零削波、活动窗零掉音、Direct 时间残差、Full 混音残差和模式差异。
+- [x] 在 UI 中提供逐段播放、A/B 切换、重播和通过/失败记录。
+- [x] 在 UI 中提供 Reference / Direct / Wet / Full 四条同时间轴、同 full-scale 的波形对比；波形直接来自本次 PCM16 离线渲染结果，不做逐模式归一化。
+- [ ] 用目标耳机/扬声器完成首次人耳验收；失败时保留输入、输出和场景作为回归夹具。
+
+验收：用户能明确辨认原始内容，并能听出无遮挡、遮挡、wet-only 和 full 的合理差异。
+
+## R2：Direct 声学行为收敛
+
+- [ ] 使用同一真实输入分别验证无遮挡、软遮挡、硬遮挡和移动穿墙。
+- [x] Editor 实际场景提供 Clear / Soft Occluded / Hard Occluded 三个严格等距 2 m 预设，中央实体墙控制遮挡。
+- [x] 使用同一原始 MarchingBand 完成 Clear / Soft / Hard 三档自动配对：Reference 字节一致、距离/距离衰减一致、visibility `1→0→0`、Direct gain `0.249667→0.087383→0`，三侧硬件湿声、安全门禁和非黑截图通过。
+- [ ] Hard Occluded 静态语义已完成；仍需补完移动穿墙的连续音频验收。
+- [ ] 静态 Clear/Soft/Hard 已证明零削波、零意外掉音窗和零异常时间/混音残差；距离扫描、空气吸收和移动遮挡仍待验证。
+- [x] 检查 Occlusion 到 Spatialization 的 direct/wet 拆分与重组；实际离线证据中 Direct dry correlation 为 `1.0`，遮挡只按明确的 Soft floor 改变 Direct gain。
+- [x] 增加低能量 IR 重建、16 kHz 高分辨率 CPU fallback 和硬件/CPU path/gain/IR energy ≤5% 差异门禁。
+
+## R3：Indirect 与空间化收敛
+
+- [ ] 在开放空间、靠墙位置和封闭房间验证早反、晚混响及方向性。
+- [x] 封闭实际房间完成 1-bounce / 8-bounce 对照：8 次反射增加有效路径、IR 能量、平均延迟、方向 delay bin 和非零晚期尾声；GPU/CPU 指标一致，并生成具有可测左右差异的 Stereo 湿声。开放空间与靠墙位置仍待补齐。
+- [x] GPU EnergyField 保留每条路径的监听者到达方向并回读到 delay-bin direction；Bake IR、离线 Wet/Full WAV 与运行时 Baked 卷积均保留左右声道，不再把方向统计压回 Mono。
+- [x] Full 使用明确的 Wet Send 语义：`Full = Direct + WetSend × Wet`；新 Source 默认 `1.0`、范围 `0..4`，切换时平滑。双声道 Spatialization-bypass 与单声道最终 L/R 都有峰值诊断；最新三模式 `full_peak=0.032985/0.033651/0.114308`、`over_unit=0/0/0`。
+- [x] Realtime、Baked、Hybrid 三种数据源使用独立左右核；Hybrid 同时渲染互补 Baked early 与 Realtime tail。Automation 覆盖切换/关闭无瞬时跳变；固定实际 Game 使用真实项目 SoundWave `/Game/FirstPerson/Audio/MarchingBand.MarchingBand`，证明三模式输入与 Wet 均非静音、核数 `2/2/4`、非有限样本为 0，并要求源增益和 pre-distance 音频均为非零。
+- [ ] HRTF 属于质量升级；在 stereo panning 与真实输入闭环通过后再决定是否纳入 v1。
+
+## R4：硬件光追 IR Bake 闭环
+
+- [x] 从 Editor 选择真实 Source、Listener、Geometry 和输入 SoundWave。
+- [x] 异步生成、保存、加载 Stereo IR 资产；运行时校验 world、scene/material signature 与 Source/Listener placement 并公开 stale 状态。Editor Bake 完成后把资产绑定到所选 Source，默认切到 Hybrid。
+- [x] 用硬件 IR 卷积真实输入，导入新的 Reference / Direct / Wet / Full SoundWave，并能够在 Editor 中播放和 A/B。
+- [x] 对同一场景重复硬件 Stereo Bake：两次均为 4000 samples / 0.25 s，能量相对差和逐样本相对 RMS 差均为 0；最终可听结论仍由 Human Pass 单独负责。
+
+## R5：测试、性能与发布
+
+- [x] 当前 Python `50/50`、UE 音频 Automation `23/23`、插件全量 Automation `38/38`；覆盖工作区内测试项目发现、交互 smoke、低能量方向/早晚分界、Directional Stereo、Occlusion/Spatialization 重叠缓冲、最终 Full 峰值两条路径、真实 Prepared Renderer 路径、实时卷积预算/切换容量/公平服务，以及失焦导致 pre-distance 静音的启动器拒绝回归。
+- [x] 完成 hard-real-time 安全收敛：音频回调通过 lock-free 快照读取，不再经过注册表 `FRWLock`；卷积 kernel 与切换状态在非音频线程预备，回调只采用预备状态；静态审计覆盖 31 个关键函数/32 个函数体，并由运行时 `callbacks / callback_capacity_misses / convolution_prepare_drops` 门禁证明本次验证为 `197 / 0 / 0`。
+- [x] 为实时卷积设置确定性预算：每声道最多 `4 × 1024 = 4096` 个 IR 样本；保留完整 Baked/离线 IR，超出实时头部的尾声能量由 parametric late reverb 承接。Bridge 预备池按活动声道提供切换余量，并以 512 MiB 实际工作区上限拒绝超额状态。
+- [x] 记录 8/16/32 source 的 Game、Render、GPU、AudioMixer 与显存数据；三档均在实际可见场景中通过真实输入三模式门禁，完整结果见 `PERFORMANCE.md`。
+- [x] Development Editor、Development Game、Shipping Game 均通过；BuildPlugin 使用 `-StrictIncludes` 完成 NoPCH / non-unity 三配置构建。
+- [x] 审计 Win64 `0.2.0` Beta 交付包内容、版本号和已知限制，见 `PACKAGE_AUDIT.md`。
+
+## 当前执行顺序
+
+1. 在目标耳机/扬声器上播放当前 Reference/Direct/Wet/Full，记录 Human Pass/Fail；只有真实人耳通过后才结束目标。
+2. 完成移动穿墙、距离扫描、开放空间和靠墙位置的人工试听矩阵。
+3. 保持 hard-real-time 静态审计、运行时零容量违规门禁、项目/插件构建和 Automation 为发布回归基线。
 
 ## Task 2：World-scoped listener and acoustic scene state（2026-07-30）
 

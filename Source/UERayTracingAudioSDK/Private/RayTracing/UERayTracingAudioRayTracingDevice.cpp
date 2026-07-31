@@ -7,6 +7,7 @@
 #include "PipelineStateCache.h"
 #include "RHI.h"
 #include "RHICommandList.h"
+#include "RHIGPUReadback.h"
 #include "RHIResourceUtils.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingInstanceBufferUtil.h"
@@ -16,6 +17,7 @@
 #include "Scene/UERayTracingAudioScene.h"
 #include "ShaderParameterStruct.h"
 #include "Simulation/UERayTracingAudioEnergyFieldShaders.h"
+#include "Misc/ScopeLock.h"
 #include "UERayTracingAudioSDKModule.h"
 
 #if RHI_RAYTRACING
@@ -75,12 +77,21 @@ IMPLEMENT_GLOBAL_SHADER(FUERayTracingAudioIntersectionRGS, "/Engine/Private/RayT
 
 namespace
 {
-    constexpr uint32 EnergyQuantizationScale = 1000000u;
+    // Each path is normalized by NumReflectionRays before GPU atomic accumulation.
+    // 1e6 rounded valid high-ray-count, multi-bounce contributions down to zero.
+    // 1e8 preserves the shared 1e-8 minimum while the worst-case 64-bounce
+    // harmonic sum remains well below the uint32 accumulation limit.
+    constexpr uint32 EnergyQuantizationScale = 100000000u;
+    constexpr float RayTracingMinimumPathEnergy = 1e-8f;
 
     bool GHasLoggedHardwareRayTracingPath = false;
     bool GHasLoggedPhysicsFallbackPath = false;
     bool GHasLoggedIndirectHardwareRayTracingPath = false;
     bool GHasLoggedIndirectCpuFallbackPath = false;
+    uint64 GStaticMeshBLASCacheSerial = 0;
+
+    constexpr uint64 StaticMeshBLASCacheMaxUnusedSerials = 240;
+    constexpr int32 StaticMeshBLASCacheMaxEntries = 128;
 
     struct FUERayTracingAudioBasicRay
     {
@@ -106,10 +117,24 @@ namespace
         float Barycentrics[2] = { 0.0f, 0.0f };
     };
 
+    struct FCachedStaticMeshRayTracingGeometry
+    {
+        FBufferRHIRef VertexBuffer;
+        FBufferRHIRef IndexBuffer;
+        FRayTracingGeometryRHIRef RayTracingGeometry;
+        uint32 NumPrimitives = 0;
+        uint32 NumVertices = 0;
+        uint32 NumIndices = 0;
+        uint64 LastUsedSerial = 0;
+    };
+
+    TMap<FString, FCachedStaticMeshRayTracingGeometry> GStaticMeshBLASCache;
+
     struct FHardwareReflectionPathState
     {
         FVector RayOrigin = FVector::ZeroVector;
         FVector RayDirection = FVector::ForwardVector;
+        FVector ListenerDirection = FVector::ForwardVector;
         FVector Throughput = FVector::OneVector;
         float TravelDistance = 0.0f;
     };
@@ -153,6 +178,22 @@ namespace
             CosTheta).GetSafeNormal();
     }
 
+    FVector GenerateMaterialBounceDirection(
+        const FVector& IncomingDirection,
+        const FVector& SurfaceNormal,
+        float Scattering,
+        int32 SampleIndex)
+    {
+        const FVector SpecularDirection = IncomingDirection.MirrorByVector(SurfaceNormal).GetSafeNormal();
+        FVector DiffuseDirection = RayTracingDeviceGenerateSphereDirectionSample(SampleIndex);
+        if (FVector::DotProduct(DiffuseDirection, SurfaceNormal) < 0.0f)
+        {
+            DiffuseDirection *= -1.0f;
+        }
+        DiffuseDirection = (DiffuseDirection + SurfaceNormal).GetSafeNormal();
+        return FMath::Lerp(SpecularDirection, DiffuseDirection, FMath::Clamp(Scattering, 0.0f, 1.0f)).GetSafeNormal();
+    }
+
     void GenerateListenerReflectionPaths(
         const FUERayTracingAudioEnergyFieldTraceRequest& Request,
         TArray<FHardwareReflectionPathState>& OutPaths)
@@ -168,6 +209,7 @@ namespace
         {
             FHardwareReflectionPathState& Path = OutPaths.AddDefaulted_GetRef();
             Path.RayDirection = RayTracingDeviceGenerateSphereDirectionSample(RayIndex);
+            Path.ListenerDirection = Path.RayDirection;
             Path.RayOrigin = Request.ListenerLocation + (Path.RayDirection + ListenerOffset) * 1.0f;
         }
     }
@@ -216,17 +258,22 @@ namespace
                 continue;
             }
 
-            const FVector Absorption = Geometry[Hit.GeometryIndex].Absorption;
+            const FUERayTracingAudioGeometryExport& HitGeometry = Geometry[Hit.GeometryIndex];
+            const FVector Reflection = FVector::OneVector - HitGeometry.Absorption - HitGeometry.Transmission;
 
             ShadedState.bHasHit = true;
             ShadedState.GeometryIndex = Hit.GeometryIndex;
             ShadedState.NextPath = ActivePaths[PathIndex];
             ShadedState.NextPath.TravelDistance += Hit.Distance;
-            ShadedState.NextPath.Throughput.X *= FMath::Clamp(1.0f - Absorption.X, 0.0f, 1.0f);
-            ShadedState.NextPath.Throughput.Y *= FMath::Clamp(1.0f - Absorption.Y, 0.0f, 1.0f);
-            ShadedState.NextPath.Throughput.Z *= FMath::Clamp(1.0f - Absorption.Z, 0.0f, 1.0f);
+            ShadedState.NextPath.Throughput.X *= FMath::Clamp(Reflection.X, 0.0f, 1.0f);
+            ShadedState.NextPath.Throughput.Y *= FMath::Clamp(Reflection.Y, 0.0f, 1.0f);
+            ShadedState.NextPath.Throughput.Z *= FMath::Clamp(Reflection.Z, 0.0f, 1.0f);
             ShadedState.NextPath.RayOrigin = Hit.Location + (Hit.Normal * 1.0f);
-            ShadedState.NextPath.RayDirection = ActivePaths[PathIndex].RayDirection.MirrorByVector(Hit.Normal).GetSafeNormal();
+            ShadedState.NextPath.RayDirection = GenerateMaterialBounceDirection(
+                ActivePaths[PathIndex].RayDirection,
+                Hit.Normal,
+                HitGeometry.Scattering,
+                PathIndex + (BounceIndex * FMath::Max(ActivePaths.Num(), 1)));
 
             ShadedState.bHasShadowRay = true;
             ShadedState.ShadowRay.Start = ShadedState.NextPath.RayOrigin;
@@ -310,7 +357,7 @@ namespace
                 * AirAttenuation
                 * (GeometricAttenuation * BounceAttenuation / static_cast<float>(Request.NumReflectionRays));
             const float MonoEnergy = (BandGain.X + BandGain.Y + BandGain.Z) / 3.0f;
-            if (MonoEnergy <= KINDA_SMALL_NUMBER)
+            if (MonoEnergy <= RayTracingMinimumPathEnergy)
             {
                 continue;
             }
@@ -320,6 +367,10 @@ namespace
                 0,
                 OutResult.DelayBinEnergy.Num() - 1);
             OutResult.DelayBinEnergy[DelayBinIndex] += BandGain;
+            if (OutResult.DelayBinDirection.IsValidIndex(DelayBinIndex))
+            {
+                OutResult.DelayBinDirection[DelayBinIndex] += ShadedState.NextPath.ListenerDirection * MonoEnergy;
+            }
             OutResult.EarliestArrivalSeconds = (OutResult.EarliestArrivalSeconds <= 0.0f)
                 ? DelaySeconds
                 : FMath::Min(OutResult.EarliestArrivalSeconds, DelaySeconds);
@@ -381,6 +432,7 @@ namespace
             Path.RayOrigin = FVector(PathGPU.OriginAndTravelDistance.X, PathGPU.OriginAndTravelDistance.Y, PathGPU.OriginAndTravelDistance.Z);
             Path.TravelDistance = PathGPU.OriginAndTravelDistance.W;
             Path.RayDirection = FVector(PathGPU.DirectionAndAlive.X, PathGPU.DirectionAndAlive.Y, PathGPU.DirectionAndAlive.Z).GetSafeNormal();
+            Path.ListenerDirection = Path.RayDirection;
             Path.Throughput = FVector(PathGPU.ThroughputAndPadding.X, PathGPU.ThroughputAndPadding.Y, PathGPU.ThroughputAndPadding.Z);
         }
 
@@ -394,10 +446,12 @@ namespace
         const FUERayTracingAudioEnergyFieldTraceRequest& Request,
         TArray<FHardwareReflectionPathState>& OutNextPaths,
         TArray<FVector>& OutEnergyBins,
+        TArray<FVector>& OutDirectionBins,
         int32& OutContributionCount)
     {
         OutNextPaths.Reset();
         OutEnergyBins.Init(FVector::ZeroVector, FMath::Max(Request.NumDelayBins, 1));
+        OutDirectionBins.Init(FVector::ZeroVector, OutEnergyBins.Num());
         OutContributionCount = 0;
 
         if (PathInputs.IsEmpty())
@@ -523,6 +577,17 @@ namespace
         for (int32 PathIndex = 0; PathIndex < PathInputs.Num(); ++PathIndex)
         {
             const FShadeAndGatherPathOutputGPU& Output = OutputData[PathIndex];
+            const int32 ContributionBinIndex = FMath::RoundToInt(Output.ThroughputAndPadding.W) - 1;
+            if (OutDirectionBins.IsValidIndex(ContributionBinIndex)
+                && Output.ListenerDirectionAndContribution.W > 0.0f)
+            {
+                const FVector ListenerDirection(
+                    Output.ListenerDirectionAndContribution.X,
+                    Output.ListenerDirectionAndContribution.Y,
+                    Output.ListenerDirectionAndContribution.Z);
+                OutDirectionBins[ContributionBinIndex] += ListenerDirection.GetSafeNormal()
+                    * Output.ListenerDirectionAndContribution.W;
+            }
             if (Output.NextDirectionAndAlive.W < 0.5f)
             {
                 continue;
@@ -532,6 +597,10 @@ namespace
             NextPath.RayOrigin = FVector(Output.NextOriginAndTravelDistance.X, Output.NextOriginAndTravelDistance.Y, Output.NextOriginAndTravelDistance.Z);
             NextPath.TravelDistance = Output.NextOriginAndTravelDistance.W;
             NextPath.RayDirection = FVector(Output.NextDirectionAndAlive.X, Output.NextDirectionAndAlive.Y, Output.NextDirectionAndAlive.Z).GetSafeNormal();
+            NextPath.ListenerDirection = FVector(
+                Output.ListenerDirectionAndContribution.X,
+                Output.ListenerDirectionAndContribution.Y,
+                Output.ListenerDirectionAndContribution.Z).GetSafeNormal();
             NextPath.Throughput = FVector(Output.ThroughputAndPadding.X, Output.ThroughputAndPadding.Y, Output.ThroughputAndPadding.Z);
         }
 
@@ -621,14 +690,21 @@ namespace
         }
     }
 
-    void AppendTriangleGeometry(const FUERayTracingAudioGeometryExport& GeometryExport, TArray<FVector3f>& OutVertices, TArray<uint32>& OutIndices)
+    void AppendTriangleGeometry(
+        const FUERayTracingAudioGeometryExport& GeometryExport,
+        bool bOutputWorldSpace,
+        TArray<FVector3f>& OutVertices,
+        TArray<uint32>& OutIndices)
     {
         const uint32 BaseVertex = static_cast<uint32>(OutVertices.Num());
         OutVertices.Reserve(OutVertices.Num() + GeometryExport.Vertices.Num());
         OutIndices.Reserve(OutIndices.Num() + GeometryExport.Indices.Num());
 
-        for (const FVector& Vertex : GeometryExport.Vertices)
+        for (int32 VertexIndex = 0; VertexIndex < GeometryExport.Vertices.Num(); ++VertexIndex)
         {
+            const FVector Vertex = bOutputWorldSpace
+                ? GeometryExport.GetVertexWorldPosition(VertexIndex)
+                : GeometryExport.Vertices[VertexIndex];
             OutVertices.Add(FVector3f(Vertex));
         }
 
@@ -638,14 +714,18 @@ namespace
         }
     }
 
-    void BuildGeometryArrays(const FUERayTracingAudioGeometryExport& GeometryExport, TArray<FVector3f>& OutVertices, TArray<uint32>& OutIndices)
+    void BuildGeometryArrays(
+        const FUERayTracingAudioGeometryExport& GeometryExport,
+        bool bOutputWorldSpace,
+        TArray<FVector3f>& OutVertices,
+        TArray<uint32>& OutIndices)
     {
         OutVertices.Reset();
         OutIndices.Reset();
 
         if (GeometryExport.bUseStaticMeshTriangles && GeometryExport.HasTriangleMesh())
         {
-            AppendTriangleGeometry(GeometryExport, OutVertices, OutIndices);
+            AppendTriangleGeometry(GeometryExport, bOutputWorldSpace, OutVertices, OutIndices);
         }
         else if (GeometryExport.Bounds.IsValid)
         {
@@ -815,7 +895,7 @@ namespace
     {
         TArray<FVector3f> Vertices;
         TArray<uint32> Indices;
-        BuildGeometryArrays(GeometryExport, Vertices, Indices);
+        BuildGeometryArrays(GeometryExport, true, Vertices, Indices);
 
         const uint32 BaseIndex = PrimitiveIndex * 3;
         if (BaseIndex + 2 >= static_cast<uint32>(Indices.Num()))
@@ -834,6 +914,140 @@ namespace
         OutA = FVector(Vertices[Index0]);
         OutB = FVector(Vertices[Index1]);
         OutC = FVector(Vertices[Index2]);
+        return true;
+    }
+
+    bool CreateRayTracingGeometryFromArrays(
+        FRHICommandListImmediate& RHICmdList,
+        const TCHAR* DebugName,
+        const TArray<FVector3f>& Vertices,
+        const TArray<uint32>& Indices,
+        FBufferRHIRef& OutVertexBuffer,
+        FBufferRHIRef& OutIndexBuffer,
+        FRayTracingGeometryRHIRef& OutRayTracingGeometry)
+    {
+        if (Vertices.IsEmpty() || Indices.Num() < 3)
+        {
+            return false;
+        }
+
+        OutVertexBuffer = UE::RHIResourceUtils::CreateVertexBufferFromArray(
+            RHICmdList,
+            DebugName,
+            EBufferUsageFlags::Static | EBufferUsageFlags::ShaderResource,
+            MakeConstArrayView(Vertices));
+
+        OutIndexBuffer = UE::RHIResourceUtils::CreateIndexBufferFromArray(
+            RHICmdList,
+            DebugName,
+            EBufferUsageFlags::Static | EBufferUsageFlags::ShaderResource,
+            MakeConstArrayView(Indices));
+
+        FRayTracingGeometryInitializer GeometryInitializer;
+        GeometryInitializer.DebugName = FName(DebugName);
+        GeometryInitializer.IndexBuffer = OutIndexBuffer;
+        GeometryInitializer.GeometryType = RTGT_Triangles;
+        GeometryInitializer.bFastBuild = false;
+
+        FRayTracingGeometrySegment Segment;
+        Segment.VertexBuffer = OutVertexBuffer;
+        Segment.VertexBufferStride = sizeof(FVector3f);
+        Segment.NumPrimitives = Indices.Num() / 3;
+        Segment.MaxVertices = Vertices.Num();
+        GeometryInitializer.Segments.Add(Segment);
+        GeometryInitializer.TotalPrimitiveCount = Segment.NumPrimitives;
+
+        OutRayTracingGeometry = RHICmdList.CreateRayTracingGeometry(GeometryInitializer);
+        RHICmdList.BuildAccelerationStructure(OutRayTracingGeometry);
+        return OutRayTracingGeometry.IsValid();
+    }
+
+    void TrimStaticMeshBLASCache()
+    {
+        for (auto CacheIt = GStaticMeshBLASCache.CreateIterator(); CacheIt; ++CacheIt)
+        {
+            if (GStaticMeshBLASCacheSerial > CacheIt.Value().LastUsedSerial
+                && GStaticMeshBLASCacheSerial - CacheIt.Value().LastUsedSerial > StaticMeshBLASCacheMaxUnusedSerials)
+            {
+                CacheIt.RemoveCurrent();
+            }
+        }
+
+        while (GStaticMeshBLASCache.Num() > StaticMeshBLASCacheMaxEntries)
+        {
+            FString OldestKey;
+            uint64 OldestSerial = MAX_uint64;
+            for (const TPair<FString, FCachedStaticMeshRayTracingGeometry>& Pair : GStaticMeshBLASCache)
+            {
+                if (Pair.Value.LastUsedSerial < OldestSerial)
+                {
+                    OldestKey = Pair.Key;
+                    OldestSerial = Pair.Value.LastUsedSerial;
+                }
+            }
+            if (OldestKey.IsEmpty())
+            {
+                break;
+            }
+            GStaticMeshBLASCache.Remove(OldestKey);
+        }
+    }
+
+    bool GetOrCreateCachedStaticMeshRayTracingGeometry(
+        FRHICommandListImmediate& RHICmdList,
+        const FUERayTracingAudioGeometryExport& GeometryExport,
+        FRayTracingGeometryRHIRef& OutRayTracingGeometry)
+    {
+        const FString CacheKey = GeometryExport.GetRayTracingGeometryCacheKey();
+        if (CacheKey.IsEmpty())
+        {
+            return false;
+        }
+
+        if (FCachedStaticMeshRayTracingGeometry* CachedGeometry = GStaticMeshBLASCache.Find(CacheKey))
+        {
+            if (CachedGeometry->RayTracingGeometry.IsValid()
+                && CachedGeometry->VertexBuffer.IsValid()
+                && CachedGeometry->IndexBuffer.IsValid()
+                && CachedGeometry->NumVertices == static_cast<uint32>(GeometryExport.Vertices.Num())
+                && CachedGeometry->NumIndices == static_cast<uint32>(GeometryExport.Indices.Num()))
+            {
+                CachedGeometry->LastUsedSerial = GStaticMeshBLASCacheSerial;
+                OutRayTracingGeometry = CachedGeometry->RayTracingGeometry;
+                return true;
+            }
+
+            GStaticMeshBLASCache.Remove(CacheKey);
+        }
+
+        TArray<FVector3f> LocalVertices;
+        TArray<uint32> LocalIndices;
+        BuildGeometryArrays(GeometryExport, false, LocalVertices, LocalIndices);
+        if (LocalIndices.IsEmpty())
+        {
+            return false;
+        }
+
+        FCachedStaticMeshRayTracingGeometry NewCacheEntry;
+        if (!CreateRayTracingGeometryFromArrays(
+            RHICmdList,
+            TEXT("UERayTracingAudioStaticMeshBLAS"),
+            LocalVertices,
+            LocalIndices,
+            NewCacheEntry.VertexBuffer,
+            NewCacheEntry.IndexBuffer,
+            NewCacheEntry.RayTracingGeometry))
+        {
+            return false;
+        }
+
+        NewCacheEntry.NumPrimitives = LocalIndices.Num() / 3;
+        NewCacheEntry.NumVertices = static_cast<uint32>(LocalVertices.Num());
+        NewCacheEntry.NumIndices = static_cast<uint32>(LocalIndices.Num());
+        NewCacheEntry.LastUsedSerial = GStaticMeshBLASCacheSerial;
+        OutRayTracingGeometry = NewCacheEntry.RayTracingGeometry;
+        GStaticMeshBLASCache.Add(CacheKey, MoveTemp(NewCacheEntry));
+        TrimStaticMeshBLASCache();
         return true;
     }
 
@@ -857,6 +1071,9 @@ namespace
         Instances.Reserve(Geometry.Num());
         InstanceTransforms.Reserve(Geometry.Num());
 
+        ++GStaticMeshBLASCacheSerial;
+        TrimStaticMeshBLASCache();
+
         TArray<FVector3f> Vertices;
         TArray<uint32> Indices;
 
@@ -868,46 +1085,49 @@ namespace
                 continue;
             }
 
-            BuildGeometryArrays(GeometryExport, Vertices, Indices);
-            if (Indices.IsEmpty())
+            FRayTracingGeometryRHIRef RayTracingGeometry;
+
+            // Static-mesh snapshots contain only immutable values. The Render Thread
+            // therefore uses the plugin-managed BLAS cache and never dereferences a
+            // UStaticMesh (or any other UObject) to borrow renderer-owned resources.
+            const bool bUsingCachedStaticMeshGeometry = GeometryExport.HasCachedStaticMeshSource()
+                && GetOrCreateCachedStaticMeshRayTracingGeometry(RHICmdList, GeometryExport, RayTracingGeometry);
+            if (!bUsingCachedStaticMeshGeometry)
             {
-                continue;
+                BuildGeometryArrays(GeometryExport, !GeometryExport.bVerticesAreLocalSpace, Vertices, Indices);
+                if (Indices.IsEmpty())
+                {
+                    continue;
+                }
+
+                FBufferRHIRef VertexBuffer;
+                FBufferRHIRef IndexBuffer;
+                if (!CreateRayTracingGeometryFromArrays(
+                    RHICmdList,
+                    TEXT("UERayTracingAudioBLAS"),
+                    Vertices,
+                    Indices,
+                    VertexBuffer,
+                    IndexBuffer,
+                    RayTracingGeometry))
+                {
+                    continue;
+                }
+
+                OutVertexBuffers.Add(VertexBuffer);
+                OutIndexBuffers.Add(IndexBuffer);
             }
 
-            FBufferRHIRef VertexBuffer = UE::RHIResourceUtils::CreateVertexBufferFromArray(
-                RHICmdList,
-                TEXT("UERayTracingAudioVertexBuffer"),
-                EBufferUsageFlags::Static | EBufferUsageFlags::ShaderResource,
-                MakeConstArrayView(Vertices));
-
-            FBufferRHIRef IndexBuffer = UE::RHIResourceUtils::CreateIndexBufferFromArray(
-                RHICmdList,
-                TEXT("UERayTracingAudioIndexBuffer"),
-                EBufferUsageFlags::Static | EBufferUsageFlags::ShaderResource,
-                MakeConstArrayView(Indices));
-
-            FRayTracingGeometryInitializer GeometryInitializer;
-            GeometryInitializer.DebugName = FName(TEXT("UERayTracingAudioBLAS"));
-            GeometryInitializer.IndexBuffer = IndexBuffer;
-            GeometryInitializer.GeometryType = RTGT_Triangles;
-            GeometryInitializer.bFastBuild = false;
-
-            FRayTracingGeometrySegment Segment;
-            Segment.VertexBuffer = VertexBuffer;
-            Segment.VertexBufferStride = sizeof(FVector3f);
-            Segment.NumPrimitives = Indices.Num() / 3;
-            Segment.MaxVertices = Vertices.Num();
-            GeometryInitializer.Segments.Add(Segment);
-            GeometryInitializer.TotalPrimitiveCount = Segment.NumPrimitives;
-
-            FRayTracingGeometryRHIRef RayTracingGeometry = RHICmdList.CreateRayTracingGeometry(GeometryInitializer);
-            RHICmdList.BuildAccelerationStructure(RayTracingGeometry);
-
-            OutVertexBuffers.Add(VertexBuffer);
-            OutIndexBuffers.Add(IndexBuffer);
             OutRayTracingGeometries.Add(RayTracingGeometry);
 
-            const int32 TransformIndex = InstanceTransforms.Add(FMatrix::Identity);
+            // Cached static-mesh geometry is local-space; BoundingBox and fallback
+            // triangle arrays are emitted in world-space and use identity.
+            const bool bNeedsLocalToWorldTransform =
+                bUsingCachedStaticMeshGeometry && GeometryExport.bVerticesAreLocalSpace;
+            const FMatrix InstanceTransform = bNeedsLocalToWorldTransform
+                ? GeometryExport.Transform.ToMatrixWithScale()
+                : FMatrix::Identity;
+            const int32 TransformIndex = InstanceTransforms.Add(InstanceTransform);
             FRayTracingGeometryInstance& Instance = Instances.AddDefaulted_GetRef();
             Instance.GeometryRHI = RayTracingGeometry;
             Instance.NumTransforms = 1;
@@ -993,6 +1213,264 @@ namespace
         OutSceneView = RHICmdList.CreateShaderResourceView(SceneViewInitializer);
         OutNumGeometrySegments = static_cast<uint32>(Instances.Num());
         return true;
+    }
+
+    struct FCachedRayTracingAudioSceneResources
+    {
+        ~FCachedRayTracingAudioSceneResources()
+        {
+            InstanceBuffer.Release();
+            HitGroupContributionsBuffer.Release();
+        }
+
+        TArray<FBufferRHIRef> VertexBuffers;
+        TArray<FBufferRHIRef> IndexBuffers;
+        TArray<FRayTracingGeometryRHIRef> RayTracingGeometries;
+        FRayTracingSceneRHIRef RayTracingScene;
+        FBufferRHIRef SceneBuffer;
+        FBufferRHIRef ScratchBuffer;
+        FRWBufferStructured InstanceBuffer;
+        FRWBufferStructured HitGroupContributionsBuffer;
+        FShaderResourceViewRHIRef SceneView;
+        TArray<int32> InstanceToGeometryIndex;
+        uint64 LastUsedSerial = 0;
+    };
+
+    TMap<uint64, TSharedPtr<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe>> GSceneTLASCache;
+    uint64 GSceneTLASCacheSerial = 0;
+    constexpr int32 SceneTLASCacheMaxEntries = 4;
+    constexpr uint64 SceneTLASCacheMaxUnusedSerials = 240;
+
+    void TrimSceneTLASCache_RenderThread()
+    {
+        check(IsInRenderingThread());
+        while (GSceneTLASCache.Num() > SceneTLASCacheMaxEntries)
+        {
+            uint64 OldestKey = 0;
+            uint64 OldestSerial = MAX_uint64;
+            for (const TPair<uint64, TSharedPtr<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe>>& Pair : GSceneTLASCache)
+            {
+                if (Pair.Value.IsValid() && Pair.Value->LastUsedSerial < OldestSerial)
+                {
+                    OldestKey = Pair.Key;
+                    OldestSerial = Pair.Value->LastUsedSerial;
+                }
+            }
+            if (OldestSerial == MAX_uint64)
+            {
+                break;
+            }
+            GSceneTLASCache.Remove(OldestKey);
+        }
+
+        for (auto It = GSceneTLASCache.CreateIterator(); It; ++It)
+        {
+            if (!It.Value().IsValid()
+                || (GSceneTLASCacheSerial > It.Value()->LastUsedSerial
+                    && GSceneTLASCacheSerial - It.Value()->LastUsedSerial > SceneTLASCacheMaxUnusedSerials))
+            {
+                It.RemoveCurrent();
+            }
+        }
+    }
+
+    TSharedPtr<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe> GetOrBuildSceneTLAS_RenderThread(
+        FRHICommandListImmediate& RHICmdList,
+        uint64 SceneCacheKey,
+        const TArray<FUERayTracingAudioGeometryExport>& Geometry)
+    {
+        check(IsInRenderingThread());
+        ++GSceneTLASCacheSerial;
+
+        if (SceneCacheKey != 0)
+        {
+            if (TSharedPtr<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe>* Existing = GSceneTLASCache.Find(SceneCacheKey))
+            {
+                if (Existing->IsValid())
+                {
+                    (*Existing)->LastUsedSerial = GSceneTLASCacheSerial;
+                    return *Existing;
+                }
+            }
+        }
+
+        TSharedPtr<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe> Resources =
+            MakeShared<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe>();
+        FRHIShaderResourceView* SceneView = nullptr;
+        uint32 NumGeometrySegments = 0;
+        if (!BuildRayTracingSceneFromGeometry(
+            RHICmdList,
+            Geometry,
+            SceneView,
+            Resources->RayTracingScene,
+            Resources->VertexBuffers,
+            Resources->IndexBuffers,
+            Resources->RayTracingGeometries,
+            Resources->SceneBuffer,
+            Resources->ScratchBuffer,
+            Resources->InstanceBuffer,
+            Resources->HitGroupContributionsBuffer,
+            NumGeometrySegments,
+            Resources->InstanceToGeometryIndex)
+            || !SceneView
+            || NumGeometrySegments == 0)
+        {
+            return nullptr;
+        }
+
+        Resources->SceneView = SceneView;
+        Resources->LastUsedSerial = GSceneTLASCacheSerial;
+        if (SceneCacheKey != 0)
+        {
+            GSceneTLASCache.Add(SceneCacheKey, Resources);
+            TrimSceneTLASCache_RenderThread();
+        }
+        return Resources;
+    }
+
+    bool DispatchOcclusionReadback_RenderThread(
+        FRHICommandListImmediate& RHICmdList,
+        FRHIShaderResourceView* SceneView,
+        const TArray<FUERayTracingAudioRay>& Rays,
+        TSharedPtr<FRHIGPUBufferReadback, ESPMode::ThreadSafe>& OutReadback)
+    {
+        if (!SceneView || Rays.IsEmpty())
+        {
+            return false;
+        }
+
+        TArray<FUERayTracingAudioBasicRay> RayData;
+        BuildBasicRayBufferData(Rays, RayData);
+        FBufferRHIRef RayBuffer = UE::RHIResourceUtils::CreateBufferFromArray(
+            RHICmdList,
+            TEXT("UERayTracingAudioAsyncRayBuffer"),
+            BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer,
+            ERHIAccess::SRVMask,
+            MakeConstArrayView(RayData));
+        FShaderResourceViewRHIRef RayBufferView = RHICmdList.CreateShaderResourceView(
+            RayBuffer,
+            FRHIViewDesc::CreateBufferSRV()
+                .SetType(FRHIViewDesc::EBufferType::Structured)
+                .SetStride(sizeof(FUERayTracingAudioBasicRay))
+                .SetNumElements(RayData.Num()));
+
+        const FRHIBufferCreateDesc ResultBufferCreateDesc =
+            FRHIBufferCreateDesc::CreateStructured<uint32>(TEXT("UERayTracingAudioAsyncResultBuffer"), RayData.Num())
+            .AddUsage(EBufferUsageFlags::Static | EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::SourceCopy)
+            .SetInitialState(ERHIAccess::UAVMask);
+        FBufferRHIRef ResultBuffer = RHICmdList.CreateBuffer(ResultBufferCreateDesc);
+        FUnorderedAccessViewRHIRef ResultBufferView = RHICmdList.CreateUnorderedAccessView(
+            ResultBuffer,
+            FRHIViewDesc::CreateBufferUAV()
+                .SetType(FRHIViewDesc::EBufferType::Structured)
+                .SetStride(sizeof(uint32))
+                .SetNumElements(RayData.Num()));
+
+        DispatchOcclusionRays(RHICmdList, SceneView, RayBufferView, ResultBufferView, RayData.Num());
+        RHICmdList.Transition(FRHITransitionInfo(ResultBuffer, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
+        OutReadback = MakeShared<FRHIGPUBufferReadback, ESPMode::ThreadSafe>(TEXT("UERayTracingAudioOcclusionReadback"));
+        OutReadback->EnqueueCopy(RHICmdList, ResultBuffer, sizeof(uint32) * RayData.Num());
+        return true;
+    }
+
+    bool DispatchDetailedReadback_RenderThread(
+        FRHICommandListImmediate& RHICmdList,
+        FRHIShaderResourceView* SceneView,
+        int32 NumGeometryInstances,
+        const TArray<FUERayTracingAudioRay>& Rays,
+        TSharedPtr<FRHIGPUBufferReadback, ESPMode::ThreadSafe>& OutReadback)
+    {
+        if (!SceneView || Rays.IsEmpty())
+        {
+            return false;
+        }
+
+        TArray<FUERayTracingAudioDetailedRay> RayData;
+        BuildDetailedRayBufferData(Rays, RayData);
+        FBufferRHIRef RayBuffer = UE::RHIResourceUtils::CreateBufferFromArray(
+            RHICmdList,
+            TEXT("UERayTracingAudioAsyncIndirectRayBuffer"),
+            BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer,
+            ERHIAccess::SRVMask,
+            MakeConstArrayView(RayData));
+        FShaderResourceViewRHIRef RayBufferView = RHICmdList.CreateShaderResourceView(
+            RayBuffer,
+            FRHIViewDesc::CreateBufferSRV()
+                .SetType(FRHIViewDesc::EBufferType::Structured)
+                .SetStride(sizeof(FUERayTracingAudioDetailedRay))
+                .SetNumElements(RayData.Num()));
+
+        const FRHIBufferCreateDesc ResultBufferCreateDesc =
+            FRHIBufferCreateDesc::CreateStructured<FUERayTracingAudioDetailedTraceResult>(
+                TEXT("UERayTracingAudioAsyncIndirectResultBuffer"),
+                RayData.Num())
+            .AddUsage(EBufferUsageFlags::Static | EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::SourceCopy)
+            .SetInitialState(ERHIAccess::UAVMask);
+        FBufferRHIRef ResultBuffer = RHICmdList.CreateBuffer(ResultBufferCreateDesc);
+        FUnorderedAccessViewRHIRef ResultBufferView = RHICmdList.CreateUnorderedAccessView(
+            ResultBuffer,
+            FRHIViewDesc::CreateBufferUAV()
+                .SetType(FRHIViewDesc::EBufferType::Structured)
+                .SetStride(sizeof(FUERayTracingAudioDetailedTraceResult))
+                .SetNumElements(RayData.Num()));
+
+        DispatchDetailedRays(
+            RHICmdList,
+            SceneView,
+            RayBufferView,
+            ResultBufferView,
+            RayData.Num(),
+            static_cast<uint32>(FMath::Max(NumGeometryInstances, 1)));
+        RHICmdList.Transition(FRHITransitionInfo(ResultBuffer, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
+        OutReadback = MakeShared<FRHIGPUBufferReadback, ESPMode::ThreadSafe>(TEXT("UERayTracingAudioDetailedReadback"));
+        OutReadback->EnqueueCopy(
+            RHICmdList,
+            ResultBuffer,
+            sizeof(FUERayTracingAudioDetailedTraceResult) * RayData.Num());
+        return true;
+    }
+
+    void DecodeDetailedTraceResults(
+        const TArray<FUERayTracingAudioGeometryExport>& Geometry,
+        const TArray<int32>& InstanceToGeometryIndex,
+        const TArray<FUERayTracingAudioRay>& Rays,
+        const FUERayTracingAudioDetailedTraceResult* Results,
+        TArray<FUERayTracingAudioDetailedTraceHit>& OutHits)
+    {
+        OutHits.Init(FUERayTracingAudioDetailedTraceHit(), Rays.Num());
+        if (!Results)
+        {
+            return;
+        }
+
+        for (int32 Index = 0; Index < Rays.Num(); ++Index)
+        {
+            const FUERayTracingAudioDetailedTraceResult& Result = Results[Index];
+            FUERayTracingAudioDetailedTraceHit& OutHit = OutHits[Index];
+            OutHit.bHit = Result.HitT >= 0.0f
+                && InstanceToGeometryIndex.IsValidIndex(static_cast<int32>(Result.InstanceIndex))
+                && Geometry.IsValidIndex(InstanceToGeometryIndex[Result.InstanceIndex]);
+            OutHit.Distance = OutHit.bHit ? Result.HitT : 0.0f;
+            OutHit.GeometryIndex = OutHit.bHit ? InstanceToGeometryIndex[Result.InstanceIndex] : INDEX_NONE;
+            const FVector Direction = (Rays[Index].End - Rays[Index].Start).GetSafeNormal();
+            OutHit.Location = Rays[Index].Start + (Direction * OutHit.Distance);
+            OutHit.Normal = FVector::UpVector;
+
+            if (OutHit.bHit)
+            {
+                FVector A;
+                FVector B;
+                FVector C;
+                if (GetPrimitiveTriangle(Geometry[OutHit.GeometryIndex], Result.PrimitiveIndex, A, B, C))
+                {
+                    OutHit.Normal = FVector::CrossProduct(B - A, C - A).GetSafeNormal();
+                    if (FVector::DotProduct(OutHit.Normal, Direction) > 0.0f)
+                    {
+                        OutHit.Normal *= -1.0f;
+                    }
+                }
+            }
+        }
     }
 
     bool TraceRaysWithHardwareRayTracing_RenderThread(
@@ -1297,6 +1775,7 @@ namespace
     {
         OutResult = FUERayTracingAudioEnergyFieldTraceResult();
         OutResult.DelayBinEnergy.Init(FVector::ZeroVector, FMath::Max(Request.NumDelayBins, 1));
+        OutResult.DelayBinDirection.Init(FVector::ZeroVector, OutResult.DelayBinEnergy.Num());
 
         if (Geometry.IsEmpty() || Request.NumReflectionRays <= 0 || Request.MaxReflectionBounces <= 0 || Request.DurationSeconds <= 0.0f)
         {
@@ -1395,9 +1874,12 @@ namespace
                 const FHardwareReflectionPathState& Path = ReflectionPathBuffers[CurrentPathBufferIndex][PathIndex];
                 const bool bHasHit = BounceHits.IsValidIndex(PathIndex) && BounceHits[PathIndex].bHit;
                 const bool bOccluded = OccludedResults.IsValidIndex(PathIndex) ? OccludedResults[PathIndex] : true;
-                const FVector Absorption = (bHasHit && Geometry.IsValidIndex(BounceHits[PathIndex].GeometryIndex))
-                    ? Geometry[BounceHits[PathIndex].GeometryIndex].Absorption
-                    : FVector::ZeroVector;
+                const FUERayTracingAudioGeometryExport* HitGeometry = (bHasHit && Geometry.IsValidIndex(BounceHits[PathIndex].GeometryIndex))
+                    ? &Geometry[BounceHits[PathIndex].GeometryIndex]
+                    : nullptr;
+                const FVector Absorption = HitGeometry ? HitGeometry->Absorption : FVector::ZeroVector;
+                const FVector Transmission = HitGeometry ? HitGeometry->Transmission : FVector::ZeroVector;
+                const float Scattering = HitGeometry ? HitGeometry->Scattering : 0.0f;
 
                 FShadeAndGatherPathInputGPU& PathInput = PathInputs.AddDefaulted_GetRef();
                 PathInput.RayOriginAndTravelDistance = FVector4f(FVector3f(Path.RayOrigin), Path.TravelDistance);
@@ -1406,9 +1888,12 @@ namespace
                 PathInput.HitLocationAndHitValid = FVector4f(bHasHit ? FVector3f(BounceHits[PathIndex].Location) : FVector3f::ZeroVector, bHasHit ? 1.0f : 0.0f);
                 PathInput.HitNormalAndOccluded = FVector4f(bHasHit ? FVector3f(BounceHits[PathIndex].Normal) : FVector3f::ZeroVector, bOccluded ? 1.0f : 0.0f);
                 PathInput.AbsorptionAndPadding = FVector4f(FVector3f(Absorption), 0.0f);
+                PathInput.TransmissionAndScattering = FVector4f(FVector3f(Transmission), Scattering);
+                PathInput.ListenerDirectionAndPadding = FVector4f(FVector3f(Path.ListenerDirection), 0.0f);
             }
 
             TArray<FVector> BounceEnergyBins;
+            TArray<FVector> BounceDirectionBins;
             int32 BounceContributionCount = 0;
             if (DispatchShadeAndGatherOnGPU_RenderThread(
                 RHICmdList,
@@ -1416,11 +1901,17 @@ namespace
                 Request,
                 ReflectionPathBuffers[NextPathBufferIndex],
                 BounceEnergyBins,
+                BounceDirectionBins,
                 BounceContributionCount))
             {
                 for (int32 BinIndex = 0; BinIndex < OutResult.DelayBinEnergy.Num() && BinIndex < BounceEnergyBins.Num(); ++BinIndex)
                 {
                     OutResult.DelayBinEnergy[BinIndex] += BounceEnergyBins[BinIndex];
+                    if (OutResult.DelayBinDirection.IsValidIndex(BinIndex)
+                        && BounceDirectionBins.IsValidIndex(BinIndex))
+                    {
+                        OutResult.DelayBinDirection[BinIndex] += BounceDirectionBins[BinIndex];
+                    }
                     if (OutResult.EarliestArrivalSeconds <= 0.0f && !BounceEnergyBins[BinIndex].IsNearlyZero())
                     {
                         OutResult.EarliestArrivalSeconds = (static_cast<float>(BinIndex) + 0.5f) * (Request.DurationSeconds / static_cast<float>(OutResult.DelayBinEnergy.Num()));
@@ -1478,9 +1969,622 @@ namespace
 #endif
 }
 
+struct FUERayTracingAudioAsyncRayQuery::FReadbackState
+{
+    struct FQuerySegment
+    {
+        TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe> Query;
+        int32 RayOffset = 0;
+        int32 NumRays = 0;
+    };
+
+    TSharedPtr<FRHIGPUBufferReadback, ESPMode::ThreadSafe> Readback;
+    TSharedPtr<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe> SceneResources;
+    TArray<FQuerySegment> Segments;
+    TAtomic<bool> bPollQueued = false;
+    int32 NumCombinedRays = 0;
+};
+
+struct FUERayTracingAudioAsyncEnergyFieldQuery::FReadbackState
+{
+    enum class EPhase : uint8
+    {
+        DetailedHit,
+        ShadowVisibility
+    };
+
+    struct FItem
+    {
+        TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe> Query;
+        FUERayTracingAudioEnergyFieldTraceRequest Request;
+        FUERayTracingAudioEnergyFieldTraceResult Result;
+
+        TArray<FHardwareReflectionPathState> ActivePaths;
+        TArray<FHardwareReflectionPathState> NextPaths;
+        TArray<FHardwareShadedBounceState> ShadedStates;
+        TArray<FUERayTracingAudioRay> BounceRays;
+        TArray<FUERayTracingAudioDetailedTraceHit> BounceHits;
+        TArray<FUERayTracingAudioRay> ShadowRays;
+        TArray<int32> ShadowRayStateIndices;
+        int32 ReadbackOffset = 0;
+        int32 ReadbackCount = 0;
+        int32 BounceIndex = 0;
+    };
+
+    TArray<FUERayTracingAudioGeometryExport> Geometry;
+    TSharedPtr<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe> SceneResources;
+    TArray<FItem> Items;
+    TArray<FUERayTracingAudioRay> CombinedRays;
+    TSharedPtr<FRHIGPUBufferReadback, ESPMode::ThreadSafe> Readback;
+    TAtomic<bool> bPollQueued = false;
+    EPhase Phase = EPhase::DetailedHit;
+};
+
 bool FUERayTracingAudioRayTracingDevice::IsRayTracingAvailable() const
 {
     return GRHISupportsRayTracing && GRHISupportsRayTracingShaders;
+}
+
+bool FUERayTracingAudioAsyncEnergyFieldQuery::IsComplete() const
+{
+    if (bComplete.Load())
+    {
+        return true;
+    }
+
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = ReadbackState;
+    if (bReadbackSubmitted.Load() && State.IsValid() && !State->bPollQueued.Exchange(true))
+    {
+        TSharedRef<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe> Query =
+            const_cast<FUERayTracingAudioAsyncEnergyFieldQuery*>(this)->AsShared();
+        ENQUEUE_RENDER_COMMAND(UERayTracingAudioPollIndirectReadback)(
+            [Query](FRHICommandListImmediate& RHICmdList)
+            {
+                Query->PollHardwareReadback_RenderThread(RHICmdList);
+            });
+    }
+
+    return false;
+}
+
+bool FUERayTracingAudioAsyncEnergyFieldQuery::ConsumeResult(
+    bool& bOutSucceeded,
+    FUERayTracingAudioEnergyFieldTraceResult& OutResult)
+{
+    if (!bComplete.Load())
+    {
+        return false;
+    }
+
+    FScopeLock Lock(&ResultMutex);
+    if (bConsumed)
+    {
+        return false;
+    }
+
+    bConsumed = true;
+    bOutSucceeded = bSucceeded;
+    OutResult = MoveTemp(Result);
+    return true;
+}
+
+void FUERayTracingAudioAsyncEnergyFieldQuery::Complete(
+    bool bInSucceeded,
+    FUERayTracingAudioEnergyFieldTraceResult&& InResult)
+{
+    {
+        FScopeLock Lock(&ResultMutex);
+        bSucceeded = bInSucceeded;
+        Result = MoveTemp(InResult);
+    }
+    bComplete.Store(true);
+}
+
+void FUERayTracingAudioAsyncEnergyFieldQuery::BeginHardwareBatchReadback_RenderThread(
+    FRHICommandListImmediate& RHICmdList,
+    TArray<FUERayTracingAudioGeometryExport>&& Geometry,
+    TArray<FUERayTracingAudioEnergyFieldTraceRequest>&& Requests,
+    TArray<TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>>&& Queries,
+    uint64 SceneCacheKey)
+{
+#if RHI_RAYTRACING
+    check(IsInRenderingThread());
+
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = MakeShared<FReadbackState, ESPMode::ThreadSafe>();
+    State->Geometry = MoveTemp(Geometry);
+
+    if (Requests.Num() != Queries.Num())
+    {
+        for (const TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>& Query : Queries)
+        {
+            if (Query.IsValid())
+            {
+                Query->Complete(false, FUERayTracingAudioEnergyFieldTraceResult());
+            }
+        }
+        return;
+    }
+
+    State->Items.Reserve(Requests.Num());
+    for (int32 RequestIndex = 0; RequestIndex < Requests.Num(); ++RequestIndex)
+    {
+        if (!Queries[RequestIndex].IsValid())
+        {
+            continue;
+        }
+
+        FReadbackState::FItem Item;
+        Item.Query = Queries[RequestIndex];
+        Item.Request = MoveTemp(Requests[RequestIndex]);
+        Item.Result.DelayBinEnergy.Init(FVector::ZeroVector, FMath::Max(Item.Request.NumDelayBins, 1));
+        Item.Result.DelayBinDirection.Init(FVector::ZeroVector, Item.Result.DelayBinEnergy.Num());
+
+        if (State->Geometry.IsEmpty()
+            || Item.Request.NumReflectionRays <= 0
+            || Item.Request.MaxReflectionBounces <= 0
+            || Item.Request.DurationSeconds <= 0.0f)
+        {
+            Item.Query->Complete(true, MoveTemp(Item.Result));
+            continue;
+        }
+
+        GenerateListenerReflectionPaths(Item.Request, Item.ActivePaths);
+        BuildBounceRaysFromReflectionPaths(Item.ActivePaths, Item.Request.MaxTraceDistance, Item.BounceRays);
+        State->Items.Add(MoveTemp(Item));
+    }
+
+    if (State->Items.IsEmpty())
+    {
+        return;
+    }
+
+    State->SceneResources = GetOrBuildSceneTLAS_RenderThread(
+        RHICmdList,
+        SceneCacheKey,
+        State->Geometry);
+    if (!State->SceneResources.IsValid())
+    {
+        for (FReadbackState::FItem& Item : State->Items)
+        {
+            Item.Query->Complete(false, MoveTemp(Item.Result));
+        }
+        return;
+    }
+
+    State->CombinedRays.Reset();
+    for (FReadbackState::FItem& Item : State->Items)
+    {
+        Item.ReadbackOffset = State->CombinedRays.Num();
+        Item.ReadbackCount = Item.BounceRays.Num();
+        State->CombinedRays.Append(Item.BounceRays);
+    }
+    if (!DispatchDetailedReadback_RenderThread(
+        RHICmdList,
+        State->SceneResources->SceneView,
+        State->SceneResources->InstanceToGeometryIndex.Num(),
+        State->CombinedRays,
+        State->Readback))
+    {
+        for (FReadbackState::FItem& Item : State->Items)
+        {
+            Item.Query->Complete(false, MoveTemp(Item.Result));
+        }
+        return;
+    }
+
+    for (FReadbackState::FItem& Item : State->Items)
+    {
+        Item.Query->ReadbackState = State;
+        Item.Query->bReadbackSubmitted.Store(true);
+    }
+#else
+    for (const TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>& Query : Queries)
+    {
+        if (Query.IsValid())
+        {
+            Query->Complete(false, FUERayTracingAudioEnergyFieldTraceResult());
+        }
+    }
+#endif
+}
+
+void FUERayTracingAudioAsyncEnergyFieldQuery::PollHardwareReadback_RenderThread(FRHICommandListImmediate& RHICmdList)
+{
+#if RHI_RAYTRACING
+    check(IsInRenderingThread());
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = ReadbackState;
+    if (!State.IsValid() || !State->Readback.IsValid())
+    {
+        Complete(false, FUERayTracingAudioEnergyFieldTraceResult());
+        return;
+    }
+
+    if (!State->Readback->IsReady())
+    {
+        State->bPollQueued.Store(false);
+        return;
+    }
+
+    auto FailAll = [&State]()
+    {
+        for (FReadbackState::FItem& Item : State->Items)
+        {
+            if (Item.Query.IsValid())
+            {
+                Item.Query->ReadbackState.Reset();
+                Item.Query->Complete(false, MoveTemp(Item.Result));
+                Item.Query.Reset();
+            }
+        }
+        State->Readback.Reset();
+        State->Items.Reset();
+    };
+
+    auto DispatchCombinedDetailed = [&State, &RHICmdList]() -> bool
+    {
+        State->CombinedRays.Reset();
+        for (FReadbackState::FItem& Item : State->Items)
+        {
+            Item.ReadbackOffset = State->CombinedRays.Num();
+            Item.ReadbackCount = Item.BounceRays.Num();
+            State->CombinedRays.Append(Item.BounceRays);
+        }
+        State->Phase = FReadbackState::EPhase::DetailedHit;
+        return !State->CombinedRays.IsEmpty()
+            && DispatchDetailedReadback_RenderThread(
+            RHICmdList,
+            State->SceneResources->SceneView,
+            State->SceneResources->InstanceToGeometryIndex.Num(),
+            State->CombinedRays,
+            State->Readback);
+    };
+
+    auto CompleteOrDispatchNextBounce = [&State, &DispatchCombinedDetailed, &FailAll]()
+    {
+        for (FReadbackState::FItem& Item : State->Items)
+        {
+            ++Item.BounceIndex;
+            if (Item.BounceIndex >= Item.Request.MaxReflectionBounces || Item.NextPaths.IsEmpty())
+            {
+                TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe> CompletedQuery = Item.Query;
+                Item.Query.Reset();
+                CompletedQuery->ReadbackState.Reset();
+                CompletedQuery->Complete(true, MoveTemp(Item.Result));
+                continue;
+            }
+
+            Item.ActivePaths = MoveTemp(Item.NextPaths);
+            Item.ShadedStates.Reset();
+            Item.BounceHits.Reset();
+            Item.ShadowRays.Reset();
+            Item.ShadowRayStateIndices.Reset();
+            BuildBounceRaysFromReflectionPaths(
+                Item.ActivePaths,
+                Item.Request.MaxTraceDistance,
+                Item.BounceRays);
+        }
+
+        State->Items.RemoveAllSwap(
+            [](const FReadbackState::FItem& Item)
+            {
+                return !Item.Query.IsValid();
+            },
+            EAllowShrinking::No);
+
+        if (State->Items.IsEmpty())
+        {
+            State->Readback.Reset();
+            State->CombinedRays.Reset();
+            return;
+        }
+
+        if (!DispatchCombinedDetailed())
+        {
+            FailAll();
+            return;
+        }
+        State->bPollQueued.Store(false);
+    };
+
+    if (State->Phase == FReadbackState::EPhase::DetailedHit)
+    {
+        const uint32 NumBytes = sizeof(FUERayTracingAudioDetailedTraceResult) * State->CombinedRays.Num();
+        const FUERayTracingAudioDetailedTraceResult* Results =
+            static_cast<const FUERayTracingAudioDetailedTraceResult*>(State->Readback->Lock(NumBytes));
+        if (!Results)
+        {
+            FailAll();
+            return;
+        }
+
+        for (FReadbackState::FItem& Item : State->Items)
+        {
+            DecodeDetailedTraceResults(
+                State->Geometry,
+                State->SceneResources->InstanceToGeometryIndex,
+                Item.BounceRays,
+                Results + Item.ReadbackOffset,
+                Item.BounceHits);
+        }
+        State->Readback->Unlock();
+        State->Readback.Reset();
+
+        State->CombinedRays.Reset();
+        for (FReadbackState::FItem& Item : State->Items)
+        {
+            ShadeAndBounceHardwareReflectionPaths(
+                Item.ActivePaths,
+                Item.BounceHits,
+                State->Geometry,
+                Item.Request,
+                Item.BounceIndex,
+                Item.ShadedStates,
+                Item.NextPaths);
+            BuildShadowRaysFromShadedStates(
+                Item.ShadedStates,
+                Item.ShadowRays,
+                Item.ShadowRayStateIndices);
+            Item.ReadbackOffset = State->CombinedRays.Num();
+            Item.ReadbackCount = Item.ShadowRays.Num();
+            State->CombinedRays.Append(Item.ShadowRays);
+        }
+
+        if (State->CombinedRays.IsEmpty())
+        {
+            for (FReadbackState::FItem& Item : State->Items)
+            {
+                GatherEnergyFieldFromShadowResults(
+                    Item.ShadedStates,
+                    TArray<bool>(),
+                    Item.ShadowRayStateIndices,
+                    Item.Request,
+                    Item.Result);
+            }
+            CompleteOrDispatchNextBounce();
+            return;
+        }
+
+        State->Phase = FReadbackState::EPhase::ShadowVisibility;
+        if (!DispatchOcclusionReadback_RenderThread(
+            RHICmdList,
+            State->SceneResources->SceneView,
+            State->CombinedRays,
+            State->Readback))
+        {
+            FailAll();
+            return;
+        }
+        State->bPollQueued.Store(false);
+        return;
+    }
+
+    const uint32 NumBytes = sizeof(uint32) * State->CombinedRays.Num();
+    const uint32* Results = static_cast<const uint32*>(State->Readback->Lock(NumBytes));
+    if (!Results)
+    {
+        FailAll();
+        return;
+    }
+
+    for (FReadbackState::FItem& Item : State->Items)
+    {
+        TArray<bool> ShadowHits;
+        ShadowHits.Init(false, Item.ReadbackCount);
+        for (int32 Index = 0; Index < ShadowHits.Num(); ++Index)
+        {
+            ShadowHits[Index] = Results[Item.ReadbackOffset + Index] != 0;
+        }
+        GatherEnergyFieldFromShadowResults(
+            Item.ShadedStates,
+            ShadowHits,
+            Item.ShadowRayStateIndices,
+            Item.Request,
+            Item.Result);
+    }
+    State->Readback->Unlock();
+    State->Readback.Reset();
+    CompleteOrDispatchNextBounce();
+#else
+    Complete(false, FUERayTracingAudioEnergyFieldTraceResult());
+#endif
+}
+
+bool FUERayTracingAudioAsyncRayQuery::IsComplete() const
+{
+    if (bComplete.Load())
+    {
+        return true;
+    }
+
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = ReadbackState;
+    if (bReadbackSubmitted.Load() && State.IsValid() && !State->bPollQueued.Exchange(true))
+    {
+        TSharedRef<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe> Query =
+            const_cast<FUERayTracingAudioAsyncRayQuery*>(this)->AsShared();
+        ENQUEUE_RENDER_COMMAND(UERayTracingAudioPollDirectReadback)(
+            [Query](FRHICommandListImmediate& RHICmdList)
+            {
+                Query->PollHardwareReadback_RenderThread(RHICmdList);
+            });
+    }
+
+    return false;
+}
+
+bool FUERayTracingAudioAsyncRayQuery::ConsumeResult(bool& bOutSucceeded, TArray<bool>& OutHits)
+{
+    if (!bComplete.Load())
+    {
+        return false;
+    }
+
+    FScopeLock Lock(&ResultMutex);
+    if (bConsumed)
+    {
+        return false;
+    }
+
+    bConsumed = true;
+    bOutSucceeded = bSucceeded;
+    OutHits = MoveTemp(Hits);
+    return true;
+}
+
+void FUERayTracingAudioAsyncRayQuery::Complete(bool bInSucceeded, TArray<bool>&& InHits)
+{
+    {
+        FScopeLock Lock(&ResultMutex);
+        bSucceeded = bInSucceeded;
+        Hits = MoveTemp(InHits);
+    }
+    bComplete.Store(true);
+}
+
+void FUERayTracingAudioAsyncRayQuery::BeginHardwareBatchReadback_RenderThread(
+    FRHICommandListImmediate& RHICmdList,
+    TArray<FUERayTracingAudioGeometryExport>&& Geometry,
+    TArray<FUERayTracingAudioRay>&& CombinedRays,
+    TArray<TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>>&& Queries,
+    TArray<int32>&& RayCounts,
+    uint64 SceneCacheKey)
+{
+#if RHI_RAYTRACING
+    check(IsInRenderingThread());
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = MakeShared<FReadbackState, ESPMode::ThreadSafe>();
+    State->NumCombinedRays = CombinedRays.Num();
+
+    if (Queries.Num() != RayCounts.Num() || Queries.IsEmpty())
+    {
+        for (const TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>& Query : Queries)
+        {
+            if (Query.IsValid())
+            {
+                Query->Complete(false, TArray<bool>());
+            }
+        }
+        return;
+    }
+
+    State->SceneResources = GetOrBuildSceneTLAS_RenderThread(
+        RHICmdList,
+        SceneCacheKey,
+        Geometry);
+    if (!State->SceneResources.IsValid())
+    {
+        for (const TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>& Query : Queries)
+        {
+            if (Query.IsValid())
+            {
+                Query->Complete(false, TArray<bool>());
+            }
+        }
+        return;
+    }
+
+    const bool bDispatched = DispatchOcclusionReadback_RenderThread(
+        RHICmdList,
+        State->SceneResources->SceneView,
+        CombinedRays,
+        State->Readback);
+    if (!bDispatched)
+    {
+        for (const TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>& Query : Queries)
+        {
+            if (Query.IsValid())
+            {
+                Query->Complete(false, TArray<bool>());
+            }
+        }
+        return;
+    }
+
+    int32 RayOffset = 0;
+    State->Segments.Reserve(Queries.Num());
+    for (int32 QueryIndex = 0; QueryIndex < Queries.Num(); ++QueryIndex)
+    {
+        if (!Queries[QueryIndex].IsValid() || RayCounts[QueryIndex] <= 0)
+        {
+            continue;
+        }
+
+        FReadbackState::FQuerySegment& Segment = State->Segments.AddDefaulted_GetRef();
+        Segment.Query = Queries[QueryIndex];
+        Segment.RayOffset = RayOffset;
+        Segment.NumRays = RayCounts[QueryIndex];
+        RayOffset += Segment.NumRays;
+    }
+
+    if (RayOffset != State->NumCombinedRays || State->Segments.IsEmpty())
+    {
+        for (FReadbackState::FQuerySegment& Segment : State->Segments)
+        {
+            Segment.Query->Complete(false, TArray<bool>());
+        }
+        return;
+    }
+
+    for (FReadbackState::FQuerySegment& Segment : State->Segments)
+    {
+        Segment.Query->ReadbackState = State;
+        Segment.Query->bReadbackSubmitted.Store(true);
+    }
+#else
+    for (const TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>& Query : Queries)
+    {
+        if (Query.IsValid())
+        {
+            Query->Complete(false, TArray<bool>());
+        }
+    }
+#endif
+}
+
+void FUERayTracingAudioAsyncRayQuery::PollHardwareReadback_RenderThread(FRHICommandListImmediate& RHICmdList)
+{
+#if RHI_RAYTRACING
+    check(IsInRenderingThread());
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = ReadbackState;
+    if (!State.IsValid() || !State->Readback.IsValid())
+    {
+        Complete(false, TArray<bool>());
+        return;
+    }
+    if (!State->Readback->IsReady())
+    {
+        State->bPollQueued.Store(false);
+        return;
+    }
+
+    const uint32 NumBytes = sizeof(uint32) * State->NumCombinedRays;
+    const uint32* Results = static_cast<const uint32*>(State->Readback->Lock(NumBytes));
+    if (!Results)
+    {
+        for (FReadbackState::FQuerySegment& Segment : State->Segments)
+        {
+            Segment.Query->ReadbackState.Reset();
+            Segment.Query->Complete(false, TArray<bool>());
+        }
+        State->Segments.Reset();
+        return;
+    }
+
+    for (FReadbackState::FQuerySegment& Segment : State->Segments)
+    {
+        TArray<bool> OutHits;
+        OutHits.Init(false, Segment.NumRays);
+        for (int32 Index = 0; Index < Segment.NumRays; ++Index)
+        {
+            OutHits[Index] = Results[Segment.RayOffset + Index] != 0;
+        }
+        Segment.Query->ReadbackState.Reset();
+        Segment.Query->Complete(true, MoveTemp(OutHits));
+    }
+    State->Readback->Unlock();
+    State->Readback.Reset();
+    State->Segments.Reset();
+#else
+    Complete(false, TArray<bool>());
+#endif
 }
 
 bool FUERayTracingAudioRayTracingDevice::TraceDirectPath(const FUERayTracingAudioTraceRequest& Request, FUERayTracingAudioTraceHit& OutHit) const
@@ -1571,6 +2675,88 @@ bool FUERayTracingAudioRayTracingDevice::TraceDetailedRays(
     return false;
 }
 
+TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>
+FUERayTracingAudioRayTracingDevice::SubmitRays(
+    const FUERayTracingAudioTraceRequest& Request,
+    const TArray<FUERayTracingAudioRay>& Rays) const
+{
+    TArray<TArray<FUERayTracingAudioRay>> RayBatches;
+    RayBatches.Add(Rays);
+    TArray<TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>> Queries =
+        SubmitRaysBatch(Request, RayBatches);
+    return Queries.IsEmpty() ? nullptr : Queries[0];
+}
+
+TArray<TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>>
+FUERayTracingAudioRayTracingDevice::SubmitRaysBatch(
+    const FUERayTracingAudioTraceRequest& Request,
+    const TArray<TArray<FUERayTracingAudioRay>>& RayBatches) const
+{
+    TArray<TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>> Queries;
+    Queries.Reserve(RayBatches.Num());
+
+    TArray<TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>> ActiveQueries;
+    TArray<int32> RayCounts;
+    TArray<FUERayTracingAudioRay> CombinedRays;
+    for (const TArray<FUERayTracingAudioRay>& Rays : RayBatches)
+    {
+        TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe> Query =
+            MakeShared<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>();
+        Queries.Add(Query);
+
+        if (Rays.IsEmpty())
+        {
+            Query->Complete(true, TArray<bool>());
+            continue;
+        }
+
+        ActiveQueries.Add(Query);
+        RayCounts.Add(Rays.Num());
+        CombinedRays.Append(Rays);
+    }
+
+    if (ActiveQueries.IsEmpty())
+    {
+        return Queries;
+    }
+
+#if RHI_RAYTRACING
+    if (IsRayTracingAvailable() && Request.Scene && !Request.Scene->IsEmpty())
+    {
+        TArray<FUERayTracingAudioGeometryExport> Geometry = Request.Scene->GetStaticGeometry();
+        const uint64 SceneCacheKey = Request.SceneCacheKey != 0
+            ? Request.SceneCacheKey
+            : Request.Scene->GetCacheKey();
+
+        ENQUEUE_RENDER_COMMAND(UERayTracingAudioSubmitRayBatch)(
+            [Coordinator = ActiveQueries[0], Geometry = MoveTemp(Geometry), CombinedRays = MoveTemp(CombinedRays), ActiveQueries = MoveTemp(ActiveQueries), RayCounts = MoveTemp(RayCounts), SceneCacheKey](FRHICommandListImmediate& RHICmdList) mutable
+            {
+                Coordinator->BeginHardwareBatchReadback_RenderThread(
+                    RHICmdList,
+                    MoveTemp(Geometry),
+                    MoveTemp(CombinedRays),
+                    MoveTemp(ActiveQueries),
+                    MoveTemp(RayCounts),
+                    SceneCacheKey);
+            });
+
+        if (!GHasLoggedHardwareRayTracingPath)
+        {
+            UE_LOG(LogUERayTracingAudioSDK, Display, TEXT("UERayTracingAudioSDK submits direct sound visibility queries asynchronously to the render thread."));
+            GHasLoggedHardwareRayTracingPath = true;
+        }
+
+        return Queries;
+    }
+#endif
+
+    for (const TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>& Query : ActiveQueries)
+    {
+        Query->Complete(false, TArray<bool>());
+    }
+    return Queries;
+}
+
 bool FUERayTracingAudioRayTracingDevice::SimulateIndirectEnergyField(
     const FUERayTracingAudioEnergyFieldTraceRequest& Request,
     FUERayTracingAudioEnergyFieldTraceResult& OutResult) const
@@ -1584,4 +2770,105 @@ bool FUERayTracingAudioRayTracingDevice::SimulateIndirectEnergyField(
 
     OutResult = FUERayTracingAudioEnergyFieldTraceResult();
     return false;
+}
+
+TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>
+FUERayTracingAudioRayTracingDevice::SubmitIndirectEnergyField(
+    const FUERayTracingAudioEnergyFieldTraceRequest& Request) const
+{
+    TArray<FUERayTracingAudioEnergyFieldTraceRequest> Requests;
+    Requests.Add(Request);
+    TArray<TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>> Queries =
+        SubmitIndirectEnergyFieldBatch(Requests);
+    return Queries.IsEmpty() ? nullptr : Queries[0];
+}
+
+TArray<TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>>
+FUERayTracingAudioRayTracingDevice::SubmitIndirectEnergyFieldBatch(
+    const TArray<FUERayTracingAudioEnergyFieldTraceRequest>& Requests) const
+{
+    TArray<TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>> Queries;
+    Queries.Reserve(Requests.Num());
+    for (int32 RequestIndex = 0; RequestIndex < Requests.Num(); ++RequestIndex)
+    {
+        Queries.Add(MakeShared<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>());
+    }
+
+    if (Requests.IsEmpty())
+    {
+        return Queries;
+    }
+
+#if RHI_RAYTRACING
+    if (IsRayTracingAvailable())
+    {
+        const FUERayTracingAudioScene* CommonScene = nullptr;
+        uint64 CommonSceneCacheKey = 0;
+        TArray<FUERayTracingAudioEnergyFieldTraceRequest> ActiveRequests;
+        TArray<TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>> ActiveQueries;
+        ActiveRequests.Reserve(Requests.Num());
+        ActiveQueries.Reserve(Requests.Num());
+
+        for (int32 RequestIndex = 0; RequestIndex < Requests.Num(); ++RequestIndex)
+        {
+            const FUERayTracingAudioEnergyFieldTraceRequest& Request = Requests[RequestIndex];
+            if (!Request.Scene || Request.Scene->IsEmpty())
+            {
+                Queries[RequestIndex]->Complete(false, FUERayTracingAudioEnergyFieldTraceResult());
+                continue;
+            }
+
+            const uint64 SceneCacheKey = Request.SceneCacheKey != 0
+                ? Request.SceneCacheKey
+                : Request.Scene->GetCacheKey();
+            if (!CommonScene)
+            {
+                CommonScene = Request.Scene;
+                CommonSceneCacheKey = SceneCacheKey;
+            }
+            if (SceneCacheKey != CommonSceneCacheKey)
+            {
+                Queries[RequestIndex]->Complete(false, FUERayTracingAudioEnergyFieldTraceResult());
+                continue;
+            }
+
+            FUERayTracingAudioEnergyFieldTraceRequest& RequestCopy = ActiveRequests.Add_GetRef(Request);
+            RequestCopy.SceneCacheKey = SceneCacheKey;
+            RequestCopy.Scene = nullptr;
+            RequestCopy.World = nullptr;
+            RequestCopy.ListenerActor = nullptr;
+            RequestCopy.SourceActor = nullptr;
+            ActiveQueries.Add(Queries[RequestIndex]);
+        }
+
+        if (CommonScene && !ActiveQueries.IsEmpty())
+        {
+            TArray<FUERayTracingAudioGeometryExport> Geometry = CommonScene->GetStaticGeometry();
+            ENQUEUE_RENDER_COMMAND(UERayTracingAudioSubmitIndirectEnergyFieldBatch)(
+                [Coordinator = ActiveQueries[0], Geometry = MoveTemp(Geometry), ActiveRequests = MoveTemp(ActiveRequests), ActiveQueries = MoveTemp(ActiveQueries), CommonSceneCacheKey](FRHICommandListImmediate& RHICmdList) mutable
+                {
+                    Coordinator->BeginHardwareBatchReadback_RenderThread(
+                        RHICmdList,
+                        MoveTemp(Geometry),
+                        MoveTemp(ActiveRequests),
+                        MoveTemp(ActiveQueries),
+                        CommonSceneCacheKey);
+                });
+
+            if (!GHasLoggedIndirectHardwareRayTracingPath)
+            {
+                UE_LOG(LogUERayTracingAudioSDK, Display, TEXT("UERayTracingAudioSDK submits indirect sound energy-field queries asynchronously to the render thread."));
+                GHasLoggedIndirectHardwareRayTracingPath = true;
+            }
+        }
+
+        return Queries;
+    }
+#endif
+
+    for (const TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>& Query : Queries)
+    {
+        Query->Complete(false, FUERayTracingAudioEnergyFieldTraceResult());
+    }
+    return Queries;
 }

@@ -1,5 +1,15 @@
 #include "Scene/UERayTracingAudioScene.h"
 
+namespace
+{
+    uint64 GNextRayTracingAudioSceneIdentity = 0;
+}
+
+FUERayTracingAudioScene::FUERayTracingAudioScene()
+    : SceneIdentity(++GNextRayTracingAudioSceneIdentity)
+{
+}
+
 void FUERayTracingAudioScene::SetStaticGeometry(TArray<FUERayTracingAudioGeometryExport>&& InGeometry)
 {
     StaticGeometry = MoveTemp(InGeometry);
@@ -14,6 +24,11 @@ const TArray<FUERayTracingAudioGeometryExport>& FUERayTracingAudioScene::GetStat
 int32 FUERayTracingAudioScene::GetVersion() const
 {
     return Version;
+}
+
+uint64 FUERayTracingAudioScene::GetCacheKey() const
+{
+    return (SceneIdentity << 32) ^ static_cast<uint32>(Version);
 }
 
 bool FUERayTracingAudioScene::IsEmpty() const

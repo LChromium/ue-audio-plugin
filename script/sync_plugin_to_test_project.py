@@ -5,8 +5,8 @@ import shutil
 import sys
 from pathlib import Path
 
+import validation_environment
 
-DEFAULT_PROJECT_PATH = Path(r"C:\Projects\MyProject\MyProject.uproject")
 EXCLUDED_NAMES = {
     ".git",
     ".vs",
@@ -18,6 +18,7 @@ EXCLUDED_NAMES = {
     "Saved",
 }
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
+DELIVERY_DIRECTORY_NAMES = {"Config", "Content", "Resources", "Shaders", "Source"}
 
 
 def is_excluded(path: Path) -> bool:
@@ -76,7 +77,11 @@ def sync_directory(source_dir: Path, destination_dir: Path, dry_run: bool) -> No
 def sync_repo(repo_root: Path, destination_root: Path, dry_run: bool) -> None:
     ensure_directory(destination_root, dry_run)
 
-    source_entries = {entry.name: entry for entry in repo_root.iterdir() if not is_excluded(entry)}
+    source_entries = {
+        entry.name: entry
+        for entry in repo_root.iterdir()
+        if entry.name in DELIVERY_DIRECTORY_NAMES or entry.suffix.lower() == ".uplugin"
+    }
     destination_entries = {entry.name: entry for entry in destination_root.iterdir() if not is_excluded(entry)} if destination_root.exists() else {}
 
     for name, destination_entry in destination_entries.items():
@@ -93,7 +98,7 @@ def sync_repo(repo_root: Path, destination_root: Path, dry_run: bool) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--project", type=Path, default=DEFAULT_PROJECT_PATH)
+    parser.add_argument("--project", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -102,15 +107,13 @@ def main() -> int:
     args = parse_args()
     repo_root = Path(__file__).resolve().parent.parent
     plugin_file = find_plugin_file(repo_root)
-    project_path = args.project.resolve()
-
-    if project_path.suffix.lower() != ".uproject":
-        raise RuntimeError(f"Project path must point to a .uproject file: {project_path}")
-    if not project_path.exists():
-        raise RuntimeError(f"Project file does not exist: {project_path}")
+    project_path = validation_environment.resolve_project_path(args.project, repo_root, plugin_file.stem)
 
     plugin_name = plugin_file.stem
     destination_root = project_path.parent / "Plugins" / plugin_name
+    expected_plugins_root = (project_path.parent / "Plugins").resolve()
+    if destination_root.resolve().parent != expected_plugins_root:
+        raise RuntimeError(f"Refusing to sync outside the project's Plugins directory: {destination_root}")
 
     print(f"Repository root : {repo_root}")
     print(f"Project file    : {project_path}")

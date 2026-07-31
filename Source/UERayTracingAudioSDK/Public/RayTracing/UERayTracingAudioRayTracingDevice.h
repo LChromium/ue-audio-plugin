@@ -1,16 +1,20 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/WeakObjectPtr.h"
 
 class UWorld;
 class AActor;
 class UPrimitiveComponent;
 class FUERayTracingAudioScene;
+class FRHICommandListImmediate;
+struct FUERayTracingAudioGeometryExport;
 
 struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioTraceRequest
 {
     UWorld* World = nullptr;
     const FUERayTracingAudioScene* Scene = nullptr;
+    uint64 SceneCacheKey = 0;
     FVector Start = FVector::ZeroVector;
     FVector End = FVector::ZeroVector;
     const AActor* IgnoredActor = nullptr;
@@ -41,10 +45,42 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioDetailedTraceHit
     int32 GeometryIndex = INDEX_NONE;
 };
 
+class UERAYTRACINGAUDIOSDK_API FUERayTracingAudioAsyncRayQuery
+    : public TSharedFromThis<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>
+{
+public:
+    bool IsComplete() const;
+    bool ConsumeResult(bool& bOutSucceeded, TArray<bool>& OutHits);
+
+private:
+    friend class FUERayTracingAudioRayTracingDevice;
+
+    struct FReadbackState;
+
+    void Complete(bool bInSucceeded, TArray<bool>&& InHits);
+    void BeginHardwareBatchReadback_RenderThread(
+        FRHICommandListImmediate& RHICmdList,
+        TArray<FUERayTracingAudioGeometryExport>&& Geometry,
+        TArray<FUERayTracingAudioRay>&& CombinedRays,
+        TArray<TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>>&& Queries,
+        TArray<int32>&& RayCounts,
+        uint64 SceneCacheKey);
+    void PollHardwareReadback_RenderThread(FRHICommandListImmediate& RHICmdList);
+
+    FCriticalSection ResultMutex;
+    TAtomic<bool> bComplete = false;
+    TAtomic<bool> bReadbackSubmitted = false;
+    bool bSucceeded = false;
+    bool bConsumed = false;
+    TArray<bool> Hits;
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> ReadbackState;
+};
+
 struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioEnergyFieldTraceRequest
 {
     UWorld* World = nullptr;
     const FUERayTracingAudioScene* Scene = nullptr;
+    uint64 SceneCacheKey = 0;
     FVector ListenerLocation = FVector::ZeroVector;
     FVector ListenerForward = FVector::ForwardVector;
     FVector SourceLocation = FVector::ZeroVector;
@@ -63,8 +99,39 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioEnergyFieldTraceRequest
 struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioEnergyFieldTraceResult
 {
     TArray<FVector> DelayBinEnergy;
+    TArray<FVector> DelayBinDirection;
     int32 NumValidContributions = 0;
     float EarliestArrivalSeconds = 0.0f;
+};
+
+class UERAYTRACINGAUDIOSDK_API FUERayTracingAudioAsyncEnergyFieldQuery
+    : public TSharedFromThis<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>
+{
+public:
+    bool IsComplete() const;
+    bool ConsumeResult(bool& bOutSucceeded, FUERayTracingAudioEnergyFieldTraceResult& OutResult);
+
+private:
+    friend class FUERayTracingAudioRayTracingDevice;
+
+    struct FReadbackState;
+
+    void Complete(bool bInSucceeded, FUERayTracingAudioEnergyFieldTraceResult&& InResult);
+    void BeginHardwareBatchReadback_RenderThread(
+        FRHICommandListImmediate& RHICmdList,
+        TArray<FUERayTracingAudioGeometryExport>&& Geometry,
+        TArray<FUERayTracingAudioEnergyFieldTraceRequest>&& Requests,
+        TArray<TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>>&& Queries,
+        uint64 SceneCacheKey);
+    void PollHardwareReadback_RenderThread(FRHICommandListImmediate& RHICmdList);
+
+    FCriticalSection ResultMutex;
+    TAtomic<bool> bComplete = false;
+    TAtomic<bool> bReadbackSubmitted = false;
+    bool bSucceeded = false;
+    bool bConsumed = false;
+    FUERayTracingAudioEnergyFieldTraceResult Result;
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> ReadbackState;
 };
 
 class UERAYTRACINGAUDIOSDK_API FUERayTracingAudioRayTracingDevice
@@ -77,7 +144,22 @@ public:
         const FUERayTracingAudioTraceRequest& Request,
         const TArray<FUERayTracingAudioRay>& Rays,
         TArray<FUERayTracingAudioDetailedTraceHit>& OutHits) const;
+    TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe> SubmitRays(
+        const FUERayTracingAudioTraceRequest& Request,
+        const TArray<FUERayTracingAudioRay>& Rays) const;
+    // All ray groups share Request.Scene. Returned handles are index-aligned
+    // with RayBatches; the implementation merges the RHI dispatch/readback.
+    TArray<TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>> SubmitRaysBatch(
+        const FUERayTracingAudioTraceRequest& Request,
+        const TArray<TArray<FUERayTracingAudioRay>>& RayBatches) const;
     bool SimulateIndirectEnergyField(
         const FUERayTracingAudioEnergyFieldTraceRequest& Request,
         FUERayTracingAudioEnergyFieldTraceResult& OutResult) const;
+    TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe> SubmitIndirectEnergyField(
+        const FUERayTracingAudioEnergyFieldTraceRequest& Request) const;
+    // Requests must reference the same immutable scene version. Each active
+    // bounce/shadow phase is merged into one RHI dispatch and split back into
+    // index-aligned query handles.
+    TArray<TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>> SubmitIndirectEnergyFieldBatch(
+        const TArray<FUERayTracingAudioEnergyFieldTraceRequest>& Requests) const;
 };

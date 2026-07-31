@@ -5,6 +5,7 @@
 #include "Engine/StaticMesh.h"
 #include "GameFramework/Actor.h"
 #include "Managers/UERayTracingAudioManager.h"
+#include "Misc/Crc.h"
 #include "StaticMeshResources.h"
 #include "UERayTracingAudioModule.h"
 
@@ -13,6 +14,8 @@ UUERayTracingAudioGeometryComponent::UUERayTracingAudioGeometryComponent()
     , bAffectsDirectSound(true)
     , ExportMode(EUERayTracingAudioGeometryExportMode::BoundingBox)
     , Absorption(0.2f, 0.3f, 0.4f)
+    , Transmission(FVector::ZeroVector)
+    , Scattering(0.35f)
 {
     PrimaryComponentTick.bCanEverTick = false;
 }
@@ -45,13 +48,15 @@ bool UUERayTracingAudioGeometryComponent::BuildGeometryExport(FUERayTracingAudio
     OutGeometryExport.Transform = PrimitiveComponent->GetComponentTransform();
     OutGeometryExport.Bounds = PrimitiveComponent->Bounds.GetBox();
     OutGeometryExport.Extent = PrimitiveComponent->Bounds.BoxExtent;
-    OutGeometryExport.Absorption = Absorption;
+    OutGeometryExport.Absorption = Absorption.ComponentMax(FVector::ZeroVector).ComponentMin(FVector::OneVector);
+    OutGeometryExport.Transmission = Transmission.ComponentMax(FVector::ZeroVector).ComponentMin(FVector::OneVector);
+    OutGeometryExport.Scattering = FMath::Clamp(Scattering, 0.0f, 1.0f);
     OutGeometryExport.bVisibleForDirectSound = bAffectsDirectSound;
 
     if (ExportMode == EUERayTracingAudioGeometryExportMode::StaticMeshTriangles)
     {
         const UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(PrimitiveComponent);
-        const UStaticMesh* StaticMesh = StaticMeshComponent ? StaticMeshComponent->GetStaticMesh() : nullptr;
+        UStaticMesh* StaticMesh = StaticMeshComponent ? StaticMeshComponent->GetStaticMesh() : nullptr;
         const FStaticMeshRenderData* RenderData = StaticMesh ? StaticMesh->GetRenderData() : nullptr;
 
         if (RenderData && RenderData->LODResources.Num() > 0)
@@ -62,11 +67,13 @@ bool UUERayTracingAudioGeometryComponent::BuildGeometryExport(FUERayTracingAudio
                 && LODResources.VertexBuffers.PositionVertexBuffer.GetAllowCPUAccess()
                 && LODResources.IndexBuffer.GetAllowCPUAccess())
             {
-                const FTransform ComponentTransform = StaticMeshComponent->GetComponentTransform();
                 const FPositionVertexBuffer& PositionVertexBuffer = LODResources.VertexBuffers.PositionVertexBuffer;
                 const FIndexArrayView Indices = LODResources.IndexBuffer.GetArrayView();
 
                 OutGeometryExport.bUseStaticMeshTriangles = true;
+                OutGeometryExport.bVerticesAreLocalSpace = true;
+                OutGeometryExport.StaticMeshCacheKey = StaticMesh->GetPathName();
+                OutGeometryExport.StaticMeshLODIndex = 0;
                 OutGeometryExport.Vertices.Reset();
                 OutGeometryExport.Indices.Reset();
                 OutGeometryExport.Vertices.Reserve(LODResources.GetNumVertices());
@@ -75,7 +82,7 @@ bool UUERayTracingAudioGeometryComponent::BuildGeometryExport(FUERayTracingAudio
                 for (int32 VertexIndex = 0; VertexIndex < LODResources.GetNumVertices(); ++VertexIndex)
                 {
                     const FVector LocalPosition = FVector(PositionVertexBuffer.VertexPosition(VertexIndex));
-                    OutGeometryExport.Vertices.Add(ComponentTransform.TransformPosition(LocalPosition));
+                    OutGeometryExport.Vertices.Add(LocalPosition);
                 }
 
                 for (const FStaticMeshSection& Section : LODResources.Sections)
@@ -88,6 +95,15 @@ bool UUERayTracingAudioGeometryComponent::BuildGeometryExport(FUERayTracingAudio
                         OutGeometryExport.Indices.Add(Indices[BaseIndex + 1]);
                     }
                 }
+
+                uint32 ContentHash = FCrc::MemCrc32(
+                    OutGeometryExport.Vertices.GetData(),
+                    OutGeometryExport.Vertices.Num() * sizeof(FVector));
+                ContentHash = FCrc::MemCrc32(
+                    OutGeometryExport.Indices.GetData(),
+                    OutGeometryExport.Indices.Num() * sizeof(uint32),
+                    ContentHash);
+                OutGeometryExport.StaticMeshContentHash = ContentHash;
 
                 if (OutGeometryExport.HasTriangleMesh())
                 {

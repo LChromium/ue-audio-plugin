@@ -15,6 +15,7 @@ void FUERayTracingAudioSDKModule::StartupModule()
     {
         AddShaderSourceDirectoryMapping(TEXT("/Plugin/UERayTracingAudio"), FPaths::Combine(Plugin->GetBaseDir(), TEXT("Shaders")));
     }
+    UE_LOG(LogUERayTracingAudioSDK, Display, TEXT("UERayTracingAudioSDK module initialized."));
 }
 
 void FUERayTracingAudioSDKModule::ShutdownModule()
