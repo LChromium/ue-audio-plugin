@@ -154,3 +154,20 @@ TDD and final evidence (2026-07-31):
 - `uv run script\launch_runtime_validation.py` exit `0`: hardware/CPU paths `171/171`, all three data sources passed, kernels `2/2/4`, `non_finite=0`, and hard-realtime callbacks/misses/drops `169/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785466094540462400.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785466275542564200.log`.
 
 Remaining limitations: the fixed runtime is regression evidence and does not itself constitute the later moving Direct sweep gate or Human Pass. Target-device PIE listening for Direct continuity, audible air absorption, F1/F2/F5 transitions, and click/pop absence remains unperformed. Task 2 multi-PIE hardware isolation also remains open; the overall plugin is not complete.
+
+### Task 4 Fix Round 1: target generations and actual fallback ramps
+
+Implementation status: complete and automatically verified. Direct-diagnostics target selection now has a monotonically changing odd/even generation. `ProcessAudio` captures a plain component-id/generation token once, and the diagnostics writer revalidates it after writer admission and immediately before publication. Published snapshots carry the target generation, so stale callbacks cannot contaminate a reset or A/B/A target epoch and readers cannot expose a mismatched generation. The callback remains bounded: one writer CAS, no retry loop, and no lock, allocation, logging, wait, UObject access, or shared-ownership mutation.
+
+The unsupported-channel fallback now stores the broadband gain that was actually rendered. Non-empty buffers interpolate that scalar from its previous value to the snapshot target per frame, use it for output, and diagnose its actual maximum step. Zero-frame callbacks preserve pending interpolation, while first-valid-snapshot seeding remains transition-free.
+
+Fix Round 1 TDD and final evidence (2026-07-31):
+
+- Behavioral RED: ConfigurableDirect `10 passed / 2 failed`; the stale generation write became visible and the two-frame fallback applied a constant target instead of the required `0.625 -> 0.25` ramp. `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix1-RED-ConfigurableDirect.log`.
+- `uv run script\build_and_validate.py` exit `0`: callback audit `39 functions / 40 bodies / 1718 lines / 0 forbidden operations`, build `47/47`, `Result: Succeeded`, and `Build and validation complete.`
+- ConfigurableDirect NullRHI: `12/12`, `0 failed`; `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix1-FINAL-ConfigurableDirect.log`.
+- Full Audio NullRHI: `35/35`, `0 failed`; `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix1-FINAL-Audio.log`.
+- Python: `51/51`; standalone callback audit: `39 functions / 40 bodies / 1718 lines`, all five violation categories zero.
+- `uv run script\launch_runtime_validation.py` exit `0`: hardware/CPU paths `171/171`, all three data sources passed, kernels `2/2/4`, `non_finite=0`, and hard-realtime callbacks/misses/drops `176/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785468883156707700.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785469063951366500.log`.
+
+Remaining limitations are unchanged: the moving Direct sweep, target-device PIE listening, click/pop and audible-quality Human Pass, and Task 2 multi-PIE hardware isolation are still open. The overall plugin is not complete.

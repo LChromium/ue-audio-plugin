@@ -189,3 +189,17 @@ Task 4 verification evidence:
 - Fixed hardware runtime exited `0`, reported paths `171/171` and callbacks/misses/drops `169/0/0`, and left the Editor open. Logs: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785466094540462400.log` and `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785466275542564200.log`.
 
 The diagnostics prove bounded numeric observations, not audible quality. Use the open Editor in PIE and target headphones/speakers to verify recognizable content, F1/F2/F5 transitions, moving Direct continuity, and no click/pop; record that separately as Human Pass/Fail.
+
+### Task 4 Fix Round 1 behavior
+
+When selecting a component for Direct diagnostics, call `FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId`, then `ResetDirect`, and read snapshots with `ReadDirect`. Target generations are internal: an audio callback captures a plain identity/generation token and its result is discarded if the target changes before publication, including an A/B/A switch back to the same component ID. No retry, wait, lock, or callback allocation is introduced.
+
+If a callback arrives with more channels than the source prepared, the processor records one capacity miss and uses its scalar broadband fallback. That scalar now interpolates from the last gain actually rendered to the current broadband target on every non-empty buffer, and `MaxBandGainStep` reports that applied scalar step. A zero-frame callback can observe and seed the first valid snapshot but does not consume a pending transition; the first rendered buffer after the first valid snapshot remains transition-free.
+
+Fix Round 1 verification:
+
+- RED: ConfigurableDirect `10/12`, with only stale-target publication and scalar fallback continuity failing, at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix1-RED-ConfigurableDirect.log`.
+- GREEN: prescribed build `47/47`; ConfigurableDirect `12/12` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix1-FINAL-ConfigurableDirect.log`; full Audio `35/35` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix1-FINAL-Audio.log`; realtime audit `39/40/1718` with zero violations; Python `51/51`.
+- Runtime: the fixed launcher exited `0`, reported Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, data sources passed, and callbacks/misses/drops `176/0/0`. Logs: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785468883156707700.log` and `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785469063951366500.log`.
+
+The Editor is left open for the same manual PIE and target-device checks. These automated fixes do not close the moving Direct sweep, audible click/pop, Human Pass, or Task 2 multi-PIE hardware gates.

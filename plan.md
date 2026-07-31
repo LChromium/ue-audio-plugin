@@ -95,3 +95,18 @@ Next:
 1. Continue with the planned moving Direct sweep gate that consumes `FUERayTracingAudioDirectAudioStats`; this Task 4 runtime only proves no regression in the existing fixed hardware flow.
 2. In PIE on target headphones/speakers, verify recognizable Direct content, F1/F2/F5 transitions, moving occlusion/air absorption, and no click/pop. Record Human Pass/Fail separately.
 3. Retain the Task 2 multi-PIE hardware follow-up and do not claim overall completion from automated numeric evidence.
+
+### Task 4 Fix Round 1
+
+Completed:
+
+1. Made Direct-diagnostics publication target-generation-safe across reset and A/B/A component switches without adding callback retries, waits, locks, or allocation.
+2. Replaced the prepared-capacity fallback's constant target gain with an actual scalar per-frame ramp and made its diagnostic step match the gain applied to samples.
+3. Preserved zero-frame and first-valid-snapshot semantics with focused regression coverage.
+4. Recorded behavioral RED `10/12`, then final GREEN: build `47/47`, ConfigurableDirect `12/12`, Audio `35/35`, callback audit `39/40/1718` with zero violations, and Python `51/51`.
+5. Ran the exact fixed runtime flow successfully: Direct/Indirect batches `4/4`, paths `171/171`, data sources passed, callbacks/misses/drops `176/0/0`; Editor PID `41028` remains open.
+
+Next:
+
+1. Continue the planned moving Direct sweep and target-device PIE listening; record click/pop and Human Pass/Fail separately.
+2. Retain the Task 2 multi-PIE hardware isolation follow-up. The Fix Round 1 automated/runtime gates do not complete either manual acceptance item.

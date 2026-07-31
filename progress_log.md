@@ -79,3 +79,12 @@
 - Final verification passed: build `47/47`; ConfigurableDirect `11/11`; Audio `34/34`; callback audit `36 functions / 37 bodies / 1634 lines / 0 violations`; Python `50/50`.
 - Fixed hardware runtime passed with paths `171/171`, all data sources ready, and callbacks/misses/drops `169/0/0`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785466094540462400.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785466275542564200.log`.
 - The Editor is left running. Target-device PIE Human Pass, moving Direct sweep/listening, click/pop confirmation, and Task 2 multi-PIE hardware isolation remain open; automated metrics are not Human Pass.
+
+## 2026-07-31 - Configurable Direct Audio Task 4 Fix Round 1
+
+- RED reproduced both review defects: an old target token could publish into a reset/A/B/A Direct-diagnostics epoch, and the unsupported-channel fallback jumped directly to its target while reporting an interpolated band step (`10 passed / 2 failed`).
+- Added target generations with callback-captured plain tokens and publication-time revalidation. Stale writers leave the sequence readable and cannot expose counters in the current target generation.
+- Added scalar broadband history and per-frame fallback interpolation; diagnostics now measure the scalar step actually applied. Zero-frame and first-valid-snapshot behavior have dedicated regressions.
+- Final verification passed: prescribed build `47/47`; ConfigurableDirect `12/12`; Audio `35/35`; callback audit `39 functions / 40 bodies / 1718 lines / 0 violations`; Python `51/51`.
+- Fixed hardware runtime passed: Direct/Indirect batches `4/4`, paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and callbacks/misses/drops `176/0/0`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785468883156707700.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785469063951366500.log`.
+- Editor PID `41028` is left running. Moving Direct sweep, target-device Human Pass/click-pop listening, and Task 2 multi-PIE hardware isolation remain open.
