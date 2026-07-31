@@ -1,4 +1,5 @@
 #include "Audio/UERayTracingAudioAudioDiagnostics.h"
+#include "Audio/UERayTracingAudioAudioDiagnosticsInternal.h"
 
 namespace
 {
@@ -45,6 +46,7 @@ namespace
     {
         TAtomic<uint64> RequestedEpoch{ 1 };
         TAtomic<uint64> PublishedEpoch{ 0 };
+        TAtomic<uint64> PublishedTargetGeneration{ 0 };
         TAtomic<uint64> SnapshotSequence{ 0 };
         TAtomic<uint64> BufferCount{ 0 };
         TAtomic<uint64> NonSilentInputBufferCount{ 0 };
@@ -59,6 +61,7 @@ namespace
     FAtomicDataSourceStats GDataSourceStats[DataSourceCount];
     FAtomicDirectStats GDirectStats;
     TAtomic<uint64> GTargetAudioComponentId{ 0 };
+    TAtomic<uint64> GTargetGeneration{ 0 };
     TAtomic<uint64> GHardRealtimeAudioCallbackCount{ 0 };
     TAtomic<uint64> GHardRealtimeCallbackCapacityMissCount{ 0 };
     TAtomic<uint64>
@@ -171,16 +174,23 @@ namespace
 void FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(
     const uint64 AudioComponentId)
 {
+    if (GTargetAudioComponentId.Load() == AudioComponentId)
+    {
+        return;
+    }
+
+    // The validation/control path is the single target writer. Odd generation
+    // values make an in-progress identity change unreadable to the callback.
+    ++GTargetGeneration;
     GTargetAudioComponentId.Store(AudioComponentId);
+    ++GTargetGeneration;
 }
 
 bool FUERayTracingAudioAudioDiagnostics::IsEnabledFor(
     const uint64 AudioComponentId)
 {
-    const uint64 TargetAudioComponentId =
-        GTargetAudioComponentId.Load();
-    return TargetAudioComponentId != 0
-        && TargetAudioComponentId == AudioComponentId;
+    return FUERayTracingAudioAudioDiagnosticsInternal::
+        CaptureTarget(AudioComponentId).IsValid();
 }
 
 void FUERayTracingAudioAudioDiagnostics::Reset(
@@ -469,7 +479,56 @@ void FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer(
     const uint64 NonFiniteDirectSampleCount,
     const uint64 OverUnitDirectSampleCount)
 {
-    if (!IsEnabledFor(AudioComponentId))
+    FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer(
+        FUERayTracingAudioAudioDiagnosticsInternal::CaptureTarget(
+            AudioComponentId),
+        NumFrames,
+        PeakAbsoluteInput,
+        DirectRms,
+        MaxBandGainStep,
+        NonFiniteDirectSampleCount,
+        OverUnitDirectSampleCount);
+}
+
+FUERayTracingAudioDirectDiagnosticsTargetToken
+FUERayTracingAudioAudioDiagnosticsInternal::CaptureTarget(
+    const uint64 AudioComponentId)
+{
+    const uint64 GenerationBefore =
+        GTargetGeneration.Load();
+    if ((GenerationBefore & 1ULL) != 0)
+    {
+        return {};
+    }
+
+    const uint64 TargetAudioComponentId =
+        GTargetAudioComponentId.Load();
+    const uint64 GenerationAfter =
+        GTargetGeneration.Load();
+    if (GenerationBefore == 0
+        || GenerationBefore != GenerationAfter
+        || TargetAudioComponentId == 0
+        || TargetAudioComponentId != AudioComponentId)
+    {
+        return {};
+    }
+
+    FUERayTracingAudioDirectDiagnosticsTargetToken Result;
+    Result.AudioComponentId = AudioComponentId;
+    Result.Generation = GenerationAfter;
+    return Result;
+}
+
+void FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer(
+    const FUERayTracingAudioDirectDiagnosticsTargetToken Target,
+    const int32 NumFrames,
+    const float PeakAbsoluteInput,
+    const float DirectRms,
+    const float MaxBandGainStep,
+    const uint64 NonFiniteDirectSampleCount,
+    const uint64 OverUnitDirectSampleCount)
+{
+    if (!Target.IsValid())
     {
         return;
     }
@@ -486,7 +545,17 @@ void FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer(
 
     const uint64 RequestedEpoch =
         GDirectStats.RequestedEpoch.Load();
-    if (GDirectStats.PublishedEpoch.Load() != RequestedEpoch)
+    if (CaptureTarget(Target.AudioComponentId).Generation
+        != Target.Generation)
+    {
+        GDirectStats.SnapshotSequence.Store(
+            WriteSequence + 1);
+        return;
+    }
+
+    if (GDirectStats.PublishedEpoch.Load() != RequestedEpoch
+        || GDirectStats.PublishedTargetGeneration.Load()
+            != Target.Generation)
     {
         ClearCountersForWriter(GDirectStats);
     }
@@ -535,7 +604,13 @@ void FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer(
     StoreMaximum(
         GDirectStats.MaxBandGainStepFixed,
         QuantizeRms(MaxBandGainStep));
-    GDirectStats.PublishedEpoch.Store(RequestedEpoch);
+    if (CaptureTarget(Target.AudioComponentId).Generation
+        == Target.Generation)
+    {
+        GDirectStats.PublishedTargetGeneration.Store(
+            Target.Generation);
+        GDirectStats.PublishedEpoch.Store(RequestedEpoch);
+    }
     GDirectStats.SnapshotSequence.Store(WriteSequence + 1);
 }
 
@@ -546,6 +621,17 @@ FUERayTracingAudioAudioDiagnostics::ReadDirect()
         Attempt < MaximumSnapshotReadAttempts;
         ++Attempt)
     {
+        const uint64 TargetAudioComponentId =
+            GTargetAudioComponentId.Load();
+        const FUERayTracingAudioDirectDiagnosticsTargetToken
+            TargetBefore =
+                FUERayTracingAudioAudioDiagnosticsInternal::
+                    CaptureTarget(TargetAudioComponentId);
+        if (!TargetBefore.IsValid())
+        {
+            continue;
+        }
+
         const uint64 RequestedEpochBefore =
             GDirectStats.RequestedEpoch.Load();
         const uint64 SequenceBefore =
@@ -557,6 +643,8 @@ FUERayTracingAudioAudioDiagnostics::ReadDirect()
 
         const uint64 PublishedEpoch =
             GDirectStats.PublishedEpoch.Load();
+        const uint64 PublishedTargetGeneration =
+            GDirectStats.PublishedTargetGeneration.Load();
         FUERayTracingAudioDirectAudioStats Result;
         Result.BufferCount = GDirectStats.BufferCount.Load();
         Result.NonSilentInputBufferCount =
@@ -576,10 +664,17 @@ FUERayTracingAudioAudioDiagnostics::ReadDirect()
             GDirectStats.SnapshotSequence.Load();
         const uint64 RequestedEpochAfter =
             GDirectStats.RequestedEpoch.Load();
+        const FUERayTracingAudioDirectDiagnosticsTargetToken
+            TargetAfter =
+                FUERayTracingAudioAudioDiagnosticsInternal::
+                    CaptureTarget(TargetBefore.AudioComponentId);
         if (SequenceBefore != SequenceAfter
             || (SequenceAfter & 1ULL) != 0
             || RequestedEpochBefore != RequestedEpochAfter
-            || PublishedEpoch != RequestedEpochAfter)
+            || PublishedEpoch != RequestedEpochAfter
+            || !TargetAfter.IsValid()
+            || TargetBefore.Generation != TargetAfter.Generation
+            || PublishedTargetGeneration != TargetAfter.Generation)
         {
             continue;
         }

@@ -18,6 +18,13 @@
 #include "Settings/UERayTracingAudioProjectSettings.h"
 #include "UObject/UObjectGlobals.h"
 
+#if __has_include("Audio/UERayTracingAudioAudioDiagnosticsInternal.h")
+#include "Audio/UERayTracingAudioAudioDiagnosticsInternal.h"
+#define UE_RAY_TRACING_AUDIO_HAS_DIRECT_TARGET_GENERATION 1
+#else
+#define UE_RAY_TRACING_AUDIO_HAS_DIRECT_TARGET_GENERATION 0
+#endif
+
 #include <limits>
 #include <type_traits>
 
@@ -122,6 +129,75 @@ namespace
             return Observation;
         }
     }
+
+    struct FDirectTargetSwitchObservation
+    {
+        bool bApiPresent = false;
+        uint64 OldGeneration = 0;
+        uint64 CurrentGeneration = 0;
+        uint64 StaleBufferCount = 0;
+        uint64 CurrentBufferCount = 0;
+        uint64 CurrentDirectPresentBufferCount = 0;
+    };
+
+    FDirectTargetSwitchObservation ObserveDirectTargetSwitch()
+    {
+        FDirectTargetSwitchObservation Observation;
+#if UE_RAY_TRACING_AUDIO_HAS_DIRECT_TARGET_GENERATION
+            constexpr uint64 OldAudioComponentId = 0xA11D1A6ULL;
+            constexpr uint64 NewAudioComponentId = 0xB22D1A6ULL;
+            FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(
+                OldAudioComponentId);
+            FUERayTracingAudioAudioDiagnostics::ResetDirect();
+            const FUERayTracingAudioDirectDiagnosticsTargetToken OldTarget =
+                FUERayTracingAudioAudioDiagnosticsInternal::CaptureTarget(
+                    OldAudioComponentId);
+            Observation.OldGeneration = OldTarget.Generation;
+
+            FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(
+                NewAudioComponentId);
+            FUERayTracingAudioAudioDiagnostics::ResetDirect();
+            FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(
+                OldAudioComponentId);
+            FUERayTracingAudioAudioDiagnostics::ResetDirect();
+            const FUERayTracingAudioDirectDiagnosticsTargetToken CurrentTarget =
+                FUERayTracingAudioAudioDiagnosticsInternal::CaptureTarget(
+                    OldAudioComponentId);
+            Observation.CurrentGeneration =
+                CurrentTarget.Generation;
+
+            FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer(
+                OldTarget,
+                32,
+                0.5f,
+                0.25f,
+                0.125f,
+                0,
+                0);
+            Observation.StaleBufferCount =
+                FUERayTracingAudioAudioDiagnostics::ReadDirect().BufferCount;
+
+            FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer(
+                CurrentTarget,
+                32,
+                0.5f,
+                0.25f,
+                0.125f,
+                0,
+                0);
+            const auto CurrentStats =
+                FUERayTracingAudioAudioDiagnostics::ReadDirect();
+            FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(0);
+            FUERayTracingAudioAudioDiagnostics::ResetDirect();
+
+            Observation.bApiPresent = true;
+            Observation.CurrentBufferCount =
+                CurrentStats.BufferCount;
+            Observation.CurrentDirectPresentBufferCount =
+                CurrentStats.DirectPresentInputBufferCount;
+#endif
+        return Observation;
+    }
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -218,6 +294,49 @@ bool FUERayTracingAudioDirectDiagnosticsEpochTest::RunTest(
             Observation.MaxBandGainStep,
             0.004f,
             1.0e-6f));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioDirectTargetGenerationTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.DirectTargetGeneration",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioDirectTargetGenerationTest::RunTest(
+    const FString&)
+{
+    const FDirectTargetSwitchObservation Observation =
+        ObserveDirectTargetSwitch();
+    TestTrue(
+        TEXT("Direct diagnostics expose target-generation capture and publication"),
+        Observation.bApiPresent);
+    if (!Observation.bApiPresent)
+    {
+        return false;
+    }
+
+    TestTrue(
+        TEXT("The old target captures a nonzero generation"),
+        Observation.OldGeneration != 0);
+    TestTrue(
+        TEXT("The current ABA target captures a nonzero generation"),
+        Observation.CurrentGeneration != 0);
+    TestNotEqual(
+        TEXT("Switching away and back advances the diagnostic generation"),
+        Observation.OldGeneration,
+        Observation.CurrentGeneration);
+    TestEqual(
+        TEXT("A stale old-target writer cannot initialize the new epoch"),
+        Observation.StaleBufferCount,
+        0ULL);
+    TestEqual(
+        TEXT("The current target initializes exactly one Direct buffer"),
+        Observation.CurrentBufferCount,
+        1ULL);
+    TestEqual(
+        TEXT("The current target's Direct-present buffer is retained"),
+        Observation.CurrentDirectPresentBufferCount,
+        1ULL);
     return true;
 }
 
@@ -735,15 +854,10 @@ bool FUERayTracingAudioPreparedCapacityTest::RunTest(
     Snapshot.DirectResult.AirAbsorption =
         FVector(0.05f, 0.1f, 0.2f);
     Snapshot.IndirectMix = 0.0f;
-    SnapshotRegistry->Publish(
-        AudioComponentId,
-        MoveTemp(Snapshot));
 
     FAudioPluginSourceOutputData OutputData;
     OutputData.AudioBuffer =
-        { 1.0f, -1.0f, 0.5f, -0.5f };
-    const Audio::FAlignedFloatBuffer InputCopy =
-        OutputData.AudioBuffer;
+        { 1.0f, -1.0f, 1.0f, -1.0f };
     FAudioPluginSourceInputData InputData;
     InputData.SourceId = 0;
     InputData.AudioComponentId = AudioComponentId;
@@ -752,30 +866,122 @@ bool FUERayTracingAudioPreparedCapacityTest::RunTest(
     InputData.ListenerOrientation = FQuat::Identity;
     InputData.SpatializationParams = nullptr;
 
-    FUERayTracingAudioAudioDiagnostics::ResetHardRealtime();
+    FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(
+        AudioComponentId);
     Plugin.ProcessAudio(InputData, OutputData);
-    const FUERayTracingAudioHardRealtimeStats Stats =
-        FUERayTracingAudioAudioDiagnostics::ReadHardRealtime();
-    TestEqual(
-        TEXT("An unsupported callback channel count records one capacity miss"),
-        Stats.CallbackCapacityMissCount,
-        1ULL);
     for (int32 SampleIndex = 0;
         SampleIndex < OutputData.AudioBuffer.Num();
         ++SampleIndex)
     {
         TestTrue(
             *FString::Printf(
-                TEXT("Capacity fallback sample %d uses scalar broadband gain"),
+                TEXT("Fallback begins at unity before a valid snapshot, sample %d"),
+                SampleIndex),
+            FMath::IsNearlyEqual(
+                FMath::Abs(OutputData.AudioBuffer[SampleIndex]),
+                1.0f,
+                1.0e-6f));
+    }
+
+    SnapshotRegistry->Publish(
+        AudioComponentId,
+        MoveTemp(Snapshot));
+    OutputData.AudioBuffer.Reset();
+    InputData.AudioBuffer = &OutputData.AudioBuffer;
+    Plugin.ProcessAudio(InputData, OutputData);
+
+    OutputData.AudioBuffer =
+        { 1.0f, -1.0f, 0.5f, -0.5f };
+    const Audio::FAlignedFloatBuffer InputCopy =
+        OutputData.AudioBuffer;
+    FUERayTracingAudioAudioDiagnostics::ResetDirect();
+    FUERayTracingAudioAudioDiagnostics::ResetHardRealtime();
+    Plugin.ProcessAudio(InputData, OutputData);
+    const FUERayTracingAudioHardRealtimeStats HardRealtimeStats =
+        FUERayTracingAudioAudioDiagnostics::ReadHardRealtime();
+    const FUERayTracingAudioDirectAudioStats DirectStats =
+        FUERayTracingAudioAudioDiagnostics::ReadDirect();
+    TestEqual(
+        TEXT("An unsupported callback channel count records one capacity miss"),
+        HardRealtimeStats.CallbackCapacityMissCount,
+        1ULL);
+    for (int32 SampleIndex = 0;
+        SampleIndex < OutputData.AudioBuffer.Num();
+        ++SampleIndex)
+    {
+        const int32 FrameIndex = SampleIndex / 2;
+        const float ExpectedGain =
+            FrameIndex == 0 ? 0.625f : 0.25f;
+        TestTrue(
+            *FString::Printf(
+                TEXT("Capacity fallback sample %d uses the scalar broadband ramp"),
                 SampleIndex),
             FMath::IsNearlyEqual(
                 OutputData.AudioBuffer[SampleIndex],
-                InputCopy[SampleIndex] * 0.25f,
+                InputCopy[SampleIndex] * ExpectedGain,
                 1.0e-6f));
     }
+    TestTrue(
+        TEXT("Fallback diagnostics report the actual per-frame scalar gain step"),
+        FMath::IsNearlyEqual(
+            DirectStats.MaxBandGainStep,
+            0.375f,
+            1.0e-6f));
+
+    Plugin.OnReleaseSource(0);
+    Plugin.OnInitSource(0, NAME_None, 1, nullptr);
+    constexpr uint64 FirstSnapshotAudioComponentId =
+        0xF1A57CA9ULL;
+    FUERayTracingAudioSimulationSnapshot FirstSnapshot;
+    FirstSnapshot.DirectResult.bHasListener = true;
+    FirstSnapshot.DirectResult.DistanceAttenuation = 0.5f;
+    FirstSnapshot.DirectResult.Occlusion = 0.5f;
+    FirstSnapshot.DirectResult.AirAbsorption =
+        FVector(0.05f, 0.1f, 0.2f);
+    FirstSnapshot.IndirectMix = 0.0f;
+    SnapshotRegistry->Publish(
+        FirstSnapshotAudioComponentId,
+        MoveTemp(FirstSnapshot));
+    InputData.AudioComponentId =
+        FirstSnapshotAudioComponentId;
+    OutputData.AudioBuffer.Reset();
+    FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(
+        FirstSnapshotAudioComponentId);
+    FUERayTracingAudioAudioDiagnostics::ResetDirect();
+    Plugin.ProcessAudio(InputData, OutputData);
+
+    OutputData.AudioBuffer =
+        { 1.0f, -1.0f, 0.5f, -0.5f };
+    const Audio::FAlignedFloatBuffer FirstSnapshotInputCopy =
+        OutputData.AudioBuffer;
+    FUERayTracingAudioAudioDiagnostics::ResetDirect();
+    Plugin.ProcessAudio(InputData, OutputData);
+    const FUERayTracingAudioDirectAudioStats FirstSnapshotStats =
+        FUERayTracingAudioAudioDiagnostics::ReadDirect();
+    for (int32 SampleIndex = 0;
+        SampleIndex < OutputData.AudioBuffer.Num();
+        ++SampleIndex)
+    {
+        TestTrue(
+            *FString::Printf(
+                TEXT("A zero-frame first snapshot seeds fallback sample %d at its target"),
+                SampleIndex),
+            FMath::IsNearlyEqual(
+                OutputData.AudioBuffer[SampleIndex],
+                FirstSnapshotInputCopy[SampleIndex] * 0.25f,
+                1.0e-6f));
+    }
+    TestEqual(
+        TEXT("A seeded first fallback snapshot has no synthetic gain step"),
+        FirstSnapshotStats.MaxBandGainStep,
+        0.0f);
     Plugin.Shutdown();
+    FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(0);
+    FUERayTracingAudioAudioDiagnostics::ResetDirect();
     FUERayTracingAudioAudioDiagnostics::ResetHardRealtime();
     return true;
 }
 
 #endif
+
+#undef UE_RAY_TRACING_AUDIO_HAS_DIRECT_TARGET_GENERATION

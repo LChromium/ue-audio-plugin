@@ -1,6 +1,7 @@
 #include "Audio/UERayTracingAudioOcclusion.h"
 
 #include "Audio/UERayTracingAudioAudioDiagnostics.h"
+#include "Audio/UERayTracingAudioAudioDiagnosticsInternal.h"
 #include "Audio/UERayTracingAudioSimulationSnapshot.h"
 #include "Audio/UERayTracingAudioIndirectAudioBridge.h"
 #include "Managers/UERayTracingAudioManager.h"
@@ -21,6 +22,7 @@ namespace
         Source.bHasAppliedSnapshotGain = false;
         Source.bHasRenderedAudio = false;
         Source.PreviousBandGains = FVector::OneVector;
+        Source.PreviousBroadbandGain = 1.0f;
         Source.NumChannels = 0;
         Source.SampleRate = SampleRate;
         Source.ActiveAudioComponentId = 0;
@@ -265,6 +267,8 @@ void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInp
             {
                 SourceState.PreviousBandGains =
                     TargetBandGains;
+                SourceState.PreviousBroadbandGain =
+                    TargetBroadbandGain;
             }
             SourceState.bHasAppliedSnapshotGain = true;
         }
@@ -310,11 +314,17 @@ void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInp
     uint64 NonFiniteOutputSampleCount = 0;
     uint64 OverUnitDirectSampleCount = 0;
     uint64 OverUnitOutputSampleCount = 0;
+    const FUERayTracingAudioDirectDiagnosticsTargetToken
+        DirectDiagnosticsTarget =
+            FUERayTracingAudioAudioDiagnosticsInternal::
+                CaptureTarget(
+                    InputData.AudioComponentId);
     const bool bRecordAudioDiagnostics =
-        FUERayTracingAudioAudioDiagnostics::IsEnabledFor(
-            InputData.AudioComponentId);
+        DirectDiagnosticsTarget.IsValid();
     FVector PreviousDiagnosticBandGains =
         SourceState.PreviousBandGains;
+    float PreviousDiagnosticBroadbandGain =
+        SourceState.PreviousBroadbandGain;
     for (int32 FrameIndex = 0; FrameIndex < NumFrames; ++FrameIndex)
     {
         const int32 SampleIndex = FrameIndex * NumChannels;
@@ -323,18 +333,35 @@ void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInp
             SourceState.PreviousBandGains,
             TargetBandGains,
             Alpha);
+        const float BroadbandGain = FMath::Lerp(
+            SourceState.PreviousBroadbandGain,
+            TargetBroadbandGain,
+            Alpha);
         if (bRecordAudioDiagnostics)
         {
-            const FVector BandGainStep =
-                BandGains - PreviousDiagnosticBandGains;
-            MaxBandGainStep = FMath::Max(
-                MaxBandGainStep,
-                FMath::Max(
-                    FMath::Abs(BandGainStep.X),
+            if (bCanProcessThreeBand)
+            {
+                const FVector BandGainStep =
+                    BandGains - PreviousDiagnosticBandGains;
+                MaxBandGainStep = FMath::Max(
+                    MaxBandGainStep,
                     FMath::Max(
-                        FMath::Abs(BandGainStep.Y),
-                        FMath::Abs(BandGainStep.Z))));
-            PreviousDiagnosticBandGains = BandGains;
+                        FMath::Abs(BandGainStep.X),
+                        FMath::Max(
+                            FMath::Abs(BandGainStep.Y),
+                            FMath::Abs(BandGainStep.Z))));
+                PreviousDiagnosticBandGains = BandGains;
+            }
+            else
+            {
+                MaxBandGainStep = FMath::Max(
+                    MaxBandGainStep,
+                    FMath::Abs(
+                        BroadbandGain
+                        - PreviousDiagnosticBroadbandGain));
+                PreviousDiagnosticBroadbandGain =
+                    BroadbandGain;
+            }
         }
         float MonoInput = 0.0f;
         for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ++ChannelIndex)
@@ -412,7 +439,7 @@ void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInp
                     ChannelIndex,
                     BandGains)
                 : (*InputData.AudioBuffer)[SampleIndex + ChannelIndex]
-                    * TargetBroadbandGain;
+                    * BroadbandGain;
             if (bRecordAudioDiagnostics)
             {
                 if (FMath::IsFinite(DirectSample))
@@ -468,8 +495,8 @@ void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInp
                 DirectSquareSum
                 / static_cast<double>(FiniteDirectSampleCount)))
             : 0.0f;
-        FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer(
-            InputData.AudioComponentId,
+        FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer(
+            DirectDiagnosticsTarget,
             NumFrames,
             PeakAbsoluteInput,
             DirectRms,
@@ -508,6 +535,8 @@ void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInp
     {
         SourceState.PreviousBandGains =
             TargetBandGains;
+        SourceState.PreviousBroadbandGain =
+            TargetBroadbandGain;
         SourceState.bHasRenderedAudio = true;
     }
 }

@@ -17,6 +17,7 @@ struct FUERayTracingAudioOcclusionSource
     bool bHasAppliedSnapshotGain = false;
     bool bHasRenderedAudio = false;
     FVector PreviousBandGains = FVector::OneVector;
+    float PreviousBroadbandGain = 1.0f;
     int32 NumChannels = 0;
     int32 SampleRate = 48000;
     uint64 ActiveAudioComponentId = 0;

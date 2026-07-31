@@ -171,7 +171,19 @@ AUDIO_CALLBACK_SPECS = (
     ),
     AuditSpec(
         "Source/UERayTracingAudio/Private/Audio/UERayTracingAudioAudioDiagnostics.cpp",
+        "FUERayTracingAudioAudioDiagnostics::IsEnabledFor",
+    ),
+    AuditSpec(
+        "Source/UERayTracingAudio/Private/Audio/UERayTracingAudioAudioDiagnostics.cpp",
         "FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer",
+    ),
+    AuditSpec(
+        "Source/UERayTracingAudio/Private/Audio/UERayTracingAudioAudioDiagnostics.cpp",
+        "FUERayTracingAudioAudioDiagnosticsInternal::CaptureTarget",
+    ),
+    AuditSpec(
+        "Source/UERayTracingAudio/Private/Audio/UERayTracingAudioAudioDiagnostics.cpp",
+        "FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer",
     ),
     AuditSpec(
         "Source/UERayTracingAudio/Private/Audio/UERayTracingAudioAudioDiagnostics.cpp",

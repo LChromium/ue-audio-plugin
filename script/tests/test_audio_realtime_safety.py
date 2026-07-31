@@ -13,6 +13,24 @@ import validate_audio_realtime_safety
 
 
 class AudioRealtimeSafetyAuditTests(unittest.TestCase):
+    def test_audits_direct_target_generation_helpers(self) -> None:
+        audited_names = {
+            spec.qualified_name
+            for spec in validate_audio_realtime_safety.AUDIO_CALLBACK_SPECS
+        }
+        self.assertIn(
+            "FUERayTracingAudioAudioDiagnostics::IsEnabledFor",
+            audited_names,
+        )
+        self.assertIn(
+            "FUERayTracingAudioAudioDiagnosticsInternal::CaptureTarget",
+            audited_names,
+        )
+        self.assertIn(
+            "FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer",
+            audited_names,
+        )
+
     def test_current_audio_callback_chain_has_no_forbidden_operations(self) -> None:
         report = validate_audio_realtime_safety.audit_repo(REPO_ROOT)
         self.assertEqual(report.violations, ())
