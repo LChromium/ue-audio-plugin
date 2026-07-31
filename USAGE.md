@@ -279,3 +279,42 @@ Fix Round 1 verification:
 - Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785476834237184600.log`.
 
 Editor PID `42300` is left initialized. The automatic proof is stricter, but target-device recovery/click-pop still requires Human Pass.
+
+### Task 7: Editor validation distance and air-absorption controls
+
+Open **Window -> UE Ray Tracing Audio Bake**. The validation fixture section now contains:
+
+```text
+Validation Distance: Clear 1 m | Clear 2 m | Clear 4 m
+Validation Air Absorption: Off | Default | Stress
+```
+
+The distance buttons select the Clear preset and move only the Source actor tagged `VRTA_EditorValidationScene`. The air buttons apply only to that same tagged fixture Source:
+
+- Off: `(0, 0, 0)`
+- Default: `(0.0002, 0.0006, 0.0012)`
+- Stress: `(0.01, 0.04, 0.12)`
+
+The panel shows the effective distance and vector beside `Validation fixture only`. All fixture-mutation controls are disabled while a Bake job or offline comparison render is active. Generic selected Sources remain available for the normal Bake workflow, but these validation controls never select, move, configure, or destroy an untagged Source.
+
+Changing the fixture reflection environment removes stale tagged acoustic Geometry actors that do not belong to the selected definition set. It preserves tagged Source/Listener/lights/camera actors, every untagged actor, and normal component teardown/Editor transactions.
+
+The fixed launcher accepts:
+
+```powershell
+uv run script\launch_runtime_validation.py `
+  --editor-distance-cm 400 `
+  --editor-air-absorption-profile stress
+```
+
+Allowed values are `100`, `200`, or `400` and `off`, `default`, or `stress`. The resulting Unreal parameters are added only to the Editor command; the preceding Game validation command remains independent.
+
+The fixed Editor gate requires one marker containing the effective fixture fields:
+
+```text
+UERayTracingAudioEditor validation scene ready: ... source_listener_distance_cm=400.00 air_absorption_profile=stress air_absorption_per_meter=(0.010000,0.040000,0.120000).
+```
+
+It rejects missing, malformed, duplicate, or request-mismatched Direct preset, reflection environment, distance, profile, or vector evidence. This is configuration evidence only: it does not claim an audible distance/air result, an OpenSpace/NearWall/Enclosed R3 comparison, or Human Pass.
+
+Task 7 verification used the exact default launcher and left Editor PID `34840` open with `200 cm / default / (0.0002,0.0006,0.0012)`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785478813724452300.log`. Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785478994289043000.log`.

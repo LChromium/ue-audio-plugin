@@ -172,3 +172,19 @@ Next:
 
 1. Continue Task 7 from the approved plan.
 2. Record target-device Human Pass/Fail; retain multi-PIE and Task 4 Minor follow-ups.
+
+### Task 7: Editor Direct fixture controls
+
+Completed:
+
+1. Added transient Editor-World RED/GREEN coverage for `100 / 200 / 400 cm`, Off/Default/Stress, tagged Source reuse, stale tagged Geometry destruction, tagged non-geometry preservation, and untagged Source/Geometry preservation.
+2. Added transactional tagged-only fixture mutation and exact air-profile values. Environment switches now remove obsolete tagged Geometry actors rather than only changing `GeometryCount`.
+3. Added the required Slate distance and air rows, effective fixture summary, `Validation fixture only`, and Bake/offline-render disable state.
+4. Added Editor-only CLI plumbing and an exactly-one strict scene-ready parser that validates Direct preset, fixed enclosed environment, effective distance, profile, and vector.
+5. Passed build `48/48`, focused Editor `1/1`, full Automation `54/54`, focused Python `2/2`, full Python `64/64`, audit `39/40/1718`, and the exact Game/Editor runtime launcher. Editor PID `34840` remains open at `200 cm / default`.
+
+Next:
+
+1. Execute Task 8 documentation, Shipping isolation, and final verification from the approved plan.
+2. Record target-device Human Pass/Fail for distance, air absorption, moving Direct recovery, click/pop, and R3 reflection environments.
+3. Retain Task 2 multi-PIE hardware isolation and the ledgered Task 4 Minors as explicit follow-ups.

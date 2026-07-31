@@ -242,3 +242,25 @@ Fix Round 1 evidence:
 - Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785476653651929300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785476834237184600.log`.
 
 Editor PID `42300` is responding and left open. Human Pass, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open; the overall plugin is not complete.
+
+### Task 7: Editor Direct fixture controls
+
+Implementation status: complete and automatically verified.
+
+The Editor validation fixture now owns exact `100 / 200 / 400 cm` Clear distances and three per-Source air-absorption profiles: Off `(0,0,0)`, Default `(0.0002,0.0006,0.0012)`, and Stress `(0.01,0.04,0.12)`. Repeated use moves the existing tagged Source instead of selecting a generic Source. Environment changes enumerate tagged acoustic Geometry, collect stale actors, and destroy them through normal teardown while preserving tagged non-geometry fixture actors and all untagged actors. Persistent Source/profile/light changes and geometry deletion participate in Editor transactions and dirty the level.
+
+The Bake panel exposes the two required rows, displays effective distance/vector plus `Validation fixture only`, and disables fixture mutation throughout Bake and offline rendering. Existing public Source setters are used for runtime data-source and baked-asset changes.
+
+The launcher adds the two options only to Editor. The Editor scene-ready marker carries distance, profile, and exact vector. Fixed validation requires one and only one marker-bearing line, full-matches it, and validates Direct preset, enclosed reflection environment, requested distance/profile, and the profile's exact vector. Automatic marker evidence is not an R3 environment comparison or Human Pass.
+
+Task 7 evidence:
+
+- C++ compile RED: missing air-profile interface (`C2653/C2065`).
+- Behavioral RED: Off and Stress retained Default values, and OpenSpace retained seven tagged Enclosed geometry actors.
+- Python RED: unrecognized CLI options and absent strict parser.
+- GREEN: prescribed build `48/48`; focused Editor Automation `1/1`; full plugin Automation `54/54`; focused Python `2/2`; full Python `64/64`; callback audit `39/40/1718`, zero forbidden operations.
+- Exact launcher exit `0`: baseline `171/171`; Direct sweep `206` generations, no dropout, restored/hardware; data sources passed; hard realtime callbacks/misses/drops `1584/0/0`.
+- Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785478813724452300.log`.
+- Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785478994289043000.log`; parsed fixture `200 cm`, `default`, `(0.0002,0.0006,0.0012)`.
+
+Editor PID `34840` is responding and left open. Target-device distance/air/moving-occlusion listening, R3 OpenSpace/NearWall/Enclosed listening, Human Pass, Task 2 multi-PIE hardware isolation, and Task 4 Minors remain open; the overall plugin is not complete.

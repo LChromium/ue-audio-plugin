@@ -126,3 +126,12 @@
 - Ordered lines: Direct `1118`, Bake `1126`, hard realtime `1130`, final data source `1132`.
 - Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785476653651929300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785476834237184600.log`; Editor PID `42300` is responding.
 - Human Pass, multi-PIE hardware isolation, and Task 4 Minors remain open.
+
+## 2026-07-31 - Configurable Direct Audio Task 7
+
+- C++ RED first failed on the missing air-profile seam; behavioral RED then showed Off/Stress unchanged and seven stale Enclosed geometry actors surviving OpenSpace. Python RED showed missing CLI/parser seams.
+- Added exact 1/2/4 m and Off/Default/Stress tagged-fixture controls, transactional stale tagged Geometry deletion, Slate controls/disable state, and effective fixture telemetry. Untagged Source/Geometry and tagged non-geometry actors are preserved.
+- Added Editor-only CLI parameters and an exactly-one strict scene marker parser with Direct preset, enclosed environment, distance, profile, and vector validation.
+- Final verification passed: build `48/48`; focused Editor `1/1`; full Automation `54/54`; focused/full Python `2/2` and `64/64`; callback audit `39/40/1718` with zero violations.
+- Exact runtime passed: Direct `206` generations; data sources passed; hard realtime `1584/0/0`. Game `UERayTracingAudioValidation-Game-1785478813724452300.log`; Editor `UERayTracingAudioValidation-Editor-1785478994289043000.log`.
+- Editor PID `34840` is open at `200 cm / default / (0.0002,0.0006,0.0012)`. Human Pass, R3 listening, multi-PIE hardware isolation, and Task 4 Minors remain open.
