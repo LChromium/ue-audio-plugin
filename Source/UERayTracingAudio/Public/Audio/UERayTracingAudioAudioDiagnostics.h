@@ -36,6 +36,17 @@ struct FUERayTracingAudioHardRealtimeStats
     uint64 ConvolutionPrepareCapacityDropCount = 0;
 };
 
+struct FUERayTracingAudioDirectAudioStats
+{
+    uint64 BufferCount = 0;
+    uint64 NonSilentInputBufferCount = 0;
+    uint64 DirectPresentInputBufferCount = 0;
+    uint64 MaxConsecutiveSilentDirectBufferCount = 0;
+    uint64 NonFiniteDirectSampleCount = 0;
+    uint64 OverUnitDirectSampleCount = 0;
+    float MaxBandGainStep = 0.0f;
+};
+
 // Lock-free counters written once per audio buffer. They intentionally avoid
 // UObject access, logging, allocation, or console-variable mutation from the
 // audio render thread. Reset publishes a new epoch; Read returns an empty
@@ -68,6 +79,17 @@ public:
         uint64 NonFiniteOutputSampleCount);
     static FUERayTracingAudioDataSourceAudioStats Read(
         EUERayTracingAudioRuntimeDataSource DataSource);
+
+    static void ResetDirect();
+    static void RecordDirectBuffer(
+        uint64 AudioComponentId,
+        int32 NumFrames,
+        float PeakAbsoluteInput,
+        float DirectRms,
+        float MaxBandGainStep,
+        uint64 NonFiniteDirectSampleCount,
+        uint64 OverUnitDirectSampleCount);
+    static FUERayTracingAudioDirectAudioStats ReadDirect();
 
     // These counters cover dynamic resource pressure while the separate
     // pre-build source audit rejects locks, heap operations, shared ownership,

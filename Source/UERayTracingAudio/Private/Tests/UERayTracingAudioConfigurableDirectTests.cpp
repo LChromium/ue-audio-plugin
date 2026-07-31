@@ -19,6 +19,207 @@
 #include "UObject/UObjectGlobals.h"
 
 #include <limits>
+#include <type_traits>
+
+namespace
+{
+    template <typename DiagnosticsType, typename = void>
+    struct THasDirectAudioDiagnostics : std::false_type
+    {
+    };
+
+    template <typename DiagnosticsType>
+    struct THasDirectAudioDiagnostics<
+        DiagnosticsType,
+        std::void_t<
+            decltype(DiagnosticsType::ResetDirect()),
+            decltype(DiagnosticsType::RecordDirectBuffer(
+                uint64{},
+                int32{},
+                float{},
+                float{},
+                float{},
+                uint64{},
+                uint64{})),
+            decltype(DiagnosticsType::ReadDirect())>>
+        : std::true_type
+    {
+    };
+
+    struct FDirectDiagnosticsEpochObservation
+    {
+        bool bApiPresent = false;
+        uint64 ResetBufferCount = 0;
+        float ResetMaxBandGainStep = 0.0f;
+        uint64 BufferCount = 0;
+        uint64 NonSilentInputBufferCount = 0;
+        uint64 DirectPresentInputBufferCount = 0;
+        uint64 MaxConsecutiveSilentDirectBufferCount = 0;
+        uint64 NonFiniteDirectSampleCount = 0;
+        uint64 OverUnitDirectSampleCount = 0;
+        float MaxBandGainStep = 0.0f;
+    };
+
+    template <typename DiagnosticsType>
+    FDirectDiagnosticsEpochObservation ObserveDirectDiagnosticsEpoch()
+    {
+        FDirectDiagnosticsEpochObservation Observation;
+        if constexpr (!THasDirectAudioDiagnostics<DiagnosticsType>::value)
+        {
+            return Observation;
+        }
+        else
+        {
+            constexpr uint64 AudioComponentId = 0xD1AEC7ULL;
+            DiagnosticsType::SetTargetAudioComponentId(AudioComponentId);
+            DiagnosticsType::ResetDirect();
+            DiagnosticsType::RecordDirectBuffer(
+                AudioComponentId,
+                32,
+                0.5f,
+                0.25f,
+                0.02f,
+                0,
+                0);
+            DiagnosticsType::ResetDirect();
+            const auto ResetStats = DiagnosticsType::ReadDirect();
+            Observation.ResetBufferCount = ResetStats.BufferCount;
+            Observation.ResetMaxBandGainStep =
+                ResetStats.MaxBandGainStep;
+
+            DiagnosticsType::RecordDirectBuffer(
+                AudioComponentId,
+                64,
+                0.5f,
+                0.0f,
+                0.004f,
+                1,
+                2);
+            DiagnosticsType::RecordDirectBuffer(
+                AudioComponentId,
+                64,
+                0.5f,
+                0.25f,
+                0.002f,
+                0,
+                0);
+            const auto Stats = DiagnosticsType::ReadDirect();
+            DiagnosticsType::SetTargetAudioComponentId(0);
+
+            Observation.bApiPresent = true;
+            Observation.BufferCount = Stats.BufferCount;
+            Observation.NonSilentInputBufferCount =
+                Stats.NonSilentInputBufferCount;
+            Observation.DirectPresentInputBufferCount =
+                Stats.DirectPresentInputBufferCount;
+            Observation.MaxConsecutiveSilentDirectBufferCount =
+                Stats.MaxConsecutiveSilentDirectBufferCount;
+            Observation.NonFiniteDirectSampleCount =
+                Stats.NonFiniteDirectSampleCount;
+            Observation.OverUnitDirectSampleCount =
+                Stats.OverUnitDirectSampleCount;
+            Observation.MaxBandGainStep = Stats.MaxBandGainStep;
+            return Observation;
+        }
+    }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioRuntimeSetterReflectionTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.RuntimeSetterReflection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioRuntimeSetterReflectionTest::RunTest(
+    const FString&)
+{
+    UClass* SourceClass =
+        UUERayTracingAudioSourceComponent::StaticClass();
+    UFunction* DataSourceSetter = SourceClass->FindFunctionByName(
+        TEXT("SetIndirectDataSource"));
+    UFunction* BakedAssetSetter = SourceClass->FindFunctionByName(
+        TEXT("SetBakedImpulseResponseAsset"));
+    TestNotNull(
+        TEXT("SetIndirectDataSource is exposed as a UFUNCTION"),
+        DataSourceSetter);
+    TestNotNull(
+        TEXT("SetBakedImpulseResponseAsset is exposed as a UFUNCTION"),
+        BakedAssetSetter);
+    if (DataSourceSetter)
+    {
+        TestTrue(
+            TEXT("SetIndirectDataSource is Blueprint-callable"),
+            DataSourceSetter->HasAnyFunctionFlags(
+                FUNC_BlueprintCallable));
+    }
+    if (BakedAssetSetter)
+    {
+        TestTrue(
+            TEXT("SetBakedImpulseResponseAsset is Blueprint-callable"),
+            BakedAssetSetter->HasAnyFunctionFlags(
+                FUNC_BlueprintCallable));
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioDirectDiagnosticsEpochTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.DirectDiagnosticsEpoch",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioDirectDiagnosticsEpochTest::RunTest(
+    const FString&)
+{
+    const FDirectDiagnosticsEpochObservation Observation =
+        ObserveDirectDiagnosticsEpoch<
+            FUERayTracingAudioAudioDiagnostics>();
+    TestTrue(
+        TEXT("Direct diagnostics expose reset, record, and read APIs"),
+        Observation.bApiPresent);
+    if (!Observation.bApiPresent)
+    {
+        return false;
+    }
+
+    TestEqual(
+        TEXT("A reset epoch hides previously published Direct buffers"),
+        Observation.ResetBufferCount,
+        0ULL);
+    TestEqual(
+        TEXT("A reset epoch hides the previous maximum band-gain step"),
+        Observation.ResetMaxBandGainStep,
+        0.0f);
+    TestEqual(
+        TEXT("Only two post-reset Direct buffers are visible"),
+        Observation.BufferCount,
+        2ULL);
+    TestEqual(
+        TEXT("Both post-reset Direct buffers have input"),
+        Observation.NonSilentInputBufferCount,
+        2ULL);
+    TestEqual(
+        TEXT("Only one input-bearing buffer has Direct output"),
+        Observation.DirectPresentInputBufferCount,
+        1ULL);
+    TestEqual(
+        TEXT("One silent Direct buffer is recorded as one run"),
+        Observation.MaxConsecutiveSilentDirectBufferCount,
+        1ULL);
+    TestEqual(
+        TEXT("Non-finite Direct samples stay in the Direct epoch"),
+        Observation.NonFiniteDirectSampleCount,
+        1ULL);
+    TestEqual(
+        TEXT("Over-unit Direct samples stay in the Direct epoch"),
+        Observation.OverUnitDirectSampleCount,
+        2ULL);
+    TestTrue(
+        TEXT("The maximum per-sample band-gain step is retained"),
+        FMath::IsNearlyEqual(
+            Observation.MaxBandGainStep,
+            0.004f,
+            1.0e-6f));
+    return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUERayTracingAudioProjectSettingsTest,

@@ -754,7 +754,8 @@ void FUERayTracingAudioRuntimeValidation::CreateScenario(UWorld* World)
         Source->MaxReflectionBounces = SourceIndex == 0 ? 4 : 2;
         Source->IndirectDurationSeconds = SourceIndex == 0 ? 1.5f : 0.75f;
         Source->IndirectMode = EUERayTracingAudioIndirectMode::HybridReverb;
-        Source->IndirectDataSource = EUERayTracingAudioIndirectDataSource::Realtime;
+        Source->SetIndirectDataSource(
+            EUERayTracingAudioIndirectDataSource::Realtime);
         Source->IndirectMix = SourceIndex == 0 ? 1.75f : 0.4f;
         Source->RegisterComponent();
         AddVisualMarker(
@@ -1290,7 +1291,7 @@ void FUERayTracingAudioRuntimeValidation::SetInteractiveDataSource(
         return;
     }
 
-    PrimarySource->IndirectDataSource = DataSource;
+    PrimarySource->SetIndirectDataSource(DataSource);
     UE_LOG(
         LogUERayTracingAudio,
         Display,
@@ -2222,9 +2223,10 @@ void FUERayTracingAudioRuntimeValidation::TickDataSourceValidation(
             Result.NumChannels,
             Result.BinDurationSeconds,
             MoveTemp(Result.Samples));
-        Source->BakedImpulseResponseAsset = RuntimeAsset;
+        Source->SetBakedImpulseResponseAsset(RuntimeAsset);
         Source->IndirectMode = EUERayTracingAudioIndirectMode::MinimalConvolution;
-        Source->IndirectDataSource = EUERayTracingAudioIndirectDataSource::Baked;
+        Source->SetIndirectDataSource(
+            EUERayTracingAudioIndirectDataSource::Baked);
         State.DataSourceBakeJob.Reset();
         State.DataSourceValidationPhase = 2;
         State.DataSourcePhaseStartTimeSeconds = NowSeconds;
@@ -2313,7 +2315,8 @@ void FUERayTracingAudioRuntimeValidation::TickDataSourceValidation(
             // the late parametric tail remain continuously audible.
             Source->IndirectMode =
                 EUERayTracingAudioIndirectMode::HybridReverb;
-            Source->IndirectDataSource = EUERayTracingAudioIndirectDataSource::Realtime;
+            Source->SetIndirectDataSource(
+                EUERayTracingAudioIndirectDataSource::Realtime);
             State.DataSourceValidationPhase = 3;
             State.DataSourcePhaseStartTimeSeconds = NowSeconds;
             State.bDataSourceDiagnosticsArmed = false;
@@ -2341,7 +2344,8 @@ void FUERayTracingAudioRuntimeValidation::TickDataSourceValidation(
                 EUERayTracingAudioRuntimeDataSource::Realtime,
                 State.RealtimeAudioStats))
         {
-            Source->IndirectDataSource = EUERayTracingAudioIndirectDataSource::Hybrid;
+            Source->SetIndirectDataSource(
+                EUERayTracingAudioIndirectDataSource::Hybrid);
             State.DataSourceValidationPhase = 4;
             State.DataSourcePhaseStartTimeSeconds = NowSeconds;
             State.bDataSourceDiagnosticsArmed = false;
@@ -2377,8 +2381,8 @@ void FUERayTracingAudioRuntimeValidation::TickDataSourceValidation(
             // Hybrid validation phases have completed.
             Source->IndirectMode =
                 EUERayTracingAudioIndirectMode::HybridReverb;
-            Source->IndirectDataSource =
-                EUERayTracingAudioIndirectDataSource::Realtime;
+            Source->SetIndirectDataSource(
+                EUERayTracingAudioIndirectDataSource::Realtime);
             Source->IndirectMix = 1.75f;
             LogResult(
                 true,

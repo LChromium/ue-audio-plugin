@@ -41,7 +41,23 @@ namespace
         TAtomic<uint64> MaxWetToInputRmsRatioFixed{ 0 };
     };
 
+    struct FAtomicDirectStats
+    {
+        TAtomic<uint64> RequestedEpoch{ 1 };
+        TAtomic<uint64> PublishedEpoch{ 0 };
+        TAtomic<uint64> SnapshotSequence{ 0 };
+        TAtomic<uint64> BufferCount{ 0 };
+        TAtomic<uint64> NonSilentInputBufferCount{ 0 };
+        TAtomic<uint64> DirectPresentInputBufferCount{ 0 };
+        TAtomic<uint64> CurrentConsecutiveSilentDirectBufferCount{ 0 };
+        TAtomic<uint64> MaxConsecutiveSilentDirectBufferCount{ 0 };
+        TAtomic<uint64> NonFiniteDirectSampleCount{ 0 };
+        TAtomic<uint64> OverUnitDirectSampleCount{ 0 };
+        TAtomic<uint64> MaxBandGainStepFixed{ 0 };
+    };
+
     FAtomicDataSourceStats GDataSourceStats[DataSourceCount];
+    FAtomicDirectStats GDirectStats;
     TAtomic<uint64> GTargetAudioComponentId{ 0 };
     TAtomic<uint64> GHardRealtimeAudioCallbackCount{ 0 };
     TAtomic<uint64> GHardRealtimeCallbackCapacityMissCount{ 0 };
@@ -114,6 +130,18 @@ namespace
         Stats.MaxOutputPeakFixed.Store(0);
         Stats.MaxPreSpatializationOutputPeakFixed.Store(0);
         Stats.MaxWetToInputRmsRatioFixed.Store(0);
+    }
+
+    void ClearCountersForWriter(FAtomicDirectStats& Stats)
+    {
+        Stats.BufferCount.Store(0);
+        Stats.NonSilentInputBufferCount.Store(0);
+        Stats.DirectPresentInputBufferCount.Store(0);
+        Stats.CurrentConsecutiveSilentDirectBufferCount.Store(0);
+        Stats.MaxConsecutiveSilentDirectBufferCount.Store(0);
+        Stats.NonFiniteDirectSampleCount.Store(0);
+        Stats.OverUnitDirectSampleCount.Store(0);
+        Stats.MaxBandGainStepFixed.Store(0);
     }
 
     void AddSaturating(
@@ -424,6 +452,144 @@ FUERayTracingAudioDataSourceAudioStats FUERayTracingAudioAudioDiagnostics::Read(
 
     // An empty result is a consistent snapshot for an unpublished reset epoch
     // or a writer that remained active throughout the bounded read attempts.
+    return {};
+}
+
+void FUERayTracingAudioAudioDiagnostics::ResetDirect()
+{
+    ++GDirectStats.RequestedEpoch;
+}
+
+void FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer(
+    const uint64 AudioComponentId,
+    const int32 NumFrames,
+    const float PeakAbsoluteInput,
+    const float DirectRms,
+    const float MaxBandGainStep,
+    const uint64 NonFiniteDirectSampleCount,
+    const uint64 OverUnitDirectSampleCount)
+{
+    if (!IsEnabledFor(AudioComponentId))
+    {
+        return;
+    }
+
+    uint64 StableSequence = GDirectStats.SnapshotSequence.Load();
+    const uint64 WriteSequence = StableSequence + 1;
+    if ((StableSequence & 1ULL) != 0
+        || !GDirectStats.SnapshotSequence.CompareExchange(
+            StableSequence,
+            WriteSequence))
+    {
+        return;
+    }
+
+    const uint64 RequestedEpoch =
+        GDirectStats.RequestedEpoch.Load();
+    if (GDirectStats.PublishedEpoch.Load() != RequestedEpoch)
+    {
+        ClearCountersForWriter(GDirectStats);
+    }
+
+    ++GDirectStats.BufferCount;
+    const bool bInputPresent =
+        NumFrames > 0
+        && FMath::IsFinite(PeakAbsoluteInput)
+        && PeakAbsoluteInput > RmsPresenceThreshold;
+    if (bInputPresent)
+    {
+        ++GDirectStats.NonSilentInputBufferCount;
+        const bool bDirectPresent =
+            FMath::IsFinite(DirectRms)
+            && DirectRms > RmsPresenceThreshold;
+        if (bDirectPresent)
+        {
+            ++GDirectStats.DirectPresentInputBufferCount;
+            GDirectStats.CurrentConsecutiveSilentDirectBufferCount.Store(0);
+        }
+        else
+        {
+            const uint64 CurrentSilentCount =
+                GDirectStats.CurrentConsecutiveSilentDirectBufferCount.Load();
+            const uint64 ConsecutiveSilentCount =
+                CurrentSilentCount < TNumericLimits<uint64>::Max()
+                    ? CurrentSilentCount + 1
+                    : CurrentSilentCount;
+            GDirectStats.CurrentConsecutiveSilentDirectBufferCount.Store(
+                ConsecutiveSilentCount);
+            StoreMaximum(
+                GDirectStats.MaxConsecutiveSilentDirectBufferCount,
+                ConsecutiveSilentCount);
+        }
+    }
+    else
+    {
+        GDirectStats.CurrentConsecutiveSilentDirectBufferCount.Store(0);
+    }
+    AddSaturating(
+        GDirectStats.NonFiniteDirectSampleCount,
+        NonFiniteDirectSampleCount);
+    AddSaturating(
+        GDirectStats.OverUnitDirectSampleCount,
+        OverUnitDirectSampleCount);
+    StoreMaximum(
+        GDirectStats.MaxBandGainStepFixed,
+        QuantizeRms(MaxBandGainStep));
+    GDirectStats.PublishedEpoch.Store(RequestedEpoch);
+    GDirectStats.SnapshotSequence.Store(WriteSequence + 1);
+}
+
+FUERayTracingAudioDirectAudioStats
+FUERayTracingAudioAudioDiagnostics::ReadDirect()
+{
+    for (int32 Attempt = 0;
+        Attempt < MaximumSnapshotReadAttempts;
+        ++Attempt)
+    {
+        const uint64 RequestedEpochBefore =
+            GDirectStats.RequestedEpoch.Load();
+        const uint64 SequenceBefore =
+            GDirectStats.SnapshotSequence.Load();
+        if ((SequenceBefore & 1ULL) != 0)
+        {
+            continue;
+        }
+
+        const uint64 PublishedEpoch =
+            GDirectStats.PublishedEpoch.Load();
+        FUERayTracingAudioDirectAudioStats Result;
+        Result.BufferCount = GDirectStats.BufferCount.Load();
+        Result.NonSilentInputBufferCount =
+            GDirectStats.NonSilentInputBufferCount.Load();
+        Result.DirectPresentInputBufferCount =
+            GDirectStats.DirectPresentInputBufferCount.Load();
+        Result.MaxConsecutiveSilentDirectBufferCount =
+            GDirectStats.MaxConsecutiveSilentDirectBufferCount.Load();
+        Result.NonFiniteDirectSampleCount =
+            GDirectStats.NonFiniteDirectSampleCount.Load();
+        Result.OverUnitDirectSampleCount =
+            GDirectStats.OverUnitDirectSampleCount.Load();
+        const uint64 MaxBandGainStepFixed =
+            GDirectStats.MaxBandGainStepFixed.Load();
+
+        const uint64 SequenceAfter =
+            GDirectStats.SnapshotSequence.Load();
+        const uint64 RequestedEpochAfter =
+            GDirectStats.RequestedEpoch.Load();
+        if (SequenceBefore != SequenceAfter
+            || (SequenceAfter & 1ULL) != 0
+            || RequestedEpochBefore != RequestedEpochAfter
+            || PublishedEpoch != RequestedEpochAfter)
+        {
+            continue;
+        }
+
+        Result.MaxBandGainStep = static_cast<float>(
+            static_cast<double>(MaxBandGainStepFixed)
+            / RmsFixedPointScale);
+        return Result;
+    }
+
     return {};
 }
 

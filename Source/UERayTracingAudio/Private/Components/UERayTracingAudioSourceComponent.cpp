@@ -286,6 +286,42 @@ UUERayTracingAudioSourceComponent::UUERayTracingAudioSourceComponent()
     PrimaryComponentTick.bCanEverTick = true;
 }
 
+void UUERayTracingAudioSourceComponent::SetIndirectDataSource(
+    const EUERayTracingAudioIndirectDataSource NewDataSource)
+{
+    if (IndirectDataSource == NewDataSource)
+    {
+        return;
+    }
+
+    // TickComponent refreshes the applicable kernels and publishes a
+    // simulation snapshot every tick, so the new mode reaches the audio
+    // thread only after its game-thread state is coherent.
+    IndirectDataSource = NewDataSource;
+}
+
+void UUERayTracingAudioSourceComponent::
+    SetBakedImpulseResponseAsset(
+        UUERayTracingAudioImpulseResponseAsset* NewAsset)
+{
+    if (BakedImpulseResponseAsset == NewAsset)
+    {
+        return;
+    }
+
+    BakedImpulseResponseAsset = NewAsset;
+    CachedBakedAsset.Reset();
+    CachedBakedAssetId.Invalidate();
+    CachedBakedSampleRate = 0;
+    CachedBakedHybridTransitionSeconds = 0.0f;
+    BakedConvolutionKernel.Reset();
+    BakedConvolutionKernelRight.Reset();
+    ResetBakedRuntimeTail();
+    // Published kernel identities and lane revisions intentionally remain
+    // monotonic. The next TickComponent refresh and snapshot publication
+    // observes old-to-new (or old-to-null) identities and advances revisions.
+}
+
 void UUERayTracingAudioSourceComponent::BeginPlay()
 {
     Super::BeginPlay();

@@ -70,6 +70,14 @@ public:
     const FUERayTracingAudioIndirectSimulationResult& GetIndirectSoundResult() const;
     float GetCurrentOverallGain() const;
 
+    UFUNCTION(BlueprintCallable, Category = "UE Ray Tracing Audio|Indirect")
+    void SetIndirectDataSource(
+        EUERayTracingAudioIndirectDataSource NewDataSource);
+
+    UFUNCTION(BlueprintCallable, Category = "UE Ray Tracing Audio|Indirect")
+    void SetBakedImpulseResponseAsset(
+        UUERayTracingAudioImpulseResponseAsset* NewAsset);
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = DirectSound)
     bool bEnableDirectSound;
 
