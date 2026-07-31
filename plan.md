@@ -157,3 +157,18 @@ Next:
 1. Continue Task 7 Editor controls and fixture maintenance from the approved plan.
 2. Record target-device PIE Human Pass/Fail for Direct recovery and click/pop absence.
 3. Retain Task 2 multi-PIE hardware isolation and the ledgered Task 4 Minors as separate follow-ups.
+
+### Task 6 Fix Round 1
+
+Completed:
+
+1. Added RED coverage for all non-physical/inverted visibility and gain ranges, negative gain step, and each later IR marker preceding the Direct terminal (`12` intended failures out of `47` focused tests).
+2. Enforced normalized ordered extrema and a non-negative bounded step with explicit combined errors.
+3. Required data-source Bake-start evidence and enforced `Direct terminal -> Bake start -> later runtime evidence` at the Direct gate.
+4. Passed focused RuntimeValidation `47/47`, full Python `62/62`, callback audit `39/40/1718` with zero violations, and the previous real-log parser check.
+5. Ran the exact fixed launcher successfully. Game ordering was Direct `1118`, Bake `1126`, hard realtime `1130`, final data source `1132`; Direct and all existing runtime gates passed. Editor PID `42300` remains open.
+
+Next:
+
+1. Continue Task 7 from the approved plan.
+2. Record target-device Human Pass/Fail; retain multi-PIE and Task 4 Minor follow-ups.

@@ -225,3 +225,20 @@ Task 6 evidence:
 - Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785475390548759300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`.
 
 Remaining limitations: Editor PID `35468` is ready for a target-device Human Pass, but audible recovery and click/pop have not been judged by a person. Task 2 multi-PIE hardware isolation, the ledgered Task 4 Minors, and later plan tasks also remain open; the overall plugin is not complete.
+
+### Task 6 Fix Round 1: parser domain and temporal integrity
+
+Implementation status: complete and automatically verified. The strict parser now rejects negative, over-one, or inverted visibility extrema; non-positive, over-one, or inverted gain extrema; and negative maximum gain steps. Its accepted domains are `0 <= visibility_min <= visibility_max <= 1`, `0 < gain_min <= gain_max <= 1`, and `0 <= max_gain_step <= 0.01`.
+
+The launcher now treats data-source Bake start as required Game evidence. The unique Direct terminal must precede that marker, the hard-real-time result, and the final data-source result. Ordering errors join other Direct failures in one explicit error rather than being silently ignored.
+
+Fix Round 1 evidence:
+
+- RED: focused RuntimeValidation `47` tests with `12` intended failures.
+- GREEN: focused `47/47`; full Python `62/62`; callback audit `39 functions / 40 bodies / 1718 lines / 0 forbidden operations`.
+- The previous Game log passed the hardened parser before a fresh runtime run.
+- Exact launcher exit `0`: baseline hardware/CPU `171/171`; Direct `214` generations, `200.000 cm`, visibility `0.000038-0.997131`, gain `0.174779-0.498402`, step `0.00005548`, no dropout, restored/hardware; data sources passed; hard realtime `1580/0/0`.
+- Ordered Game lines: Direct `1118`, Bake `1126`, hard realtime `1130`, final data source `1132`.
+- Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785476653651929300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785476834237184600.log`.
+
+Editor PID `42300` is responding and left open. Human Pass, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open; the overall plugin is not complete.

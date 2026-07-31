@@ -259,3 +259,23 @@ Final automatic evidence:
 - Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`.
 
 Editor PID `35468` was left initialized for manual PIE/listening. Use F6 for an interactive repeat, then record target-device recovery and click/pop as Human Pass/Fail. Automated marker success does not replace that Human Pass.
+
+### Task 6 Fix Round 1: strict domains and sequencing
+
+The Direct terminal now has physical-domain constraints in addition to endpoint thresholds:
+
+- `0 <= visibility_min <= visibility_max <= 1`;
+- `0 < gain_min <= gain_max <= 1`;
+- `0 <= max_gain_step <= 0.01`.
+
+The fixed Game run also requires the marker `UERayTracingAudio validation data-source bake started`. The Direct terminal must appear strictly before that Bake marker, the hard-real-time marker, and the final data-source marker. This prevents valid-looking Direct extrema from being collected after Bake or final runtime evidence has already begun.
+
+Fix Round 1 verification:
+
+- RED: focused RuntimeValidation `35/47`, with `12` intended failures covering domain, ordering, and error-message contracts.
+- GREEN: focused RuntimeValidation `47/47`; full Python `62/62`; callback audit `39/40/1718` with zero forbidden operations.
+- Runtime: the exact launcher exited `0`. Direct line `1118` preceded Bake `1126`, hard realtime `1130`, and final data source `1132`. Direct metrics were `214` generations, `200.000 cm`, visibility `0.000038-0.997131`, gain `0.174779-0.498402`, maximum step `0.00005548`, dropout `0`, restored `1`, hardware `1`.
+- Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785476653651929300.log`.
+- Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785476834237184600.log`.
+
+Editor PID `42300` is left initialized. The automatic proof is stricter, but target-device recovery/click-pop still requires Human Pass.

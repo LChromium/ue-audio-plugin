@@ -116,3 +116,13 @@
 - Final fixed runtime passed: baseline `171/171`; Direct sweep `213` generations at `200 cm`, endpoint visibility, nonzero gain, bounded step, no dropout, restored/hardware; data sources passed; callbacks/misses/drops `1583/0/0`.
 - Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785475390548759300.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`; Editor PID `35468` is responding.
 - Target-device Human Pass/click-pop listening, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open.
+
+## 2026-07-31 - Configurable Direct Audio Task 6 Fix Round 1
+
+- RED: focused RuntimeValidation ran `47` tests with `12` intended failures for out-of-domain/inverted extrema, negative gain step, and Direct evidence occurring too late.
+- Enforced ordered normalized visibility/gain domains and a non-negative bounded gain step. Added required data-source Bake evidence and Direct-before-Bake/HardRealtime/DataSource ordering.
+- GREEN: focused `47/47`, full Python `62/62`, callback audit `39/40/1718` with zero violations, and the previous real Game log passed the hardened parser.
+- Exact runtime passed: baseline `171/171`; Direct `214` generations at `200 cm`, visibility `0.000038-0.997131`, gain `0.174779-0.498402`, step `0.00005548`, no dropout, restored/hardware; data sources passed; hard realtime `1580/0/0`.
+- Ordered lines: Direct `1118`, Bake `1126`, hard realtime `1130`, final data source `1132`.
+- Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785476653651929300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785476834237184600.log`; Editor PID `42300` is responding.
+- Human Pass, multi-PIE hardware isolation, and Task 4 Minors remain open.
