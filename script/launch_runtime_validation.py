@@ -69,6 +69,9 @@ AUDIO_PIPELINE_PATTERN = re.compile(
     r"pre_distance_buffers=(?P<pre_distance_buffers>[0-9]+).*?"
     r"pre_distance_non_silent=(?P<pre_distance_non_silent>[0-9]+)"
 )
+DATA_SOURCE_BAKE_MARKER = (
+    "UERayTracingAudio validation data-source bake started"
+)
 DATA_SOURCE_VALIDATION_MARKER = "UERayTracingAudio validation data sources:"
 _DATA_SOURCE_INTEGER_FIELDS = (
     "passed",
@@ -315,16 +318,46 @@ def validate_direct_sweep(log_text: str) -> dict[str, float | int]:
         or values["visibility_max"] < 0.90
     ):
         failures.append("Clear and Occluded visibility endpoints")
-    if values["gain_min"] <= 0.0:
-        failures.append("nonzero Soft Occlusion gain")
-    if values["max_gain_step"] > 0.01:
-        failures.append("bounded per-sample gain step")
+    if not (
+        0.0 <= values["visibility_min"]
+        <= values["visibility_max"]
+        <= 1.0
+    ):
+        failures.append("ordered normalized visibility range")
+    if not (
+        0.0 < values["gain_min"]
+        <= values["gain_max"]
+        <= 1.0
+    ):
+        failures.append(
+            "nonzero Soft Occlusion gain in an "
+            "ordered normalized Direct gain range"
+        )
+    if not 0.0 <= values["max_gain_step"] <= 0.01:
+        failures.append(
+            "non-negative bounded per-sample gain step"
+        )
     if values["direct_dropouts"] != 0:
         failures.append("zero Direct dropouts")
     if values["restored"] != 1:
         failures.append("restored Source state")
     if values["hardware"] != 1:
         failures.append("hardware provenance")
+
+    direct_marker_offset = log_text.find(DIRECT_SWEEP_MARKER)
+    for evidence_name, evidence_marker in (
+        ("data-source Bake", DATA_SOURCE_BAKE_MARKER),
+        ("hard-real-time result", HARD_REALTIME_MARKER),
+        ("final data-source result", DATA_SOURCE_VALIDATION_MARKER),
+    ):
+        evidence_offset = log_text.find(evidence_marker)
+        if (
+            evidence_offset >= 0
+            and direct_marker_offset >= evidence_offset
+        ):
+            failures.append(
+                f"Direct sweep terminal before {evidence_name}"
+            )
     if failures:
         raise RuntimeError("Direct sweep failed: " + ", ".join(failures))
     return values
@@ -1128,6 +1161,7 @@ def start_game_then_kill(
         + (
             VISIBLE_SCENE_MARKER,
             DIRECT_SWEEP_MARKER,
+            DATA_SOURCE_BAKE_MARKER,
             PRIMARY_INPUT_MARKER,
             AUDIO_PIPELINE_MARKER,
             DATA_SOURCE_VALIDATION_MARKER,

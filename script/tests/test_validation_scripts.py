@@ -61,6 +61,9 @@ def make_data_source_summary(
 ) -> str:
     return (
         make_direct_sweep_summary()
+        + "\nUERayTracingAudio validation data-source bake started "
+        "during audible playback: rays=1024 bounces=4 duration=0.250 "
+        "sample_rate=8000."
         + "\nUERayTracingAudio validation data sources: passed=1 "
         "baked_buffers=30 baked_input_non_silent=30 baked_non_silent=30 "
         "baked_rms_measured=30 baked_audible_wet=27 "
@@ -360,6 +363,116 @@ class RuntimeValidationTests(unittest.TestCase):
             self.validate_direct_sweep(
                 make_direct_sweep_summary(distance_min="1e309")
             )
+
+    def test_direct_sweep_gate_rejects_invalid_visibility_ranges(self) -> None:
+        cases = (
+            (
+                "negative minimum",
+                {"visibility_min": "-0.000001"},
+            ),
+            (
+                "maximum above one",
+                {"visibility_max": "1.000001"},
+            ),
+            (
+                "inverted endpoints",
+                {
+                    "visibility_min": "0.950000",
+                    "visibility_max": "0.050000",
+                },
+            ),
+        )
+        for name, overrides in cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "ordered normalized visibility range",
+                ):
+                    self.validate_direct_sweep(
+                        make_direct_sweep_summary(**overrides)
+                    )
+
+    def test_direct_sweep_gate_rejects_invalid_gain_ranges(self) -> None:
+        cases = (
+            (
+                "negative minimum",
+                {
+                    "gain_min": "-0.200000",
+                    "gain_max": "0.500000",
+                },
+            ),
+            (
+                "negative maximum",
+                {
+                    "gain_min": "-0.200000",
+                    "gain_max": "-0.100000",
+                },
+            ),
+            (
+                "inverted endpoints",
+                {
+                    "gain_min": "0.800000",
+                    "gain_max": "0.700000",
+                },
+            ),
+            (
+                "minimum above one",
+                {
+                    "gain_min": "1.100000",
+                    "gain_max": "1.200000",
+                },
+            ),
+            (
+                "maximum above one",
+                {"gain_max": "1.000001"},
+            ),
+        )
+        for name, overrides in cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "ordered normalized Direct gain range",
+                ):
+                    self.validate_direct_sweep(
+                        make_direct_sweep_summary(**overrides)
+                    )
+
+    def test_direct_sweep_gate_rejects_negative_gain_step(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "non-negative bounded per-sample gain step",
+        ):
+            self.validate_direct_sweep(
+                make_direct_sweep_summary(max_gain_step="-0.000001")
+            )
+
+    def test_direct_sweep_gate_requires_terminal_before_runtime_ir_evidence(
+        self,
+    ) -> None:
+        later_markers = (
+            (
+                "data-source Bake",
+                "UERayTracingAudio validation data-source bake started",
+            ),
+            (
+                "hard-real-time result",
+                "UERayTracingAudio hard realtime:",
+            ),
+            (
+                "final data-source result",
+                "UERayTracingAudio validation data sources:",
+            ),
+        )
+        direct_marker = make_direct_sweep_summary()
+        for name, marker in later_markers:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    f"Direct sweep terminal before {name}",
+                ):
+                    self.validate_direct_sweep(
+                        marker + "\n" + direct_marker
+                    )
 
     def test_direct_sweep_gate_combines_failure_reasons(self) -> None:
         with self.assertRaises(RuntimeError) as raised:
