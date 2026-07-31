@@ -16,6 +16,33 @@ import launch_runtime_validation
 import validation_environment
 
 
+def make_direct_sweep_summary(
+    *,
+    passed: int = 1,
+    generations: int = 12,
+    distance_min: str | float = "199.500",
+    distance_max: str | float = "200.500",
+    visibility_min: str | float = "0.050000",
+    visibility_max: str | float = "0.950000",
+    gain_min: str | float = "0.250000",
+    gain_max: str | float = "1.000000",
+    max_gain_step: str | float = "0.00900000",
+    direct_dropouts: int = 0,
+    restored: int = 1,
+    hardware: int = 1,
+) -> str:
+    return (
+        f"UERayTracingAudio direct sweep: passed={passed} "
+        f"generations={generations} "
+        f"distance_min_cm={distance_min} distance_max_cm={distance_max} "
+        f"visibility_min={visibility_min} visibility_max={visibility_max} "
+        f"gain_min={gain_min} gain_max={gain_max} "
+        f"max_gain_step={max_gain_step} "
+        f"direct_dropouts={direct_dropouts} "
+        f"restored={restored} hardware={hardware}"
+    )
+
+
 def make_data_source_summary(
     *,
     hybrid_non_silent: int = 30,
@@ -33,7 +60,8 @@ def make_data_source_summary(
     convolution_prepare_drops: int = 0,
 ) -> str:
     return (
-        "UERayTracingAudio validation data sources: passed=1 "
+        make_direct_sweep_summary()
+        + "\nUERayTracingAudio validation data sources: passed=1 "
         "baked_buffers=30 baked_input_non_silent=30 baked_non_silent=30 "
         "baked_rms_measured=30 baked_audible_wet=27 "
         "baked_max_inaudible_run=2 baked_wet_present=27 "
@@ -139,6 +167,16 @@ class ValidationEnvironmentTests(unittest.TestCase):
 
 
 class RuntimeValidationTests(unittest.TestCase):
+    def validate_direct_sweep(
+        self,
+        log_text: str,
+    ) -> dict[str, float | int]:
+        self.assertTrue(
+            hasattr(launch_runtime_validation, "validate_direct_sweep"),
+            "runtime launcher must expose the strict Direct sweep gate",
+        )
+        return launch_runtime_validation.validate_direct_sweep(log_text)
+
     def test_default_game_window_covers_cold_start(self) -> None:
         self.assertGreaterEqual(launch_runtime_validation.DEFAULT_GAME_SECONDS, 180.0)
 
@@ -174,6 +212,14 @@ class RuntimeValidationTests(unittest.TestCase):
             command,
         )
 
+    def test_game_command_enables_automatic_direct_sweep(self) -> None:
+        command = launch_runtime_validation.build_game_command(
+            Path("UnrealEditor.exe"),
+            Path("Test.uproject"),
+            Path("Game.log"),
+        )
+        self.assertIn("-UERayTracingAudioValidationDirectSweep", command)
+
     def test_game_command_supports_interactive_smoke(self) -> None:
         command = launch_runtime_validation.build_game_command(
             Path("UnrealEditor.exe"),
@@ -202,6 +248,152 @@ class RuntimeValidationTests(unittest.TestCase):
             launch_runtime_validation.EDITOR_VISIBLE_SCENE_MARKER,
             launch_runtime_validation.EDITOR_VALIDATION_MARKERS,
         )
+        self.assertNotIn("-UERayTracingAudioValidationDirectSweep", command)
+
+    def test_direct_sweep_gate_accepts_one_strict_hardware_marker(self) -> None:
+        values = self.validate_direct_sweep(
+            "LogUERayTracingAudio: Display: "
+            + make_direct_sweep_summary()
+        )
+        self.assertEqual(values["passed"], 1)
+        self.assertEqual(values["generations"], 12)
+        self.assertEqual(values["distance_min"], 199.5)
+        self.assertEqual(values["distance_max"], 200.5)
+        self.assertEqual(values["direct_dropouts"], 0)
+        self.assertEqual(values["restored"], 1)
+        self.assertEqual(values["hardware"], 1)
+
+    def test_direct_sweep_gate_rejects_missing_partial_and_ambiguous_markers(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "missing parseable hardware Direct sweep",
+        ):
+            self.validate_direct_sweep("ordinary runtime output")
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "missing parseable hardware Direct sweep",
+        ):
+            self.validate_direct_sweep(
+                make_direct_sweep_summary() + " trailing_partial_field="
+            )
+
+        marker = make_direct_sweep_summary()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "ambiguous hardware Direct sweep markers",
+        ):
+            self.validate_direct_sweep(marker + "\n" + marker)
+
+    def test_direct_sweep_gate_rejects_each_failed_requirement(self) -> None:
+        cases = (
+            (
+                "failed terminal state",
+                {"passed": 0},
+                "passing Direct sweep",
+            ),
+            (
+                "too few generations",
+                {"generations": 7},
+                "at least eight Direct generations",
+            ),
+            (
+                "distance below range",
+                {"distance_min": "197.999"},
+                "constant two-metre distance",
+            ),
+            (
+                "distance above range",
+                {"distance_max": "202.001"},
+                "constant two-metre distance",
+            ),
+            (
+                "missing occluded endpoint",
+                {"visibility_min": "0.100001"},
+                "Clear and Occluded visibility endpoints",
+            ),
+            (
+                "missing clear endpoint",
+                {"visibility_max": "0.899999"},
+                "Clear and Occluded visibility endpoints",
+            ),
+            (
+                "zero soft gain",
+                {"gain_min": "0.0"},
+                "nonzero Soft Occlusion gain",
+            ),
+            (
+                "excessive gain step",
+                {"max_gain_step": "0.01000001"},
+                "bounded per-sample gain step",
+            ),
+            (
+                "direct dropout",
+                {"direct_dropouts": 1},
+                "zero Direct dropouts",
+            ),
+            (
+                "state not restored",
+                {"restored": 0},
+                "restored Source state",
+            ),
+            (
+                "CPU provenance",
+                {"hardware": 0},
+                "hardware provenance",
+            ),
+        )
+        for name, overrides, expected_reason in cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(RuntimeError, expected_reason):
+                    self.validate_direct_sweep(
+                        make_direct_sweep_summary(**overrides)
+                    )
+
+    def test_direct_sweep_gate_rejects_non_finite_metrics(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "finite distance_min",
+        ):
+            self.validate_direct_sweep(
+                make_direct_sweep_summary(distance_min="1e309")
+            )
+
+    def test_direct_sweep_gate_combines_failure_reasons(self) -> None:
+        with self.assertRaises(RuntimeError) as raised:
+            self.validate_direct_sweep(
+                make_direct_sweep_summary(
+                    passed=0,
+                    generations=3,
+                    direct_dropouts=2,
+                    restored=0,
+                    hardware=0,
+                )
+            )
+        message = str(raised.exception)
+        for expected_reason in (
+            "passing Direct sweep",
+            "at least eight Direct generations",
+            "zero Direct dropouts",
+            "restored Source state",
+            "hardware provenance",
+        ):
+            self.assertIn(expected_reason, message)
+
+    def test_data_source_gate_requires_direct_sweep_first(self) -> None:
+        data_source_only = make_data_source_summary().split("\n", 1)[1]
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "missing parseable hardware Direct sweep",
+            ):
+                launch_runtime_validation.print_audio_path_summary(
+                    data_source_only,
+                    "Game",
+                    require_data_sources=True,
+                )
 
     def test_editor_command_supports_separate_interactive_runtime(self) -> None:
         command = launch_runtime_validation.build_editor_command(

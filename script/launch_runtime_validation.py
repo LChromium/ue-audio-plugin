@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import subprocess
 import sys
@@ -39,6 +40,20 @@ AUDIO_INDIRECT_PATH_MARKERS = (
     "submits indirect sound energy-field queries asynchronously to the render thread",
     "uses hardware ray tracing for indirect sound path queries",
     "falls back to CPU acoustic scene queries for indirect sound path tracing",
+)
+DIRECT_SWEEP_MARKER = "UERayTracingAudio direct sweep:"
+DIRECT_SWEEP_PATTERN = re.compile(
+    r"UERayTracingAudio direct sweep: passed=(?P<passed>[01]) "
+    r"generations=(?P<generations>[0-9]+) "
+    r"distance_min_cm=(?P<distance_min>[0-9.eE+-]+) "
+    r"distance_max_cm=(?P<distance_max>[0-9.eE+-]+) "
+    r"visibility_min=(?P<visibility_min>[0-9.eE+-]+) "
+    r"visibility_max=(?P<visibility_max>[0-9.eE+-]+) "
+    r"gain_min=(?P<gain_min>[0-9.eE+-]+) "
+    r"gain_max=(?P<gain_max>[0-9.eE+-]+) "
+    r"max_gain_step=(?P<max_gain_step>[0-9.eE+-]+) "
+    r"direct_dropouts=(?P<direct_dropouts>[0-9]+) "
+    r"restored=(?P<restored>[01]) hardware=(?P<hardware>[01])"
 )
 VALIDATION_RESULT_MARKER = "UERayTracingAudio validation result:"
 VISIBLE_SCENE_MARKER = "UERayTracingAudio validation visible scene ready:"
@@ -238,6 +253,83 @@ def is_original_project_input_asset(asset_path: str) -> bool:
     )
 
 
+def validate_direct_sweep(log_text: str) -> dict[str, float | int]:
+    marker_lines = []
+    for line in log_text.splitlines():
+        marker_index = line.find(DIRECT_SWEEP_MARKER)
+        if marker_index >= 0:
+            marker_lines.append(line[marker_index:].strip())
+
+    if not marker_lines:
+        raise RuntimeError("missing parseable hardware Direct sweep")
+    if len(marker_lines) != 1:
+        raise RuntimeError(
+            "ambiguous hardware Direct sweep markers "
+            f"(found {len(marker_lines)}, expected exactly one)"
+        )
+
+    match = DIRECT_SWEEP_PATTERN.fullmatch(marker_lines[0])
+    if match is None:
+        raise RuntimeError("missing parseable hardware Direct sweep")
+
+    integer_fields = {
+        "passed",
+        "generations",
+        "direct_dropouts",
+        "restored",
+        "hardware",
+    }
+    try:
+        values: dict[str, float | int] = {
+            key: int(value) if key in integer_fields else float(value)
+            for key, value in match.groupdict().items()
+        }
+    except ValueError as error:
+        raise RuntimeError("missing parseable hardware Direct sweep") from error
+
+    failures: list[str] = []
+    for field in (
+        "distance_min",
+        "distance_max",
+        "visibility_min",
+        "visibility_max",
+        "gain_min",
+        "gain_max",
+        "max_gain_step",
+    ):
+        if not math.isfinite(float(values[field])):
+            failures.append(f"finite {field}")
+
+    if values["passed"] != 1:
+        failures.append("passing Direct sweep")
+    if values["generations"] < 8:
+        failures.append("at least eight Direct generations")
+    if (
+        values["distance_min"] < 198.0
+        or values["distance_max"] > 202.0
+        or values["distance_min"] > values["distance_max"]
+    ):
+        failures.append("constant two-metre distance")
+    if (
+        values["visibility_min"] > 0.10
+        or values["visibility_max"] < 0.90
+    ):
+        failures.append("Clear and Occluded visibility endpoints")
+    if values["gain_min"] <= 0.0:
+        failures.append("nonzero Soft Occlusion gain")
+    if values["max_gain_step"] > 0.01:
+        failures.append("bounded per-sample gain step")
+    if values["direct_dropouts"] != 0:
+        failures.append("zero Direct dropouts")
+    if values["restored"] != 1:
+        failures.append("restored Source state")
+    if values["hardware"] != 1:
+        failures.append("hardware provenance")
+    if failures:
+        raise RuntimeError("Direct sweep failed: " + ", ".join(failures))
+    return values
+
+
 def build_game_command(
     editor_exe: Path,
     project_path: Path,
@@ -256,6 +348,7 @@ def build_game_command(
         "-dx12",
         "-raytracing",
         "-UERayTracingAudioValidationScenario",
+        "-UERayTracingAudioValidationDirectSweep",
         f"-UERayTracingAudioValidationSourceCount={max(2, min(source_count, 32))}",
         *VALIDATION_AUDIO_OVERRIDES,
         f"-abslog={log_path}",
@@ -421,6 +514,11 @@ def print_audio_path_summary(
     require_bake_repeatability: bool = False,
     require_interactive_smoke: bool = False,
 ) -> None:
+    direct_sweep_values = (
+        validate_direct_sweep(log_text)
+        if require_data_sources
+        else None
+    )
     direct = [marker for marker in AUDIO_DIRECT_PATH_MARKERS if marker in log_text]
     indirect = [marker for marker in AUDIO_INDIRECT_PATH_MARKERS if marker in log_text]
     result_match = VALIDATION_RESULT_PATTERN.search(log_text)
@@ -455,6 +553,22 @@ def print_audio_path_summary(
                 f"hardware_gain={cpu_reference_match.group('hardware_gain')} "
                 f"cpu_gain={cpu_reference_match.group('cpu_gain')} "
                 f"gain_relative_delta={cpu_reference_match.group('gain_relative_delta')}"
+            )
+        if direct_sweep_values is not None:
+            print(
+                f"  - {DIRECT_SWEEP_MARKER} "
+                f"passed={direct_sweep_values['passed']} "
+                f"generations={direct_sweep_values['generations']} "
+                f"distance_min_cm={direct_sweep_values['distance_min']:.3f} "
+                f"distance_max_cm={direct_sweep_values['distance_max']:.3f} "
+                f"visibility_min={direct_sweep_values['visibility_min']:.6f} "
+                f"visibility_max={direct_sweep_values['visibility_max']:.6f} "
+                f"gain_min={direct_sweep_values['gain_min']:.6f} "
+                f"gain_max={direct_sweep_values['gain_max']:.6f} "
+                f"max_gain_step={direct_sweep_values['max_gain_step']:.8f} "
+                f"direct_dropouts={direct_sweep_values['direct_dropouts']} "
+                f"restored={direct_sweep_values['restored']} "
+                f"hardware={direct_sweep_values['hardware']}"
             )
         if data_source_match:
             print(
@@ -1013,6 +1127,7 @@ def start_game_then_kill(
         RUNTIME_MODULE_MARKERS
         + (
             VISIBLE_SCENE_MARKER,
+            DIRECT_SWEEP_MARKER,
             PRIMARY_INPUT_MARKER,
             AUDIO_PIPELINE_MARKER,
             DATA_SOURCE_VALIDATION_MARKER,
