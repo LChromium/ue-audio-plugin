@@ -139,6 +139,7 @@ bool FUERayTracingAudioDirectSweepPolicy::ShouldStartAutomatic(
     const bool bRequested,
     const bool bStarted,
     const bool bValidationOwner,
+    const bool bBaselineValidationLogged,
     const bool bHasDirectResult,
     const uint64 DirectGeneration,
     const bool bHardwareDirect)
@@ -146,6 +147,7 @@ bool FUERayTracingAudioDirectSweepPolicy::ShouldStartAutomatic(
     return bRequested
         && !bStarted
         && bValidationOwner
+        && bBaselineValidationLogged
         && bHasDirectResult
         && DirectGeneration != 0
         && bHardwareDirect;

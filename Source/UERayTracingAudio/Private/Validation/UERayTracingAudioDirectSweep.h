@@ -87,6 +87,7 @@ public:
         bool bRequested,
         bool bStarted,
         bool bValidationOwner,
+        bool bBaselineValidationLogged,
         bool bHasDirectResult,
         uint64 DirectGeneration,
         bool bHardwareDirect);

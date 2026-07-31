@@ -550,11 +550,22 @@ bool FUERayTracingAudioDirectSweepMetricsTest::RunTest(
                 PassingAudioStats,
                 true,
                 true));
-    TestTrue(
-        TEXT("An owner starts only from a fresh hardware Direct generation"),
+    TestFalse(
+        TEXT("The automatic sweep cannot move Source before the baseline CPU reference is logged"),
         FUERayTracingAudioDirectSweepPolicy::ShouldStartAutomatic(
             true,
             false,
+            true,
+            false,
+            true,
+            7,
+            true));
+    TestTrue(
+        TEXT("An owner starts after baseline evidence from a fresh hardware Direct generation"),
+        FUERayTracingAudioDirectSweepPolicy::ShouldStartAutomatic(
+            true,
+            false,
+            true,
             true,
             true,
             7,
@@ -566,6 +577,7 @@ bool FUERayTracingAudioDirectSweepMetricsTest::RunTest(
             false,
             false,
             true,
+            true,
             7,
             true));
     TestFalse(
@@ -573,6 +585,7 @@ bool FUERayTracingAudioDirectSweepMetricsTest::RunTest(
         FUERayTracingAudioDirectSweepPolicy::ShouldStartAutomatic(
             true,
             false,
+            true,
             true,
             true,
             7,

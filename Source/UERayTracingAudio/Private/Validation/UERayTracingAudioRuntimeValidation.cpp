@@ -1905,6 +1905,7 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
                     State.bDirectSweepAutomaticRequested,
                     State.bDirectSweepAutomaticStarted,
                     State.bValidationOwner,
+                    State.bResultLogged,
                     bHasLatestResult
                         && LatestResult.bHasDirectResult,
                     bHasLatestResult
