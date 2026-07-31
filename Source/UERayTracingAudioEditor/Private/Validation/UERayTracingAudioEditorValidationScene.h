@@ -58,6 +58,9 @@ struct FUERayTracingAudioEditorValidationSceneResult
 class FUERayTracingAudioEditorValidationScene
 {
 public:
+    static UUERayTracingAudioSourceComponent* FindTaggedSource(
+        UWorld* World);
+
     // DistanceCmOverride only affects the Clear preset (source/listener stay on the
     // same line of sight used by the fixed room, just moved further apart) and is used
     // by the R2 distance-scan / air-absorption validation. A value <= 0 keeps the

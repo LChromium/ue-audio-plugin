@@ -102,6 +102,37 @@ namespace
             : RF_Transactional;
     }
 
+    template <typename TComponent, typename TConfigure>
+    TComponent* CreateValidationInstanceComponent(
+        AActor& Owner,
+        const FName ComponentName,
+        const EUERayTracingAudioEditorValidationSceneMode Mode,
+        bool& bOutMutated,
+        TConfigure&& Configure)
+    {
+        if (Mode
+            == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+        {
+            Owner.Modify();
+        }
+
+        TComponent* Component = NewObject<TComponent>(
+            &Owner,
+            ComponentName,
+            GetObjectFlags(Mode));
+        if (!Component)
+        {
+            return nullptr;
+        }
+
+        Configure(*Component);
+        Owner.AddInstanceComponent(Component);
+        Component->OnComponentCreated();
+        Component->RegisterComponent();
+        bOutMutated = true;
+        return Component;
+    }
+
     AActor* FindTaggedActor(UWorld& World, const FName Role)
     {
         for (TActorIterator<AActor> ActorIt(&World); ActorIt; ++ActorIt)
@@ -214,7 +245,8 @@ namespace
     UUERayTracingAudioGeometryComponent* EnsureGeometryComponent(
         AStaticMeshActor& Actor,
         const FGeometryDefinition& Definition,
-        const EUERayTracingAudioEditorValidationSceneMode Mode)
+        const EUERayTracingAudioEditorValidationSceneMode Mode,
+        bool& bOutMutated)
     {
         if (UUERayTracingAudioGeometryComponent* Existing =
             Actor.FindComponentByClass<UUERayTracingAudioGeometryComponent>())
@@ -222,25 +254,23 @@ namespace
             return Existing;
         }
 
-        UUERayTracingAudioGeometryComponent* Geometry =
-            NewObject<UUERayTracingAudioGeometryComponent>(
-                &Actor,
-                TEXT("ValidationAcousticGeometry"),
-                GetObjectFlags(Mode));
-        if (!Geometry)
-        {
-            return nullptr;
-        }
-
-        Actor.AddInstanceComponent(Geometry);
-        Geometry->bExportToAcousticScene = true;
-        Geometry->bAffectsDirectSound = true;
-        Geometry->ExportMode = EUERayTracingAudioGeometryExportMode::BoundingBox;
-        Geometry->Absorption = Definition.Absorption;
-        Geometry->Transmission = FVector::ZeroVector;
-        Geometry->Scattering = Definition.Scattering;
-        Geometry->RegisterComponent();
-        return Geometry;
+        return CreateValidationInstanceComponent<
+            UUERayTracingAudioGeometryComponent>(
+            Actor,
+            FName(TEXT("ValidationAcousticGeometry")),
+            Mode,
+            bOutMutated,
+            [&Definition](
+                UUERayTracingAudioGeometryComponent& Geometry)
+            {
+                Geometry.bExportToAcousticScene = true;
+                Geometry.bAffectsDirectSound = true;
+                Geometry.ExportMode =
+                    EUERayTracingAudioGeometryExportMode::BoundingBox;
+                Geometry.Absorption = Definition.Absorption;
+                Geometry.Transmission = FVector::ZeroVector;
+                Geometry.Scattering = Definition.Scattering;
+            });
     }
 
     void EnsurePointLight(
@@ -307,6 +337,32 @@ namespace
     }
 }
 
+UUERayTracingAudioSourceComponent*
+FUERayTracingAudioEditorValidationScene::FindTaggedSource(UWorld* World)
+{
+    if (!IsValid(World))
+    {
+        return nullptr;
+    }
+
+    const FName SourceRole(TEXT("VRTA_AB_Source"));
+    for (TActorIterator<AActor> ActorIt(World); ActorIt; ++ActorIt)
+    {
+        if (!ActorIt->ActorHasTag(ValidationSceneTag)
+            || !ActorIt->ActorHasTag(SourceRole))
+        {
+            continue;
+        }
+        if (UUERayTracingAudioSourceComponent* Source =
+            ActorIt->FindComponentByClass<
+                UUERayTracingAudioSourceComponent>())
+        {
+            return Source;
+        }
+    }
+    return nullptr;
+}
+
 FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidationScene::EnsureScene(
     UWorld& World,
     const EUERayTracingAudioEditorValidationSceneMode Mode,
@@ -366,7 +422,12 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
             FTransform(FRotator::ZeroRotator, ValidationOrigin + Definition.Offset, Definition.Scale),
             Mode,
             Result.bCreatedActors);
-        if (!GeometryActor || !EnsureGeometryComponent(*GeometryActor, Definition, Mode))
+        if (!GeometryActor
+            || !EnsureGeometryComponent(
+                *GeometryActor,
+                Definition,
+                Mode,
+                bMutatedActors))
         {
             Result.Message = FString::Printf(TEXT("Could not create validation geometry: %s."), Definition.Label);
             return Result;
@@ -427,13 +488,19 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         SourceActor->FindComponentByClass<UUERayTracingAudioSourceComponent>();
     if (!Source)
     {
-        Source = NewObject<UUERayTracingAudioSourceComponent>(
-            SourceActor,
-            TEXT("ValidationSource"),
-            GetObjectFlags(Mode));
-        SourceActor->AddInstanceComponent(Source);
-        Source->RegisterComponent();
-        Result.bCreatedActors = true;
+        Source = CreateValidationInstanceComponent<
+            UUERayTracingAudioSourceComponent>(
+            *SourceActor,
+            FName(TEXT("ValidationSource")),
+            Mode,
+            bMutatedActors,
+            [](UUERayTracingAudioSourceComponent&) {});
+    }
+    if (!Source)
+    {
+        Result.Message =
+            TEXT("Could not create the validation Source component.");
+        return Result;
     }
     const bool bSourceSettingsChanged =
         !FMath::IsNearlyEqual(Source->OccludedGain, 0.35f)
@@ -477,14 +544,21 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
     bMutatedActors |= bSourceSettingsChanged;
     if (!SourceActor->FindComponentByClass<UAudioComponent>())
     {
-        UAudioComponent* Audio = NewObject<UAudioComponent>(
-            SourceActor,
-            TEXT("ValidationAudio"),
-            GetObjectFlags(Mode));
-        SourceActor->AddInstanceComponent(Audio);
-        Audio->bAutoActivate = false;
-        Audio->bAllowSpatialization = true;
-        Audio->RegisterComponent();
+        if (!CreateValidationInstanceComponent<UAudioComponent>(
+                *SourceActor,
+                FName(TEXT("ValidationAudio")),
+                Mode,
+                bMutatedActors,
+                [](UAudioComponent& Audio)
+                {
+                    Audio.bAutoActivate = false;
+                    Audio.bAllowSpatialization = true;
+                }))
+        {
+            Result.Message =
+                TEXT("Could not create the validation Audio component.");
+            return Result;
+        }
     }
     Result.Source = Source;
 
@@ -522,12 +596,19 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         ListenerActor->FindComponentByClass<UUERayTracingAudioListenerComponent>();
     if (!Listener)
     {
-        Listener = NewObject<UUERayTracingAudioListenerComponent>(
-            ListenerActor,
-            TEXT("ValidationListener"),
-            GetObjectFlags(Mode));
-        ListenerActor->AddInstanceComponent(Listener);
-        Listener->RegisterComponent();
+        Listener = CreateValidationInstanceComponent<
+            UUERayTracingAudioListenerComponent>(
+            *ListenerActor,
+            FName(TEXT("ValidationListener")),
+            Mode,
+            bMutatedActors,
+            [](UUERayTracingAudioListenerComponent&) {});
+    }
+    if (!Listener)
+    {
+        Result.Message =
+            TEXT("Could not create the validation Listener component.");
+        return Result;
     }
     Result.Listener = Listener;
     Result.SourceListenerDistanceCm = FVector::Distance(

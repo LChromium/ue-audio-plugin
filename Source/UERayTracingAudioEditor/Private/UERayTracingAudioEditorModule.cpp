@@ -1011,7 +1011,9 @@ namespace
         void InitializeValidationSelections()
         {
             UWorld* World = GetEditorWorld();
-            SelectedSource = FindSource(World);
+            SelectedSource =
+                FUERayTracingAudioEditorValidationScene::FindTaggedSource(
+                    World);
             SelectedListener = FindListener(World);
 
             FString AirProfileValue;
@@ -1082,29 +1084,6 @@ namespace
                     *BestSoundWave->GetPathName(),
                     BestSoundWave->GetDuration());
             }
-        }
-
-        UUERayTracingAudioSourceComponent* FindSource(UWorld* World) const
-        {
-            if (!IsValid(World))
-            {
-                return nullptr;
-            }
-
-            UUERayTracingAudioSourceComponent* FirstSource = nullptr;
-            for (TActorIterator<AActor> ActorIt(World); ActorIt; ++ActorIt)
-            {
-                if (UUERayTracingAudioSourceComponent* Source =
-                    ActorIt->FindComponentByClass<UUERayTracingAudioSourceComponent>())
-                {
-                    if (ActorIt->ActorHasTag(FName(TEXT("VRTA_EditorValidationScene"))))
-                    {
-                        return Source;
-                    }
-                    FirstSource = FirstSource ? FirstSource : Source;
-                }
-            }
-            return FirstSource;
         }
 
         FReply CreateValidationScene(const EUERayTracingAudioEditorDirectPreset DirectPreset)
@@ -1264,10 +1243,6 @@ namespace
         {
             UWorld* World = GetEditorWorld();
             UUERayTracingAudioSourceComponent* Source = SelectedSource.Get();
-            if (!IsValid(Source))
-            {
-                Source = FindSelectedSource();
-            }
             UUERayTracingAudioListenerComponent* Listener = SelectedListener.Get();
             if (!IsValid(Listener))
             {
