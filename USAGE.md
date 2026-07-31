@@ -234,3 +234,16 @@ Task 2 已验证的自动化证据：
 - `uv run script\launch_runtime_validation.py`：exit `0`；Direct/Indirect batches `4/4`，hardware/CPU paths `171/171`，gain `0.001625/0.001625`，data sources passed，kernels `2/2/4`，`non_finite=0`，hard realtime `169 / 0 / 0`。Game 日志：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785425951315732900.log`；Editor 日志：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785426132061345000.log`。
 
 范围说明：两 World 隔离仅在 NullRHI Automation 中完成，固定硬件运行时为单 World；尚未执行真实 multi-PIE hardware session。Editor PIE 人工试听和 Human Pass 也未执行。以上自动化结果不能替代 Human Pass，不能据此宣称整个插件已完成。
+
+## Task 3: Using three-band direct air absorption
+
+1. Open **Project Settings > Plugins > UE Ray Tracing Audio** and set **Air Absorption Low-Mid Crossover Hz** and **Air Absorption Mid-High Crossover Hz**. The validated defaults are `500 Hz` and `4000 Hz`; restart the Editor after changing them because the module caches the pair at startup.
+2. On the source's **UE Ray Tracing Audio Occlusion Settings**, enable **Apply Air Absorption**. Distance attenuation and occlusion remain broadband; the simulation snapshot's low/mid/high air gains shape those bands independently.
+3. Keep **Apply Air Absorption** disabled when only broadband distance and occlusion behavior is desired.
+4. Run `uv run script\build_and_validate.py`, then `uv run script\launch_runtime_validation.py`. The fixed launcher validates Game mode and leaves the Editor open for listening.
+
+Task 3 automated evidence: ConfigurableDirect NullRHI passed `9/9` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task3-ConfigurableDirect-Final-Reviewed.log`; full Audio passed `32/32` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task3-Audio-Final-Reviewed.log`. The spectrum check measured low/high RMS `0.706901057 / 0.314958528`, ratio `2.244426`.
+
+The final fixed runtime passed with Game log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785461920592378400.log` and Editor log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785462101170308900.log`.
+
+Manual acceptance remains required: use the target headphones/speakers and the same recognizable input to listen through distance sweeps, audible air absorption, and moving occlusion. Record the device, source asset, scene, settings, and result. These checks and the Task 2 multi-PIE hardware follow-up are still open; automated RMS and runtime diagnostics do not constitute Human Pass.

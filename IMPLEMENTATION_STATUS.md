@@ -494,3 +494,19 @@
 - `uv run script\launch_runtime_validation.py` exit `0`：Direct/Indirect batches `4/4`，hardware/CPU paths `171/171`，gain `0.001625/0.001625`，data sources passed，`non_finite=0`，kernels `2/2/4`，hard realtime passed with callbacks/misses/drops `169/0/0`。Game：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785425951315732900.log`；Editor：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785426132061345000.log`。
 
 剩余限制：两 World 行为由 NullRHI Automation 验证，硬件 runtime 只覆盖单 World；尚未执行 multi-PIE hardware isolation。人工 Editor PIE/hardware listening 与 Human Pass 未执行，P3 coverage follow-up 保留到 final review。因此 Task 2 的自动化验证已完成，但整个插件仍未完成。
+
+## Task 3: Frequency-dependent, real-time-safe direct DSP
+
+Implementation status: complete and automatically verified. Each occlusion source owns preallocated per-channel low/mid filter state plus previous three-band gains. Module startup validates and caches the project crossover pair, the factory/plugin copy it, and source initialization prepares the processor off the callback. The callback applies broadband distance times occlusion, multiplies by the snapshot's low/mid/high air gains, interpolates one gain vector per frame, processes channels independently, and preserves the existing Wet path. Capacity mismatch records one miss per buffer and uses a scalar non-allocating fallback. Non-finite input is rejected before persistent state mutation.
+
+TDD evidence: the original plugin failed `FrequencyDependentAirAbsorption` with low/high ratio `1.000000` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task3-FrequencyDependentAirAbsorption-Red-Detailed.log`. Review-driven `NonFiniteInputRecovery` then failed because a NaN poisoned subsequent state at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task3-NonFiniteInputRecovery-Red-Detailed.log`; the finite-input guard made it green.
+
+Final evidence (2026-07-31):
+
+- `uv run script\build_and_validate.py` exit `0`: `35 functions / 36 bodies / 1510 lines / 0 forbidden operations`, `47/47` build actions, `Result: Succeeded`, and `Build and validation complete.`
+- `uv run python -m unittest discover -s script\tests -v`: `50/50` passed.
+- ConfigurableDirect NullRHI: `9/9`, `0 failed`; low/high RMS `0.706901057 / 0.314958528`, ratio `2.244426`; `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task3-ConfigurableDirect-Final-Reviewed.log`.
+- Full Audio NullRHI: `32/32`, `0 failed`; `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task3-Audio-Final-Reviewed.log`.
+- `uv run script\launch_runtime_validation.py` exit `0`: Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and hard realtime callbacks/misses/drops `179/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785461920592378400.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785462101170308900.log`.
+
+Remaining limitations: target-headphone/speaker Human Pass, distance-sweep listening, audible air-absorption listening, and moving-occlusion listening are not performed. Hardware runtime remains single-World, so Task 2 multi-PIE hardware isolation is also open. Automation and runtime metrics do not close those manual gates or the overall plugin.

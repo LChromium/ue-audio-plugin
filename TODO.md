@@ -265,3 +265,14 @@
 - [x] Fixed runtime flow `uv run script\launch_runtime_validation.py` exited `0`: Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and hard realtime passed with `169 / 0 / 0` callbacks/capacity misses/prepare drops. Logs: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785425951315732900.log` and `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785426132061345000.log`.
 - [ ] Run a true multi-PIE hardware session to supplement the deterministic two-World NullRHI tests and the single-World hardware runtime. The P3 coverage follow-up remains ledgered for final review; this documentation fix adds no tests.
 - [ ] Complete Editor PIE/manual hardware listening and record Human Pass/Fail. Automated evidence does not constitute Human Pass, and the overall plugin is not complete.
+
+## Task 3: Frequency-dependent, real-time-safe direct DSP (2026-07-31)
+
+- [x] Added a per-source, per-channel complementary three-band processor using the configured `500 / 4000 Hz` defaults; channel storage is allocated during source initialization and never resized in the audio callback.
+- [x] Direct distance and occlusion remain broadband, while the low/mid/high air-absorption gains are interpolated once per frame and applied independently. Wet mixing is unchanged.
+- [x] Unsupported callback channel capacity records one hard-real-time miss per buffer and uses a non-allocating scalar broadband fallback.
+- [x] Non-finite input samples are zeroed before they can poison persistent filter state.
+- [x] Focused NullRHI Automation passed `9/9`; full Audio NullRHI Automation passed `32/32`. The frequency test measured low/high RMS `0.706901057 / 0.314958528`, ratio `2.244426`.
+- [x] The prescribed build, `50/50` Python tests, static hard-real-time audit, and fixed hardware runtime passed. Runtime reported Direct/Indirect batches `4/4`, paths `171/171`, `non_finite=0`, and callbacks/capacity misses/prepare drops `179/0/0`.
+- [ ] Complete target-headphone/speaker Human Pass for the distance sweep, audible air absorption, and moving occlusion matrix. Automation/runtime metrics are not Human Pass.
+- [ ] Complete the Task 2 multi-PIE hardware isolation follow-up; this Task 3 runtime remains single-World.
