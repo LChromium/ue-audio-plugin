@@ -198,6 +198,73 @@ namespace
 #endif
         return Observation;
     }
+
+    struct FDirectResetGenerationObservation
+    {
+        bool bApiPresent = false;
+        uint64 PreResetAudioComponentId = 0;
+        uint64 PostResetAudioComponentId = 0;
+        uint64 PreResetGeneration = 0;
+        uint64 PostResetGeneration = 0;
+        uint64 StaleBufferCount = 0;
+        uint64 CurrentBufferCount = 0;
+        uint64 CurrentDirectPresentBufferCount = 0;
+    };
+
+    FDirectResetGenerationObservation ObserveDirectResetGeneration()
+    {
+        FDirectResetGenerationObservation Observation;
+#if UE_RAY_TRACING_AUDIO_HAS_DIRECT_TARGET_GENERATION
+        constexpr uint64 AudioComponentId = 0xAE5E7D1A6ULL;
+        FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(
+            AudioComponentId);
+        FUERayTracingAudioAudioDiagnostics::ResetDirect();
+        const FUERayTracingAudioDirectDiagnosticsTargetToken PreResetTarget =
+            FUERayTracingAudioAudioDiagnosticsInternal::CaptureTarget(
+                AudioComponentId);
+        Observation.PreResetAudioComponentId =
+            PreResetTarget.AudioComponentId;
+        Observation.PreResetGeneration = PreResetTarget.Generation;
+
+        FUERayTracingAudioAudioDiagnostics::ResetDirect();
+        FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer(
+            PreResetTarget,
+            32,
+            0.5f,
+            0.25f,
+            0.125f,
+            0,
+            0);
+        Observation.StaleBufferCount =
+            FUERayTracingAudioAudioDiagnostics::ReadDirect().BufferCount;
+
+        const FUERayTracingAudioDirectDiagnosticsTargetToken PostResetTarget =
+            FUERayTracingAudioAudioDiagnosticsInternal::CaptureTarget(
+                AudioComponentId);
+        Observation.PostResetAudioComponentId =
+            PostResetTarget.AudioComponentId;
+        Observation.PostResetGeneration = PostResetTarget.Generation;
+        FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer(
+            PostResetTarget,
+            32,
+            0.5f,
+            0.25f,
+            0.125f,
+            0,
+            0);
+        const auto CurrentStats =
+            FUERayTracingAudioAudioDiagnostics::ReadDirect();
+        FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(0);
+        FUERayTracingAudioAudioDiagnostics::ResetDirect();
+
+        Observation.bApiPresent = true;
+        Observation.CurrentBufferCount =
+            CurrentStats.BufferCount;
+        Observation.CurrentDirectPresentBufferCount =
+            CurrentStats.DirectPresentInputBufferCount;
+#endif
+        return Observation;
+    }
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -335,6 +402,53 @@ bool FUERayTracingAudioDirectTargetGenerationTest::RunTest(
         1ULL);
     TestEqual(
         TEXT("The current target's Direct-present buffer is retained"),
+        Observation.CurrentDirectPresentBufferCount,
+        1ULL);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioDirectResetGenerationTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.DirectResetGeneration",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioDirectResetGenerationTest::RunTest(
+    const FString&)
+{
+    const FDirectResetGenerationObservation Observation =
+        ObserveDirectResetGeneration();
+    TestTrue(
+        TEXT("Direct diagnostics expose reset-generation capture and publication"),
+        Observation.bApiPresent);
+    if (!Observation.bApiPresent)
+    {
+        return false;
+    }
+
+    TestTrue(
+        TEXT("The pre-reset target captures a nonzero generation"),
+        Observation.PreResetGeneration != 0);
+    TestTrue(
+        TEXT("The post-reset target captures a nonzero generation"),
+        Observation.PostResetGeneration != 0);
+    TestEqual(
+        TEXT("Reset keeps the selected diagnostic component ID"),
+        Observation.PostResetAudioComponentId,
+        Observation.PreResetAudioComponentId);
+    TestNotEqual(
+        TEXT("Reset advances the diagnostic target generation"),
+        Observation.PostResetGeneration,
+        Observation.PreResetGeneration);
+    TestEqual(
+        TEXT("A pre-reset writer cannot initialize the reset epoch"),
+        Observation.StaleBufferCount,
+        0ULL);
+    TestEqual(
+        TEXT("A post-reset writer initializes exactly one Direct buffer"),
+        Observation.CurrentBufferCount,
+        1ULL);
+    TestEqual(
+        TEXT("The post-reset Direct-present buffer is retained"),
         Observation.CurrentDirectPresentBufferCount,
         1ULL);
     return true;

@@ -179,8 +179,9 @@ void FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(
         return;
     }
 
-    // The validation/control path is the single target writer. Odd generation
-    // values make an in-progress identity change unreadable to the callback.
+    // SetTargetAudioComponentId and ResetDirect share one serialized
+    // validation/control writer. Odd generation values make an in-progress
+    // diagnostic-context change unreadable to the callback.
     ++GTargetGeneration;
     GTargetAudioComponentId.Store(AudioComponentId);
     ++GTargetGeneration;
@@ -467,7 +468,12 @@ FUERayTracingAudioDataSourceAudioStats FUERayTracingAudioAudioDiagnostics::Read(
 
 void FUERayTracingAudioAudioDiagnostics::ResetDirect()
 {
+    // Reset keeps the selected component ID but advances the same context
+    // generation so a callback captured before this epoch cannot publish
+    // into it.
+    ++GTargetGeneration;
     ++GDirectStats.RequestedEpoch;
+    ++GTargetGeneration;
 }
 
 void FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer(
