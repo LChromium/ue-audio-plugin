@@ -137,3 +137,20 @@ Final evidence (2026-07-31):
 - `uv run script\launch_runtime_validation.py` exit `0`: Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and hard realtime callbacks/misses/drops `179/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785461920592378400.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785462101170308900.log`.
 
 Remaining limitations: target-headphone/speaker Human Pass, distance-sweep listening, audible air-absorption listening, and moving-occlusion listening are not performed. Hardware runtime remains single-World, so Task 2 multi-PIE hardware isolation is also open. Automation and runtime metrics do not close those manual gates or the overall plugin.
+
+## Task 4: Direct continuity observability and runtime mode API
+
+Implementation status: complete and automatically verified. Direct diagnostics use their own requested/published epoch and odd/even snapshot sequence. The audio callback records Direct-only RMS, input peak presence, non-finite/over-unit Direct samples, and the maximum per-frame three-band interpolation step before adding Wet. A busy diagnostics writer causes the buffer to be skipped rather than waited on; reads are bounded to eight attempts.
+
+`UUERayTracingAudioSourceComponent` now exposes Blueprint-callable `SetIndirectDataSource` and `SetBakedImpulseResponseAsset`. Mode changes are published by the next normal component tick. Asset replacement clears cached asset identity, sample-rate/transition cache, baked kernels, and tail state; published kernel identities and lane revisions remain monotonic so the next snapshot invalidates stale prepared convolution correctly. Validation hotkeys and internal mode phases use these setters.
+
+TDD and final evidence (2026-07-31):
+
+- RED build passed, then ConfigurableDirect reported `9 passed / 2 failed`: the Direct diagnostics reset/record/read API probe was false and both setter UFUNCTION lookups were null. `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-RED-ConfigurableDirect.log`.
+- `uv run script\build_and_validate.py` exit `0`: audit `36 functions / 37 bodies / 1634 lines / 0 forbidden operations`, build `47/47`, `Result: Succeeded`, and `Build and validation complete.`
+- ConfigurableDirect NullRHI: `11/11`, `0 failed`; `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-GREEN-ConfigurableDirect.log`.
+- Full Audio NullRHI: `34/34`, `0 failed`; `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-GREEN-Audio.log`.
+- Python: `50/50`; standalone callback audit: `36 functions / 37 bodies / 1634 lines`, all five violation categories zero.
+- `uv run script\launch_runtime_validation.py` exit `0`: hardware/CPU paths `171/171`, all three data sources passed, kernels `2/2/4`, `non_finite=0`, and hard-realtime callbacks/misses/drops `169/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785466094540462400.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785466275542564200.log`.
+
+Remaining limitations: the fixed runtime is regression evidence and does not itself constitute the later moving Direct sweep gate or Human Pass. Target-device PIE listening for Direct continuity, audible air absorption, F1/F2/F5 transitions, and click/pop absence remains unperformed. Task 2 multi-PIE hardware isolation also remains open; the overall plugin is not complete.

@@ -171,3 +171,21 @@ Task 3 automated evidence: ConfigurableDirect NullRHI passed `9/9` at `D:\Labs\2
 The final fixed runtime passed with Game log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785461920592378400.log` and Editor log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785462101170308900.log`.
 
 Manual acceptance remains required: use the target headphones/speakers and the same recognizable input to listen through distance sweeps, audible air absorption, and moving occlusion. Record the device, source asset, scene, settings, and result. These checks and the Task 2 multi-PIE hardware follow-up are still open; automated RMS and runtime diagnostics do not constitute Human Pass.
+
+## Task 4: Switching indirect data at runtime
+
+Use the Blueprint-callable functions in the `UE Ray Tracing Audio|Indirect` category:
+
+1. To use a baked or hybrid mode, call `SetBakedImpulseResponseAsset` on the `UERayTracingAudioSourceComponent` with the desired IR asset.
+2. Call `SetIndirectDataSource` with `Realtime`, `Baked`, or `Hybrid`. The component refreshes the applicable kernels and publishes the new audio snapshot on its next tick.
+3. Reassigning the baked asset through the setter invalidates cached prepared convolution state. Do not depend on a previous asset's kernel after replacement.
+4. The validation scene's F1/F2/F5 controls call the same public setter used by Blueprint/C++ projects: F1 is Realtime, F2 is Baked, and F5 is Hybrid.
+5. Check `BakedAssetStatus` before accepting Baked or Hybrid output; fix missing, stale, World, scene, or placement errors rather than overriding them for formal validation.
+
+Task 4 verification evidence:
+
+- RED: the Direct diagnostics API and both setter UFUNCTIONs were absent in `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-RED-ConfigurableDirect.log`.
+- GREEN: ConfigurableDirect `11/11` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-GREEN-ConfigurableDirect.log`; full Audio `34/34` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-GREEN-Audio.log`; Python `50/50`; realtime audit `36 functions / 37 bodies / 1634 lines / 0 violations`.
+- Fixed hardware runtime exited `0`, reported paths `171/171` and callbacks/misses/drops `169/0/0`, and left the Editor open. Logs: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785466094540462400.log` and `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785466275542564200.log`.
+
+The diagnostics prove bounded numeric observations, not audible quality. Use the open Editor in PIE and target headphones/speakers to verify recognizable content, F1/F2/F5 transitions, moving Direct continuity, and no click/pop; record that separately as Human Pass/Fail.

@@ -77,3 +77,21 @@ Next:
 1. Perform and record target-device Human Pass for the distance sweep, audible air absorption, and moving occlusion.
 2. Perform the Task 2 multi-PIE hardware isolation follow-up; Task 3's fixed runtime evidence is single-World.
 3. Keep automated metrics and manual listening conclusions distinct; do not claim overall plugin completion until the remaining acceptance gates pass.
+
+## Task 4: Direct continuity diagnostics and runtime setters
+
+Completed:
+
+1. Added a separate lock-free Direct diagnostics epoch with bounded readers and a non-waiting single-writer CAS.
+2. Measured Direct-only continuity, numeric safety, and per-sample band-gain steps before the callback adds Wet.
+3. Added the approved Blueprint/C++ setters and invalidated baked caches without breaking monotonic convolution revisions.
+4. Routed validation F1/F2/F5 and all internal validation data-source transitions through the public API.
+5. Extended the callback source audit to `RecordDirectBuffer`.
+6. Recorded RED (`9 passed / 2 failed`) and final GREEN evidence: build `47/47`, ConfigurableDirect `11/11`, Audio `34/34`, audit `36/37/1634` with zero violations, Python `50/50`.
+7. Ran the exact fixed runtime flow successfully: paths `171/171`, data sources passed, callbacks/misses/drops `169/0/0`; the final Editor remains open.
+
+Next:
+
+1. Continue with the planned moving Direct sweep gate that consumes `FUERayTracingAudioDirectAudioStats`; this Task 4 runtime only proves no regression in the existing fixed hardware flow.
+2. In PIE on target headphones/speakers, verify recognizable Direct content, F1/F2/F5 transitions, moving occlusion/air absorption, and no click/pop. Record Human Pass/Fail separately.
+3. Retain the Task 2 multi-PIE hardware follow-up and do not claim overall completion from automated numeric evidence.

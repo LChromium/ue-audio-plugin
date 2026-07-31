@@ -70,3 +70,12 @@
 - Final verification passed: prescribed build `47/47`; static audit `35 functions / 36 bodies / 1510 lines / 0 forbidden operations`; Python `50/50`; ConfigurableDirect `9/9`; full Audio `32/32`; spectrum ratio `2.244426`.
 - Fixed hardware runtime passed: Direct/Indirect batches `4/4`, paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and callbacks/misses/drops `179/0/0`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785461920592378400.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785462101170308900.log`.
 - The Editor is left running for manual validation. Target-device Human Pass, distance/air/moving-occlusion listening, and Task 2 multi-PIE hardware isolation remain open; automated evidence is not Human Pass.
+
+## 2026-07-31 - Configurable Direct Audio Task 4
+
+- RED passed the build and failed only the two intended contracts: Direct diagnostics API missing and both runtime setter UFUNCTIONs absent (`9 passed / 2 failed`).
+- Added lock-free, epoch-consistent Direct continuity diagnostics and measured Direct samples before Wet mixing. The callback skips a busy writer and performs no allocation, wait, logging, UObject access, or shared-ownership change.
+- Added Blueprint-callable runtime data-source and baked-asset setters; validation F1/F2/F5 and internal phases now use them. Baked replacement invalidates cached kernels while keeping published lane revisions monotonic.
+- Final verification passed: build `47/47`; ConfigurableDirect `11/11`; Audio `34/34`; callback audit `36 functions / 37 bodies / 1634 lines / 0 violations`; Python `50/50`.
+- Fixed hardware runtime passed with paths `171/171`, all data sources ready, and callbacks/misses/drops `169/0/0`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785466094540462400.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785466275542564200.log`.
+- The Editor is left running. Target-device PIE Human Pass, moving Direct sweep/listening, click/pop confirmation, and Task 2 multi-PIE hardware isolation remain open; automated metrics are not Human Pass.

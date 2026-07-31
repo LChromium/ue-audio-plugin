@@ -138,3 +138,14 @@ v1 必须同时满足：
 - [x] The prescribed build, `50/50` Python tests, static hard-real-time audit, and fixed hardware runtime passed. Runtime reported Direct/Indirect batches `4/4`, paths `171/171`, `non_finite=0`, and callbacks/capacity misses/prepare drops `179/0/0`.
 - [ ] Complete target-headphone/speaker Human Pass for the distance sweep, audible air absorption, and moving occlusion matrix. Automation/runtime metrics are not Human Pass.
 - [ ] Complete the Task 2 multi-PIE hardware isolation follow-up; this Task 3 runtime remains single-World.
+
+## Task 4: Direct continuity diagnostics and public runtime setters (2026-07-31)
+
+- [x] Added epoch-consistent Direct-only audio diagnostics for input-bearing buffers, Direct presence/silent runs, non-finite and over-unit Direct samples, and maximum per-sample three-band gain step.
+- [x] Kept `RecordDirectBuffer` bounded and lock-free: one non-waiting writer CAS, plain-value inputs, bounded reads, and no allocation, free, logging, wait, UObject access, or shared-ownership mutation in the callback path.
+- [x] Added Blueprint-callable `SetIndirectDataSource` and `SetBakedImpulseResponseAsset` under `UE Ray Tracing Audio|Indirect`. Baked-asset changes invalidate cached kernels while preserving monotonic published lane revisions.
+- [x] Routed validation F1/F2/F5 and internal Realtime/Baked/Hybrid transitions through the public setters.
+- [x] RED recorded the exact missing contracts: Direct diagnostics API absent and both setter UFUNCTION lookups null. Log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-RED-ConfigurableDirect.log`.
+- [x] Final automated gates passed: build `47/47`; ConfigurableDirect `11/11`; Audio `34/34`; audit `36 functions / 37 bodies / 1634 lines / 0 violations`; Python `50/50`.
+- [x] Fixed runtime exited `0`: hardware/CPU paths `171/171`, data-source gate passed, and callbacks/capacity misses/prepare drops were `169/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785466094540462400.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785466275542564200.log`.
+- [ ] In the Editor left open by the fixed launcher, complete PIE/target-device listening and record Human Pass/Fail for F1/F2/F5 transitions, Direct continuity, moving occlusion, audible air absorption, and click/pop absence. Automated counters and the regression runtime are not Human Pass.
