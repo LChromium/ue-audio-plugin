@@ -88,3 +88,11 @@
 - Final verification passed: prescribed build `47/47`; ConfigurableDirect `12/12`; Audio `35/35`; callback audit `39 functions / 40 bodies / 1718 lines / 0 violations`; Python `51/51`.
 - Fixed hardware runtime passed: Direct/Indirect batches `4/4`, paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and callbacks/misses/drops `176/0/0`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785468883156707700.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785469063951366500.log`.
 - Editor PID `41028` is left running. Moving Direct sweep, target-device Human Pass/click-pop listening, and Task 2 multi-PIE hardware isolation remain open.
+
+## 2026-07-31 - Configurable Direct Audio Task 4 Fix Round 2
+
+- RED reproduced the reset-only race: a token captured for the current component remained valid after `ResetDirect`, published one stale buffer into the new epoch, and made the valid follow-up total two buffers (`12 passed / 1 failed`).
+- `ResetDirect` now brackets its epoch advance with the existing odd/even diagnostic-context generation while keeping the selected component ID unchanged. Same-ID target-set no-op, A/B/A rejection, sequence recovery, and bounded callback behavior are preserved.
+- Final verification passed: prescribed build `47/47`; ConfigurableDirect `13/13`; Audio `36/36`; callback audit `39 functions / 40 bodies / 1718 lines / 0 violations`; Python `51/51`.
+- Fixed hardware runtime passed: Direct/Indirect batches `4/4`, paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and callbacks/misses/drops `190/0/0`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785470614600787600.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785470795487644500.log`.
+- Editor PID `22952` is left running. Moving Direct sweep, target-device Human Pass/click-pop listening, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open.

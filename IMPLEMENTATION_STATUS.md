@@ -171,3 +171,20 @@ Fix Round 1 TDD and final evidence (2026-07-31):
 - `uv run script\launch_runtime_validation.py` exit `0`: hardware/CPU paths `171/171`, all three data sources passed, kernels `2/2/4`, `non_finite=0`, and hard-realtime callbacks/misses/drops `176/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785468883156707700.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785469063951366500.log`.
 
 Remaining limitations are unchanged: the moving Direct sweep, target-device PIE listening, click/pop and audible-quality Human Pass, and Task 2 multi-PIE hardware isolation are still open. The overall plugin is not complete.
+
+### Task 4 Fix Round 2: reset-versioned diagnostic contexts
+
+Implementation status: complete and automatically verified. `ResetDirect` now transitions the shared diagnostic-context generation to odd, advances `RequestedEpoch`, then publishes the next even generation. The target component ID is unchanged. A pre-reset callback token therefore fails the writer's generation revalidation even if it acquires the sequence after reset and reads the new epoch. The rejected writer restores the even sequence, and a post-reset token can publish one new buffer normally.
+
+`SetTargetAudioComponentId` still treats a same-ID assignment as a no-op, and A/B/A target switches retain their generation protection. Both target changes and resets rely on the existing one serialized control/game-thread writer. Audio callback work is unchanged: one non-waiting CAS attempt, bounded reads, and no lock, allocation, logging, wait, UObject access, or shared-ownership mutation.
+
+Fix Round 2 TDD and final evidence (2026-07-31):
+
+- Behavioral RED built `47/47`, then ConfigurableDirect reported `12 passed / 1 failed`. Pre/post-reset generations were equal; the stale writer initialized the reset epoch with one buffer; the post-reset follow-up produced totals of two buffers and two Direct-present buffers. `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix2-RED-ConfigurableDirect.log`.
+- `uv run script\build_and_validate.py` exit `0`: callback audit `39 functions / 40 bodies / 0 forbidden operations`, build `47/47`, `Result: Succeeded`, and `Build and validation complete.`
+- ConfigurableDirect NullRHI: `13/13`, `0 failed`; `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix2-FINAL-ConfigurableDirect.log`.
+- Full Audio NullRHI: `36/36`, `0 failed`; `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix2-FINAL-Audio.log`.
+- Python: `51/51`; standalone callback audit: `39 functions / 40 bodies / 1718 lines`, all five violation categories zero.
+- `uv run script\launch_runtime_validation.py` exit `0`: Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, all three data sources passed, kernels `2/2/4`, `non_finite=0`, and hard-realtime callbacks/misses/drops `190/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785470614600787600.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785470795487644500.log`.
+
+Remaining limitations are unchanged. The moving Direct sweep, target-device PIE listening, click/pop and audible-quality Human Pass, Task 2 multi-PIE hardware isolation, and the three ledgered Task 4 Minors remain open; the overall plugin is not complete.

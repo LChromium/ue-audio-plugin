@@ -203,3 +203,17 @@ Fix Round 1 verification:
 - Runtime: the fixed launcher exited `0`, reported Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, data sources passed, and callbacks/misses/drops `176/0/0`. Logs: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785468883156707700.log` and `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785469063951366500.log`.
 
 The Editor is left open for the same manual PIE and target-device checks. These automated fixes do not close the moving Direct sweep, audible click/pop, Human Pass, or Task 2 multi-PIE hardware gates.
+
+### Task 4 Fix Round 2 reset behavior
+
+`FUERayTracingAudioAudioDiagnostics::ResetDirect` now starts a new diagnostic context as well as a new statistics epoch. The selected audio-component ID does not change, but any token captured before the reset is invalid afterward. This matters when a game/control-thread reset overlaps an audio callback: the old callback is discarded instead of becoming the first buffer in the new epoch, and the next callback captured after reset publishes normally.
+
+Continue to serialize `SetTargetAudioComponentId` and `ResetDirect` on one control/game thread. Reassigning the same target ID remains a no-op; use `ResetDirect` when the intent is to clear the current target's Direct statistics and invalidate already captured callback work. Reads immediately after reset remain empty until a post-reset callback publishes.
+
+Fix Round 2 verification:
+
+- RED: ConfigurableDirect `12/13`; the reset-only generation, empty-epoch, and one-buffer follow-up assertions failed at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix2-RED-ConfigurableDirect.log`.
+- GREEN: prescribed build `47/47`; ConfigurableDirect `13/13` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix2-FINAL-ConfigurableDirect.log`; full Audio `36/36` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix2-FINAL-Audio.log`; realtime audit `39/40/1718` with zero violations; Python `51/51`.
+- Runtime: the fixed launcher exited `0`, reported paths `171/171`, data sources passed, and callbacks/misses/drops `190/0/0`. Logs: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785470614600787600.log` and `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785470795487644500.log`.
+
+Editor PID `22952` is left open for manual PIE/listening. The moving Direct sweep, Human Pass/click-pop checks, Task 2 multi-PIE hardware isolation, and ledgered Task 4 Minors remain separate follow-ups.

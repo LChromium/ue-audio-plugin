@@ -158,3 +158,12 @@ v1 必须同时满足：
 - [x] Final gates passed: prescribed build `47/47`; ConfigurableDirect `12/12`; full Audio `35/35`; callback audit `39 functions / 40 bodies / 1718 lines / 0 violations`; Python `51/51`.
 - [x] The exact runtime launcher exited `0`: Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, data sources passed, and callbacks/capacity misses/prepare drops were `176/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785468883156707700.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785469063951366500.log`.
 - [ ] Manual target-device PIE listening, the moving Direct sweep, click/pop confirmation, and Task 2 multi-PIE hardware isolation remain open. Automated evidence is not Human Pass.
+
+## Task 4 Fix Round 2: reset-only diagnostic isolation (2026-07-31)
+
+- [x] Made `ResetDirect` advance the plain diagnostic-context generation around its epoch change while leaving the selected component ID unchanged. A callback token captured before reset can no longer publish into the new epoch.
+- [x] Preserved same-ID `SetTargetAudioComponentId` no-op behavior, A/B/A rejection, one serialized control-thread writer, and the callback's one-attempt, lock-free, allocation-free publication path.
+- [x] Deterministic RED found `13` ConfigurableDirect tests with `12 passed / 1 failed`: pre/post-reset generations were equal, the stale writer published one buffer, and the valid follow-up produced two instead of one. Log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix2-RED-ConfigurableDirect.log`.
+- [x] Final gates passed: prescribed build `47/47`; ConfigurableDirect `13/13`; full Audio `36/36`; callback audit `39 functions / 40 bodies / 1718 lines / 0 violations`; Python `51/51`.
+- [x] The exact runtime launcher exited `0`: Direct/Indirect batches `4/4`, hardware/CPU paths `171/171`, data sources passed, and callbacks/capacity misses/prepare drops were `190/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785470614600787600.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785470795487644500.log`.
+- [ ] Manual target-device PIE listening, the moving Direct sweep, click/pop confirmation, and Task 2 multi-PIE hardware isolation remain open. The ledgered Task 4 Minors were not addressed in this round.

@@ -110,3 +110,17 @@ Next:
 
 1. Continue the planned moving Direct sweep and target-device PIE listening; record click/pop and Human Pass/Fail separately.
 2. Retain the Task 2 multi-PIE hardware isolation follow-up. The Fix Round 1 automated/runtime gates do not complete either manual acceptance item.
+
+### Task 4 Fix Round 2
+
+Completed:
+
+1. Added deterministic reset-only coverage: capture a valid token, reset without changing target ID, reject the stale publication, then prove the sequence is reusable with one post-reset publication.
+2. Made `ResetDirect` advance the diagnostic-context generation around its epoch change while preserving same-ID setter no-op and A/B/A behavior.
+3. Recorded RED `12/13`, then final GREEN: build `47/47`, ConfigurableDirect `13/13`, Audio `36/36`, callback audit `39/40/1718` with zero violations, and Python `51/51`.
+4. Ran the exact fixed runtime successfully: Direct/Indirect batches `4/4`, paths `171/171`, data sources passed, callbacks/misses/drops `190/0/0`; Editor PID `22952` remains open.
+
+Next:
+
+1. Continue the planned moving Direct sweep and target-device PIE listening; record click/pop and Human Pass/Fail separately.
+2. Retain Task 2 multi-PIE hardware isolation and the three ledgered Task 4 Minors as separate follow-ups.
