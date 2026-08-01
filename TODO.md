@@ -88,8 +88,9 @@ v1 必须同时满足：
 
 ## R3：Indirect 与空间化收敛
 
-- [ ] 在开放空间、靠墙位置和封闭房间验证早反、晚混响及方向性。
-- [x] 封闭实际房间完成 1-bounce / 8-bounce 对照：8 次反射增加有效路径、IR 能量、平均延迟、方向 delay bin 和非零晚期尾声；GPU/CPU 指标一致，并生成具有可测左右差异的 Stereo 湿声。开放空间与靠墙位置仍待补齐。
+- [x] 自动化 32-bounce R3 矩阵已完成：OpenSpace / NearWall / Enclosed 分别使用 0 / 1 / 7 个 Geometry，验证物理零 Wet、方向性早反和非零晚期尾声，并通过硬件/CPU 对照与产物完整性门禁。
+- [ ] 在目标耳机/扬声器上人工试听同源 Reference / Direct / Wet / Full，确认 OpenSpace Wet 静音、NearWall 第一反射方向、Enclosed 更长晚期尾声、MarchingBand 持续播放且无 click/pop；只有用户可以记录 Human Pass。
+- [x] 封闭实际房间完成 1-bounce / 8-bounce 对照：8 次反射增加有效路径、IR 能量、平均延迟、方向 delay bin 和非零晚期尾声；该历史证据现由完整 32-bounce 三环境自动矩阵补充，最终可听结论仍未完成。
 - [x] GPU EnergyField 保留每条路径的监听者到达方向并回读到 delay-bin direction；Bake IR、离线 Wet/Full WAV 与运行时 Baked 卷积均保留左右声道，不再把方向统计压回 Mono。
 - [x] Full 使用明确的 Wet Send 语义：`Full = Direct + WetSend × Wet`；新 Source 默认 `1.0`、范围 `0..4`，切换时平滑。双声道 Spatialization-bypass 与单声道最终 L/R 都有峰值诊断；最新三模式 `full_peak=0.032985/0.033651/0.114308`、`over_unit=0/0/0`。
 - [x] Realtime、Baked、Hybrid 三种数据源使用独立左右核；Hybrid 同时渲染互补 Baked early 与 Realtime tail。Automation 覆盖切换/关闭无瞬时跳变；固定实际 Game 使用真实项目 SoundWave `/Game/FirstPerson/Audio/MarchingBand.MarchingBand`，证明三模式输入与 Wet 均非静音、核数 `2/2/4`、非有限样本为 0，并要求源增益和 pre-distance 音频均为非零。
@@ -222,7 +223,7 @@ v1 必须同时满足：
 - [x] RED evidence: `Task7-Fix1-RED-OwnerBeforeComponent.log` caught missing pre-construction owner mutation; `Task7-Fix1-RED-WorldContextFailure.log` caught the leaked failure-path context; `Task7-Fix1-RED-AudioOwnerIndependent.log` caught a temporary Audio-only missing-`Modify` mutation.
 - [x] Final gates passed: prescribed build `48/48`; focused Editor Automation `2/2`; full `UERayTracingAudio` Automation `55/55`; full Python `64/64`; callback audit `39 functions / 40 bodies / 1718 lines / 0 forbidden operations`. The Automation/Editor logs retain two pre-engine-init `LogAutomationTest: Error: Condition failed` lines from UE startup, but no test failure, Fatal, Assertion, or World-context warning.
 - [x] Exact launcher exited `0`: Direct sweep `231` generations with no dropout and restored/hardware state; all data sources passed; hard realtime `1580/0/0`. Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785491460999842900.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785491641704854400.log`; parsed fixture `200 cm / default / (0.0002,0.0006,0.0012)`.
-- [ ] Editor PID `13344` is responding and left open. Audible Human Pass, R3 environment listening, Task 2 multi-PIE hardware isolation, and Task 4 Minors remain open.
+- [ ] Editor PID `13344` was the historical Task 7 run and is superseded. Audible Human Pass, target-device R3 environment listening, Task 2 multi-PIE hardware isolation, and Task 4 Minors remain open.
 
 ## Task 8: Final technical validation and Shipping isolation (2026-07-31)
 
@@ -235,7 +236,7 @@ v1 必须同时满足：
 - [x] Exact fixed launcher exited `0`. The non-fallback Direct and Indirect render-thread markers were each present exactly once; the strict Direct result passed with `200` generations, `200.000 / 200.000 cm`, visibility `0.000038 / 0.996866`, gain `0.174779 / 0.498316`, step `0.00005484`, no dropout, and restored/hardware `1/1`. Baked/Realtime/Hybrid each had `24/24` non-silent Wet buffers with zero silent run; hard realtime was `1600/0/0` callbacks/misses/drops.
 - [x] The final validation Editor is initialized and responding as PID `10276`; scene evidence is `source=1 listener=1 geometry=7 lighting=1 bake_ui=1`, `200 cm / default / (0.0002,0.0006,0.0012)`.
 - [ ] A user must enter PIE, wait for the hardware/data-source gates, press F8, then use F3/F6 and record target-device Human Pass/Fail for restart, click/pop, silence, timing, recovery, moving-player/moving-occlusion, and audible distance/air behavior. Automated evidence is not Human Pass.
-- [ ] Run and record true multi-PIE hardware isolation and the OpenSpace/NearWall/Enclosed R3 listening matrix; neither is complete.
+- [ ] Run and record true multi-PIE hardware isolation and the target-device OpenSpace/NearWall/Enclosed R3 listening matrix; neither human-only gate is complete.
 - [ ] Deferred technical ledger: Task 1 effective-crossover startup logging assumes 48 kHz; Task 2 lacks focused ignored-listener-removal identity, scene-address-stability, and pending-request World-cleanup regressions; Task 3 needs invalid/out-of-order crossover, non-finite band-gain, and finite-input-overflow hardening; Task 4 needs transitive callback-safety/logging audit coverage, remaining Editor mode/bake/artifact/validation assignments routed through public Source setters, and saturating Direct diagnostic counters; Task 7 duplicate tagged Source roles are resolved by first iteration rather than explicit ambiguity rejection.
 
 ## Task 8 Final Fix Wave: whole-branch findings (2026-07-31)
@@ -249,7 +250,7 @@ v1 必须同时满足：
 - [x] Final gates passed: audit `39/40/1775`, Python `70/70`, Development build, focused `15/15 + 40/40 + 9/9`, full Automation `62/62`, diff check, and Shipping `34/34` with validation exclusion.
 - [x] Exact artifact flow passed with `hardware/auto_checks/distinct/imported/directional_wet/common_scale = 1/1/1/4/1/1`; exact default launcher passed with Direct/Indirect hardware, Direct `215` generations, all three data sources, and hard realtime `1581/0/0`.
 - [x] The 2026-07-31 Editor PID `13228` was responding for that run and is superseded by the final self-review run below.
-- [ ] Retain the oversized-callback bridge-capacity P3, prior Task 1-4 minors, target-device Human Pass/click-pop/audible-quality checks, true multi-PIE hardware isolation, and OpenSpace/NearWall/Enclosed R3.
+- [ ] Retain the oversized-callback bridge-capacity P3, prior Task 1-4 minors, target-device Human Pass/click-pop/audible-quality checks, true multi-PIE hardware isolation, and target-device OpenSpace/NearWall/Enclosed R3 listening.
 
 ## Final self-review addendum (2026-08-01)
 
@@ -257,5 +258,5 @@ v1 必须同时满足：
 - [x] Deterministically retain one safe Geometry component, transactionally destroy duplicate instance components, reject multiple non-removable native components, and validate the final exact-one count.
 - [x] Prescribed Development build passed; audit `39/40/1775`, Python `70/70`, focused Automation `15/15 + 40/40 + 9/9`, and full plugin Automation `62/62` all passed.
 - [x] Fresh artifact flow passed `1/1/1/4/1/1`; fresh default launcher passed paths `171/171`, Direct `199` generations with no dropout, all three data sources, and hard realtime `1596/0/0`.
-- [x] Final Editor PID `36896` is responding; Editor log `UERayTracingAudioValidation-Editor-1785594482652644800.log` and Game log `UERayTracingAudioValidation-Game-1785594301982190200.log` contain zero Fatal/Unhandled/Assertion markers.
-- [ ] Human A/B, click/pop/audible-quality judgment, moving-player/occlusion listening, true multi-PIE hardware isolation, and OpenSpace/NearWall/Enclosed R3 remain open.
+- [x] Editor PID `36896` was responding for the 2026-08-01 run; its evidence is historical and superseded by the R3 final run.
+- [ ] Human A/B, click/pop/audible-quality judgment, moving-player/occlusion listening, true multi-PIE hardware isolation, and target-device OpenSpace/NearWall/Enclosed R3 listening remain open.

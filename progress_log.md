@@ -174,3 +174,10 @@
 - Fresh artifact flow passed hardware/automatic/distinct/imported/directional/common-scale `1/1/1/4/1/1`, with Wet/reference `0.567596`, Full/reference `0.549702`, and Direct/Wet difference `1.615526`.
 - Fresh default launcher passed paths `171/171`, Direct `199` generations with zero dropout and restored/hardware `1/1`, all three data sources, and hard realtime `1596/0/0`. Game `UERayTracingAudioValidation-Game-1785594301982190200.log`; Editor `UERayTracingAudioValidation-Editor-1785594482652644800.log`.
 - Final Editor PID `36896` is responding and left open. Human A/B, click/pop/audible-quality judgment, moving-player/occlusion listening, true multi-PIE hardware isolation, OpenSpace/NearWall/Enclosed R3, oversized-callback P3, and prior minors remain open.
+
+## 2026-08-02 - R3 32-Bounce Reflection Matrix
+
+- Implemented the strict OpenSpace/NearWall/Enclosed 0/1/7-Geometry matrix with one validated 32-bounce setting, same-origin MarchingBand Reference/Direct/Wet/Full artifacts, hardware/CPU evidence, and physical-zero OpenSpace Wet.
+- Final review repair now rejects enabled geometry export failures atomically and permits the masked DXR sentinel only for a logically empty scene; focused Manager and real-DX12 regressions passed.
+- Final gates passed: Python `156/156`, realtime audit `39/40/1775` with zero violations, prescribed project/plugin build, Automation `1/11/65`, and authoritative matrix `20260802-063000` with 27 non-empty artifacts and 12 matching WAV hashes.
+- Fixed runtime launch passed and left responding Editor PID `42028` open; updated TODO, usage, and implementation status with exact evidence while keeping Human Pass, click/pop judgment, true multi-PIE, and other open work unchecked.

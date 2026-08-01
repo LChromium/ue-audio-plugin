@@ -372,7 +372,7 @@ For the remaining Human check in the Editor left open by the launcher:
 4. Confirm there is no playback restart, click/pop, unexpected silence, timing jump, or failed recovery while moving the player/occlusion path.
 5. In the Bake panel, compare Clear 1/2/4 m and Default/Stress air absorption on the same target headphones/speakers.
 
-Only the user performing that listening may record Human Pass. True multi-PIE hardware isolation, moving-player/moving-occlusion listening, audible distance/air comparison, click/pop judgment, and the OpenSpace/NearWall/Enclosed R3 matrix remain open.
+Only the user performing that listening may record Human Pass. True multi-PIE hardware isolation, moving-player/moving-occlusion listening, audible distance/air comparison, click/pop judgment, and target-device OpenSpace/NearWall/Enclosed listening remain open. The automated R3 matrix is documented below.
 
 ### Final hardening behavior
 
@@ -396,4 +396,66 @@ uv run script\launch_runtime_validation.py --editor-ab-artifacts
 
 The command requires actual Direct and Indirect hardware submission, one complete/unique result for each terminal contract, four imported WAV artifacts, a directional Wet result, and the final `common_scale` field. The validation fixture uses `IndirectMix=0.8` only for this comparison so Full retains an audible/detectable dry cue; it is not a product default and the acceptance thresholds are unchanged. A partial marker still being written, any duplicate/malformed marker, fallback-only evidence, or `auto_checks=0` fails the command.
 
-The fresh 2026-08-01 automatic runs passed both artifact and default flows after exact-one Geometry-component normalization. The default Editor remains open as PID `36896` at `200 cm / default`; its log is `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785594482652644800.log`, and the Game log is `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785594301982190200.log`. These checks establish technical behavior, not the outstanding target-device listening Human Pass or R3 environment matrix.
+The 2026-08-01 automatic runs passed both artifact and default flows after exact-one Geometry-component normalization. Their Editor PID `36896` and logs are historical and superseded by the R3 final run below. These checks establish technical behavior, not a target-device Human Pass.
+
+## R3：32 次反射环境矩阵
+
+在仓库根目录运行：
+
+```powershell
+uv run script\validate_reflection_environment_matrix.py
+```
+
+脚本为 OpenSpace、NearWall、Enclosed 分别启动独立 Editor，并在以下时间戳目录写入汇总、结果 JSON 和截图：
+
+`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\<timestamp>`
+
+每个环境都从同一个 `/Game/FirstPerson/Audio/MarchingBand.MarchingBand` 采样零点生成四条同长度、同公共缩放的轨道：
+
+- **Reference**：未经插件处理的原音。
+- **Direct**：清晰无遮挡的 Direct 渲染。
+- **Wet**：只包含反射和混响；不含 Direct。
+- **Full**：`Direct + 0.8 × Wet`。
+
+R3 固定参数为 200 cm、默认空气吸收、4096 条反射射线、最多 32 个反射段、双声道 16 kHz、1 秒 IR。Direct 段不计入 bounce，所以“32 bounces”表示最多 32 个反射段。三个夹具分别包含 0 / 1 / 7 个声学 Geometry：
+
+- OpenSpace：没有反射面，Wet 必须精确静音，Full 与 Direct 完全相同。此物理零 Wet 场景中 `automatic_checks_passed=false` 是正确结果。
+- NearWall：一面墙产生有方向性的第一/早期反射，`automatic_checks_passed` 必须为 `true`。
+- Enclosed：七个 Geometry 产生更强早期能量和更长、非零的晚期尾声，`automatic_checks_passed` 必须为 `true`。
+
+本次权威汇总是：
+
+`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\ReflectionEnvironmentMatrix_Manifest.json`
+
+三张可见性截图：
+
+- OpenSpace：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\OpenSpace.png`
+- NearWall：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\NearWall.png`
+- Enclosed：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\Enclosed.png`
+
+用于人耳验收的 12 条 WAV：
+
+- OpenSpace Reference：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223017\MarchingBand_clear_HardwareIR_clear_20260801-223017_Reference.wav`
+- OpenSpace Direct：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223017\MarchingBand_clear_HardwareIR_clear_20260801-223017_Direct.wav`
+- OpenSpace Wet：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223017\MarchingBand_clear_HardwareIR_clear_20260801-223017_Wet.wav`
+- OpenSpace Full：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223017\MarchingBand_clear_HardwareIR_clear_20260801-223017_Full.wav`
+- NearWall Reference：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223042\MarchingBand_clear_HardwareIR_clear_20260801-223042_Reference.wav`
+- NearWall Direct：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223042\MarchingBand_clear_HardwareIR_clear_20260801-223042_Direct.wav`
+- NearWall Wet：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223042\MarchingBand_clear_HardwareIR_clear_20260801-223042_Wet.wav`
+- NearWall Full：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223042\MarchingBand_clear_HardwareIR_clear_20260801-223042_Full.wav`
+- Enclosed Reference：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223127\MarchingBand_clear_HardwareIR_clear_20260801-223127_Reference.wav`
+- Enclosed Direct：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223127\MarchingBand_clear_HardwareIR_clear_20260801-223127_Direct.wav`
+- Enclosed Wet：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223127\MarchingBand_clear_HardwareIR_clear_20260801-223127_Wet.wav`
+- Enclosed Full：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223127\MarchingBand_clear_HardwareIR_clear_20260801-223127_Full.wav`
+
+人工试听顺序：
+
+1. 先在三个环境中分别比较 Reference 与 Direct，确认它们来自同一个 MarchingBand 内容和采样起点，主体连续可辨。
+2. 播放 OpenSpace Wet，确认它是精确静音；再确认 OpenSpace Full 与 Direct 听感一致。
+3. 播放 NearWall Wet/Full，确认能听到相对 Direct 延后的、具有方向感的第一反射。
+4. 播放 Enclosed Wet/Full，并与 NearWall 对比，确认早期能量更强且晚期尾声更长、非零。
+5. 全程确认 MarchingBand 连续，没有只响一次、意外掉音、click/pop 或时间跳变。
+
+只有实际完成这组目标耳机/扬声器试听的用户可以记录 Human Pass；自动化结果不能代替该结论。
+
+`uv run script\launch_runtime_validation.py` 是另一条固定交互流程，使用既定默认 `8` bounces，不是上述 32-bounce 离线矩阵。它最终留下的当前 Editor PID 为 `42028`；Game 日志为 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785623576684106900.log`，Editor 日志为 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785623757245946900.log`。在该 Editor 中，F1/F2/F5 分别选择 Realtime/Baked/Hybrid，F3 比较 Original Unrendered 与 Rendered Direct+Wet；这些快捷键用于交互试听，不应被描述成正在运行 32-bounce 矩阵。
