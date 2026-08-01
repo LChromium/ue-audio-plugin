@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
+import sys
+import wave
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +22,30 @@ MIN_DIRECTION_DOT = 0.99
 MIN_DIRECTIONAL_ENERGY_RATIO = 0.05
 MIN_WET_TO_REFERENCE_RATIO = 0.05
 MIN_WET_STEREO_DIFFERENCE = 0.01
+COMMON_OUTPUT_SCALE_TOLERANCE = 1.0e-6
+MIN_ENCLOSED_GROWTH_RATIO = 1.10
+MIN_NON_BLACK_RATIO = 0.10
+MIN_LUMA_STDDEV = 8.0
+RESULT_SCHEMA_VERSION = 1
+
+WAV_FIELDS = ("reference_wav", "direct_wav", "wet_wav", "full_wav")
+COMMON_PROVENANCE_FIELDS = (
+    "input_asset",
+    "direct_preset",
+    "direct_distance_cm",
+    "reflection_ray_count",
+    "reflection_bounce_count",
+    "sample_rate",
+    "channels",
+    "impulse_response_channels",
+    "frames",
+)
+FAILURE_PATTERNS = (
+    "Fatal error",
+    "Unhandled Exception",
+    "Assertion failed",
+    "LogWindows: Error",
+)
 
 FINITE_FIELDS = (
     "direct_distance_cm",
@@ -121,6 +149,17 @@ class CaseManifest:
     payload: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class CaseEvidence:
+    case: CaseManifest
+    result_path: Path
+    scene: Mapping[str, Any]
+    artifacts: Mapping[str, Any]
+    image_metrics: Mapping[str, Any]
+    screenshot_path: Path
+    log_path: Path
+
+
 def load_case_manifest(environment: str, path: Path) -> CaseManifest:
     if environment not in ENVIRONMENTS:
         raise RuntimeError(f"Unknown reflection environment: {environment!r}")
@@ -128,6 +167,130 @@ def load_case_manifest(environment: str, path: Path) -> CaseManifest:
     if not isinstance(payload, dict):
         raise RuntimeError(f"Reflection manifest must contain a JSON object: {path}")
     return CaseManifest(environment=environment, path=path, payload=payload)
+
+
+def _display_name(environment: str) -> str:
+    return "".join(part.title() for part in environment.split("_"))
+
+
+def _resolve_path(value: object, base: Path) -> Path | None:
+    if not isinstance(value, (str, os.PathLike)) or not str(value):
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = base / path
+    return path.resolve()
+
+
+def _paths_equal(first: Path, second: Path) -> bool:
+    return os.path.normcase(str(first.resolve())) == os.path.normcase(
+        str(second.resolve())
+    )
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def pcm16_is_zero(path: Path) -> bool:
+    with wave.open(str(path), "rb") as stream:
+        if stream.getsampwidth() != 2:
+            return False
+        return all(
+            byte == 0
+            for byte in stream.readframes(stream.getnframes())
+        )
+
+
+def load_case_evidence(environment: str, result_path: Path) -> CaseEvidence:
+    if environment not in ENVIRONMENTS:
+        raise RuntimeError(f"Unknown reflection environment: {environment!r}")
+
+    resolved_result_path = result_path.resolve()
+    if not resolved_result_path.is_file():
+        raise RuntimeError(
+            f"{_display_name(environment)} result JSON exists: "
+            f"{resolved_result_path}"
+        )
+    try:
+        payload = json.loads(
+            resolved_result_path.read_text(encoding="utf-8-sig")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"{_display_name(environment)} result JSON is readable: "
+            f"{resolved_result_path} ({exc})"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"{_display_name(environment)} result JSON must contain an object"
+        )
+
+    failures: list[str] = []
+    if (
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != RESULT_SCHEMA_VERSION
+    ):
+        failures.append("schema_version=1")
+    if payload.get("passed") is not True:
+        failures.append("passed=true")
+
+    mappings: dict[str, Mapping[str, Any]] = {}
+    for field in ("scene", "artifacts", "image_metrics"):
+        value = payload.get(field)
+        if not isinstance(value, Mapping):
+            failures.append(f"{field} object")
+        else:
+            mappings[field] = value
+
+    screenshot_path = _resolve_path(
+        payload.get("screenshot"),
+        resolved_result_path.parent,
+    )
+    if screenshot_path is None:
+        failures.append("screenshot path")
+    log_path = _resolve_path(
+        payload.get("log"),
+        resolved_result_path.parent,
+    )
+    if log_path is None:
+        failures.append("Editor log path")
+
+    manifest_path = None
+    artifacts = mappings.get("artifacts")
+    if artifacts is not None:
+        manifest_path = _resolve_path(
+            artifacts.get("manifest"),
+            resolved_result_path.parent,
+        )
+        if manifest_path is None:
+            failures.append("artifact manifest path")
+        elif not manifest_path.is_file():
+            failures.append(f"artifact manifest exists ({manifest_path})")
+
+    if failures:
+        raise RuntimeError(
+            f"{_display_name(environment)} result evidence validation failed: "
+            + ", ".join(failures)
+        )
+
+    assert manifest_path is not None
+    assert screenshot_path is not None
+    assert log_path is not None
+    case = load_case_manifest(environment, manifest_path)
+    return CaseEvidence(
+        case=case,
+        result_path=resolved_result_path,
+        scene=mappings["scene"],
+        artifacts=mappings["artifacts"],
+        image_metrics=mappings["image_metrics"],
+        screenshot_path=screenshot_path,
+        log_path=log_path,
+    )
 
 
 def relative_delta(first: float, second: float) -> float:
@@ -396,3 +559,468 @@ def validate_case_manifest(case: CaseManifest) -> dict[str, float | int | str]:
     for metric, delta in relative_deltas.items():
         metrics[f"hardware_cpu_{metric}_relative_delta"] = delta
     return metrics
+
+
+def _validate_environment_keys(
+    cases: Mapping[str, object],
+    label: str,
+) -> None:
+    actual = set(cases)
+    expected = set(ENVIRONMENTS)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected = sorted(str(value) for value in actual - expected)
+        raise RuntimeError(
+            f"{label} requires exactly OpenSpace, NearWall, and Enclosed "
+            f"(missing={missing}, unexpected={unexpected})"
+        )
+
+
+def _ratio(numerator: float, denominator: float) -> float:
+    ratio = numerator / max(abs(denominator), ZERO_TOLERANCE)
+    if not math.isfinite(ratio):
+        return math.copysign(sys.float_info.max, numerator)
+    return ratio
+
+
+def validate_matrix_manifests(
+    cases: Mapping[str, CaseManifest],
+) -> dict[str, object]:
+    _validate_environment_keys(cases, "Reflection environment matrix")
+
+    metrics_by_environment: dict[
+        str,
+        dict[str, float | int | str],
+    ] = {}
+    paths_by_environment: dict[str, dict[str, Path]] = {}
+    hashes_by_environment: dict[str, dict[str, str]] = {}
+    failures: list[str] = []
+
+    for environment in ENVIRONMENTS:
+        display_name = _display_name(environment)
+        case = cases[environment]
+        if not isinstance(case, CaseManifest):
+            failures.append(f"{display_name} CaseManifest")
+            continue
+        if case.environment != environment:
+            failures.append(
+                f"{display_name} mapping/case environment agreement "
+                f"({case.environment!r})"
+            )
+            continue
+
+        metrics_by_environment[environment] = validate_case_manifest(case)
+        wav_paths: dict[str, Path] = {}
+        for field in WAV_FIELDS:
+            path = _resolve_path(case.payload.get(field), case.path.parent)
+            if path is None:
+                failures.append(f"{display_name} {field} WAV path")
+                continue
+            wav_paths[field] = path
+            if not path.is_file():
+                failures.append(
+                    f"{display_name} WAV file exists ({field}={path})"
+                )
+        paths_by_environment[environment] = wav_paths
+
+    if failures:
+        raise RuntimeError(
+            "Reflection environment matrix validation failed: "
+            + ", ".join(failures)
+        )
+
+    for environment in ENVIRONMENTS:
+        hashes_by_environment[environment] = {
+            field: sha256_file(paths_by_environment[environment][field])
+            for field in WAV_FIELDS
+        }
+
+    open_case = cases["open_space"]
+    for environment in ("near_wall", "enclosed"):
+        display_name = _display_name(environment)
+        case = cases[environment]
+        for field in COMMON_PROVENANCE_FIELDS:
+            if case.payload.get(field) != open_case.payload.get(field):
+                if field == "frames":
+                    failures.append(f"{display_name} common frames")
+                elif field == "channels":
+                    failures.append(f"{display_name} common channels")
+                else:
+                    failures.append(f"{display_name} common {field} provenance")
+    common_scales = [
+        float(metrics_by_environment[environment]["common_output_scale"])
+        for environment in ENVIRONMENTS
+    ]
+    if max(common_scales) - min(common_scales) > COMMON_OUTPUT_SCALE_TOLERANCE:
+        failures.append(
+            "common_output_scale span within "
+            f"{COMMON_OUTPUT_SCALE_TOLERANCE:.0e}"
+        )
+
+    if len(
+        {
+            hashes_by_environment[environment]["reference_wav"]
+            for environment in ENVIRONMENTS
+        }
+    ) != 1:
+        failures.append("identical Reference SHA-256 across environments")
+    if len(
+        {
+            hashes_by_environment[environment]["direct_wav"]
+            for environment in ENVIRONMENTS
+        }
+    ) != 1:
+        failures.append("identical Direct SHA-256 across environments")
+
+    open_hashes = hashes_by_environment["open_space"]
+    if open_hashes["direct_wav"] != open_hashes["full_wav"]:
+        failures.append("OpenSpace Direct/Full SHA-256 equality")
+    try:
+        open_wet_is_zero = pcm16_is_zero(
+            paths_by_environment["open_space"]["wet_wav"]
+        )
+    except (OSError, EOFError, wave.Error):
+        open_wet_is_zero = False
+    if not open_wet_is_zero:
+        failures.append("OpenSpace zero Wet PCM")
+
+    for environment in ("near_wall", "enclosed"):
+        display_name = _display_name(environment)
+        hashes = hashes_by_environment[environment]
+        for artifact in ("wet", "full"):
+            if hashes[f"{artifact}_wav"] == open_hashes[f"{artifact}_wav"]:
+                failures.append(
+                    f"{display_name} {artifact.title()} differs from OpenSpace"
+                )
+
+    near = metrics_by_environment["near_wall"]
+    enclosed = metrics_by_environment["enclosed"]
+    near_paths = float(near["hardware_indirect_valid_paths"])
+    enclosed_paths = float(enclosed["hardware_indirect_valid_paths"])
+    near_bins = float(near["hardware_directional_bin_count"])
+    enclosed_bins = float(enclosed["hardware_directional_bin_count"])
+    near_energy = float(near["hardware_impulse_response_energy"])
+    enclosed_energy = float(enclosed["hardware_impulse_response_energy"])
+    near_wet_ratio = float(near["wet_to_reference_rms_ratio"])
+    enclosed_wet_ratio = float(enclosed["wet_to_reference_rms_ratio"])
+    near_late = float(near["hardware_late_reverb_gain"])
+    enclosed_late = float(enclosed["hardware_late_reverb_gain"])
+
+    if enclosed_paths <= near_paths:
+        failures.append("Enclosed path-count growth")
+    if enclosed_bins <= near_bins:
+        failures.append("Enclosed directional-bin growth")
+    if enclosed_energy < near_energy * MIN_ENCLOSED_GROWTH_RATIO:
+        failures.append("Enclosed IR energy growth")
+    if enclosed_wet_ratio < near_wet_ratio * MIN_ENCLOSED_GROWTH_RATIO:
+        failures.append("Enclosed Wet/Reference RMS growth")
+    minimum_enclosed_late = (
+        near_late * MIN_ENCLOSED_GROWTH_RATIO
+        if near_late > ZERO_TOLERANCE
+        else ZERO_TOLERANCE
+    )
+    if enclosed_late <= minimum_enclosed_late:
+        failures.append("Enclosed late-reverb growth")
+
+    if failures:
+        raise RuntimeError(
+            "Reflection environment matrix validation failed: "
+            + ", ".join(failures)
+        )
+
+    case_summary: dict[str, dict[str, object]] = {}
+    for environment in ENVIRONMENTS:
+        case = cases[environment]
+        summary: dict[str, object] = dict(metrics_by_environment[environment])
+        summary["manifest_path"] = str(case.path.resolve())
+        for field in WAV_FIELDS:
+            stem = field.removesuffix("_wav")
+            summary[field] = str(paths_by_environment[environment][field])
+            summary[f"{stem}_sha256"] = hashes_by_environment[environment][field]
+        case_summary[environment] = summary
+
+    thresholds: dict[str, float] = {
+        "zero_tolerance": ZERO_TOLERANCE,
+        "max_cpu_relative_delta": MAX_CPU_RELATIVE_DELTA,
+        "min_direction_dot": MIN_DIRECTION_DOT,
+        "min_directional_energy_ratio": MIN_DIRECTIONAL_ENERGY_RATIO,
+        "min_wet_to_reference_ratio": MIN_WET_TO_REFERENCE_RATIO,
+        "min_wet_stereo_difference": MIN_WET_STEREO_DIFFERENCE,
+        "common_output_scale_tolerance": COMMON_OUTPUT_SCALE_TOLERANCE,
+        "min_enclosed_growth_ratio": MIN_ENCLOSED_GROWTH_RATIO,
+        "min_non_black_ratio": MIN_NON_BLACK_RATIO,
+        "min_luma_stddev": MIN_LUMA_STDDEV,
+    }
+    comparisons: dict[str, float] = {
+        "enclosed_to_near_wall_paths_ratio": _ratio(
+            enclosed_paths,
+            near_paths,
+        ),
+        "enclosed_to_near_wall_directional_bins_ratio": _ratio(
+            enclosed_bins,
+            near_bins,
+        ),
+        "enclosed_to_near_wall_ir_energy_ratio": _ratio(
+            enclosed_energy,
+            near_energy,
+        ),
+        "enclosed_to_near_wall_wet_ratio": _ratio(
+            enclosed_wet_ratio,
+            near_wet_ratio,
+        ),
+        "enclosed_to_near_wall_late_reverb_ratio": _ratio(
+            enclosed_late,
+            near_late,
+        ),
+    }
+    return {
+        "thresholds": thresholds,
+        "cases": case_summary,
+        "comparisons": comparisons,
+    }
+
+
+def _strict_number(
+    values: Mapping[str, Any],
+    field: str,
+    failures: list[str],
+    failure: str,
+) -> float | None:
+    value = values.get(field)
+    if isinstance(value, bool) or value is None:
+        failures.append(failure)
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        failures.append(failure)
+        return None
+    if not math.isfinite(number):
+        failures.append(failure)
+        return None
+    return number
+
+
+def _strict_integer(
+    values: Mapping[str, Any],
+    field: str,
+    failures: list[str],
+    failure: str,
+) -> int | None:
+    value = values.get(field)
+    if type(value) is not int:
+        failures.append(failure)
+        return None
+    return value
+
+
+def _ir_asset_path(
+    object_path: object,
+    content_root: Path,
+) -> Path | None:
+    if not isinstance(object_path, str) or not object_path.startswith("/Game/"):
+        return None
+    package_path, separator, object_name = object_path.partition(".")
+    if not separator or not object_name:
+        return None
+    relative_package = package_path.removeprefix("/Game/")
+    if not relative_package:
+        return None
+    candidate = Path(str(content_root / relative_package) + ".uasset").resolve()
+    try:
+        candidate.relative_to(content_root)
+    except ValueError:
+        return None
+    return candidate
+
+
+def validate_end_to_end_evidence(
+    cases: Mapping[str, CaseEvidence],
+    project_root: Path,
+) -> None:
+    _validate_environment_keys(cases, "End-to-end reflection evidence")
+    resolved_project_root = project_root.resolve()
+    content_root = (resolved_project_root / "Content").resolve()
+    failures: list[str] = []
+
+    for environment in ENVIRONMENTS:
+        display_name = _display_name(environment)
+        evidence = cases[environment]
+        if not isinstance(evidence, CaseEvidence):
+            failures.append(f"{display_name} CaseEvidence")
+            continue
+        if evidence.case.environment != environment:
+            failures.append(f"{display_name} evidence/case environment agreement")
+        if not evidence.result_path.is_file():
+            failures.append(f"{display_name} result JSON exists")
+
+        scene = evidence.scene
+        if scene.get("direct_preset") != "clear":
+            failures.append(f"{display_name} scene Direct preset")
+        if scene.get("reflection_environment") != environment:
+            failures.append(f"{display_name} scene reflection environment")
+        geometry = _strict_integer(
+            scene,
+            "geometry",
+            failures,
+            f"{display_name} fixture geometry count",
+        )
+        if (
+            geometry is not None
+            and geometry != EXPECTED_GEOMETRY[environment]
+        ):
+            failures.append(
+                f"{display_name} fixture geometry count "
+                f"({geometry} != {EXPECTED_GEOMETRY[environment]})"
+            )
+        scene_bounces = _strict_integer(
+            scene,
+            "reflection_bounces",
+            failures,
+            f"{display_name} scene reflection bounces",
+        )
+        if scene_bounces is not None and scene_bounces != REFLECTION_BOUNCES:
+            failures.append(f"{display_name} scene reflection bounces")
+        scene_distance = _strict_number(
+            scene,
+            "distance_cm",
+            failures,
+            f"{display_name} scene source/listener distance",
+        )
+        if scene_distance is not None and scene_distance != 200.0:
+            failures.append(f"{display_name} scene source/listener distance")
+        if scene.get("air_absorption_profile") != "default":
+            failures.append(f"{display_name} scene default air profile")
+
+        artifacts = evidence.artifacts
+        artifact_hardware = _strict_integer(
+            artifacts,
+            "hardware",
+            failures,
+            f"{display_name} artifact hardware ray tracing",
+        )
+        if artifact_hardware is not None and artifact_hardware != 1:
+            failures.append(f"{display_name} artifact hardware ray tracing")
+        artifact_rays = _strict_integer(
+            artifacts,
+            "reflection_rays",
+            failures,
+            f"{display_name} artifact reflection rays",
+        )
+        if artifact_rays is not None and artifact_rays != REFLECTION_RAYS:
+            failures.append(f"{display_name} artifact reflection rays")
+        artifact_bounces = _strict_integer(
+            artifacts,
+            "reflection_bounces",
+            failures,
+            f"{display_name} artifact reflection bounces",
+        )
+        if (
+            artifact_bounces is not None
+            and artifact_bounces != REFLECTION_BOUNCES
+        ):
+            failures.append(f"{display_name} artifact reflection bounces")
+        imported_assets = _strict_integer(
+            artifacts,
+            "imported_assets",
+            failures,
+            f"{display_name} four imported comparison assets",
+        )
+        if imported_assets is not None and imported_assets != 4:
+            failures.append(f"{display_name} four imported comparison assets")
+        if artifacts.get("reflection_environment") != environment:
+            failures.append(f"{display_name} artifact reflection environment")
+        if artifacts.get("direct_preset") != "clear":
+            failures.append(f"{display_name} artifact Direct preset")
+
+        result_base = evidence.result_path.parent
+        artifact_manifest = _resolve_path(
+            artifacts.get("manifest"),
+            result_base,
+        )
+        if artifact_manifest is None or not _paths_equal(
+            artifact_manifest,
+            evidence.case.path,
+        ):
+            failures.append(
+                f"{display_name} artifact manifest path agrees with manifest"
+            )
+        for artifact_field, manifest_field in (
+            ("reference", "reference_wav"),
+            ("direct", "direct_wav"),
+            ("wet", "wet_wav"),
+            ("full", "full_wav"),
+        ):
+            artifact_path = _resolve_path(
+                artifacts.get(artifact_field),
+                result_base,
+            )
+            manifest_path = _resolve_path(
+                evidence.case.payload.get(manifest_field),
+                evidence.case.path.parent,
+            )
+            if (
+                artifact_path is None
+                or manifest_path is None
+                or not _paths_equal(artifact_path, manifest_path)
+            ):
+                failures.append(
+                    f"{display_name} artifact {artifact_field} path agrees "
+                    "with manifest"
+                )
+
+        ir_path = _ir_asset_path(artifacts.get("ir_asset"), content_root)
+        if ir_path is None:
+            failures.append(f"{display_name} valid IR object path under Content")
+        elif not ir_path.is_file():
+            failures.append(
+                f"{display_name} IR .uasset exists under Content ({ir_path})"
+            )
+
+        if not evidence.screenshot_path.is_file():
+            failures.append(f"{display_name} screenshot exists")
+        if not evidence.log_path.is_file():
+            failures.append(f"{display_name} Editor log exists")
+
+        non_black_ratio = _strict_number(
+            evidence.image_metrics,
+            "non_black_ratio",
+            failures,
+            f"{display_name} finite non-black screenshot ratio",
+        )
+        if (
+            non_black_ratio is not None
+            and non_black_ratio < MIN_NON_BLACK_RATIO
+        ):
+            failures.append(f"{display_name} non-black screenshot ratio")
+        luma_stddev = _strict_number(
+            evidence.image_metrics,
+            "luma_stddev",
+            failures,
+            f"{display_name} finite screenshot luma standard deviation",
+        )
+        if luma_stddev is not None and luma_stddev < MIN_LUMA_STDDEV:
+            failures.append(
+                f"{display_name} screenshot luma standard deviation"
+            )
+
+        if evidence.log_path.is_file():
+            try:
+                log_text = evidence.log_path.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except OSError as exc:
+                failures.append(f"{display_name} Editor log readable ({exc})")
+            else:
+                for pattern in FAILURE_PATTERNS:
+                    if pattern in log_text:
+                        failures.append(
+                            f"{display_name} Editor log contains {pattern}"
+                        )
+
+    if failures:
+        raise RuntimeError(
+            "R3 end-to-end evidence validation failed: "
+            + ", ".join(failures)
+        )
