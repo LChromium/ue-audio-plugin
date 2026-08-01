@@ -1,22 +1,27 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
+import io
 import json
 import math
 import re
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
 import wave
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_ROOT))
 
 import reflection_environment_matrix
+import validate_reflection_environment_matrix
 from reflection_environment_matrix import CaseManifest
 
 
@@ -1567,6 +1572,525 @@ class ReflectionEnvironmentEvidenceTests(unittest.TestCase):
                         evidence,
                         project_root,
                     )
+
+
+class ReflectionEnvironmentMatrixCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.temporary_root = Path(self.temporary_directory.name)
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def make_cli_fixture(
+        self,
+        suffix: str,
+    ) -> tuple[
+        dict[str, CaseManifest],
+        dict[str, object],
+        Path,
+        Path,
+    ]:
+        cases, evidence, project_root = make_complete_matrix(
+            self.temporary_root / suffix,
+        )
+        project_path = project_root / "UERayTracingAudioTest.uproject"
+        project_path.write_text("{}\n", encoding="utf-8")
+        engine_root = self.temporary_root / "UE_5.7"
+        engine_root.mkdir(exist_ok=True)
+        return cases, evidence, project_path, engine_root
+
+    def cli_patches(
+        self,
+        arguments: list[str],
+        engine_root: Path,
+        project_path: Path,
+    ) -> contextlib.ExitStack:
+        stack = contextlib.ExitStack()
+        stack.enter_context(
+            mock.patch.object(
+                sys,
+                "argv",
+                ["validate_reflection_environment_matrix.py", *arguments],
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                validate_reflection_environment_matrix.validation_environment,
+                "resolve_engine_root",
+                return_value=engine_root,
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                validate_reflection_environment_matrix.validation_environment,
+                "resolve_project_path",
+                return_value=project_path,
+            )
+        )
+        return stack
+
+    @staticmethod
+    def environment_from_command(command: list[str]) -> str:
+        return command[command.index("--reflection-environment") + 1]
+
+    @staticmethod
+    def path_from_command(command: list[str], option: str) -> Path:
+        return Path(command[command.index(option) + 1])
+
+    def successful_case_result(
+        self,
+        command: list[str],
+        evidence: dict[str, object],
+        *,
+        stderr: str = "",
+    ) -> subprocess.CompletedProcess[str]:
+        environment = self.environment_from_command(command)
+        result_path = self.path_from_command(command, "--result-json")
+        screenshot_path = self.path_from_command(command, "--screenshot")
+        payload = json.loads(
+            evidence[environment].result_path.read_text(encoding="utf-8")
+        )
+        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+        screenshot_path.write_bytes(b"synthetic Editor screenshot")
+        payload["screenshot"] = str(screenshot_path)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(
+            json.dumps(payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"{environment} helper stdout\n",
+            stderr=stderr,
+        )
+
+    def test_build_case_command_uses_exact_list_arguments(self) -> None:
+        repo_root = self.temporary_root / "repo"
+        engine_root = self.temporary_root / "UE_5.7"
+        project_path = self.temporary_root / "project" / "Test.uproject"
+        output_root = self.temporary_root / "matrix"
+
+        command = validate_reflection_environment_matrix.build_case_command(
+            repo_root,
+            engine_root,
+            project_path,
+            "near_wall",
+            180.0,
+            output_root / "NearWall.png",
+            output_root / "NearWall_Result.json",
+        )
+
+        self.assertEqual(
+            command,
+            [
+                sys.executable,
+                str(repo_root / "script" / "validate_visible_editor_ab_scene.py"),
+                "--artifacts",
+                "--direct-preset",
+                "clear",
+                "--reflection-environment",
+                "near_wall",
+                "--reflection-bounces",
+                "32",
+                "--timeout",
+                "180.0",
+                "--screenshot",
+                str(output_root / "NearWall.png"),
+                "--result-json",
+                str(output_root / "NearWall_Result.json"),
+                "--engine-root",
+                str(engine_root),
+                "--project",
+                str(project_path),
+            ],
+        )
+
+    def test_manifest_arguments_are_all_or_none(self) -> None:
+        cases, _, project_path, engine_root = self.make_cli_fixture(
+            "all-or-none"
+        )
+        manifest_options = (
+            ("--open-space-manifest", cases["open_space"].path),
+            ("--near-wall-manifest", cases["near_wall"].path),
+            ("--enclosed-manifest", cases["enclosed"].path),
+        )
+
+        for mask in range(1, 7):
+            arguments = [
+                value
+                for index, (option, path) in enumerate(manifest_options)
+                if mask & (1 << index)
+                for value in (option, str(path))
+            ]
+            with self.subTest(mask=mask):
+                with self.cli_patches(arguments, engine_root, project_path):
+                    with mock.patch.object(
+                        validate_reflection_environment_matrix.subprocess,
+                        "run",
+                        side_effect=AssertionError("Editor must not launch"),
+                    ) as run_mock:
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            "must be supplied together",
+                        ):
+                            validate_reflection_environment_matrix.main()
+                run_mock.assert_not_called()
+
+    def test_full_mode_runs_three_cases_in_order_and_writes_atomic_summary(
+        self,
+    ) -> None:
+        cases, evidence, project_path, engine_root = self.make_cli_fixture(
+            "full-success"
+        )
+        timestamp = "20260802-120102"
+        output_path = (
+            project_path.parent
+            / "Saved"
+            / "UERayTracingAudio"
+            / "ListeningAcceptance"
+            / "ReflectionEnvironmentMatrix"
+            / timestamp
+            / "ReflectionEnvironmentMatrix_Manifest.json"
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        def run_success(
+            command: list[str],
+            **_: object,
+        ) -> subprocess.CompletedProcess[str]:
+            environment = self.environment_from_command(command)
+            return self.successful_case_result(
+                command,
+                evidence,
+                stderr=f"{environment} helper stderr\n",
+            )
+
+        arguments = [
+            "--engine-root",
+            str(engine_root),
+            "--project",
+            str(project_path),
+        ]
+        with self.cli_patches(arguments, engine_root, project_path):
+            with mock.patch.object(
+                validate_reflection_environment_matrix.time,
+                "strftime",
+                return_value=timestamp,
+            ):
+                with mock.patch.object(
+                    validate_reflection_environment_matrix.subprocess,
+                    "run",
+                    side_effect=run_success,
+                ) as run_mock:
+                    with contextlib.redirect_stdout(stdout):
+                        with contextlib.redirect_stderr(stderr):
+                            result = validate_reflection_environment_matrix.main()
+
+        self.assertEqual(result, 0)
+        commands = [call.args[0] for call in run_mock.call_args_list]
+        self.assertEqual(
+            [self.environment_from_command(command) for command in commands],
+            ["open_space", "near_wall", "enclosed"],
+        )
+        display_names = ("OpenSpace", "NearWall", "Enclosed")
+        for call, display_name in zip(
+            run_mock.call_args_list,
+            display_names,
+            strict=True,
+        ):
+            command = call.args[0]
+            self.assertIsInstance(command, list)
+            self.assertEqual(call.kwargs["cwd"], Path(__file__).resolve().parents[2])
+            self.assertIs(call.kwargs["capture_output"], True)
+            self.assertIs(call.kwargs["text"], True)
+            self.assertIs(call.kwargs["check"], False)
+            self.assertEqual(call.kwargs["timeout"], 240.0)
+            self.assertNotIn("shell", call.kwargs)
+            self.assertEqual(
+                self.path_from_command(command, "--screenshot"),
+                output_path.parent / f"{display_name}.png",
+            )
+            self.assertEqual(
+                self.path_from_command(command, "--result-json"),
+                output_path.parent / f"{display_name}_Result.json",
+            )
+
+        output_lines = stdout.getvalue().splitlines()
+        self.assertEqual(
+            [line for line in output_lines if "helper stdout" in line],
+            [
+                "open_space helper stdout",
+                "near_wall helper stdout",
+                "enclosed helper stdout",
+            ],
+        )
+        self.assertEqual(
+            stderr.getvalue().splitlines(),
+            [
+                "open_space helper stderr",
+                "near_wall helper stderr",
+                "enclosed helper stderr",
+            ],
+        )
+        pass_lines = [
+            line
+            for line in output_lines
+            if line.startswith("R3_REFLECTION_MATRIX_PASS ")
+        ]
+        self.assertEqual(
+            pass_lines,
+            [
+                "R3_REFLECTION_MATRIX_PASS bounces=32 "
+                f'manifest="{output_path}"'
+            ],
+        )
+
+        summary = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(summary["schema_version"], 1)
+        self.assertIs(summary["passed"], True)
+        self.assertIs(summary["end_to_end"], True)
+        self.assertEqual(
+            summary["fixed_config"],
+            {
+                "input_asset": "/Game/FirstPerson/Audio/MarchingBand.MarchingBand",
+                "direct_preset": "clear",
+                "distance_cm": 200,
+                "air_absorption_profile": "default",
+                "reflection_rays": 4096,
+                "reflection_bounces": 32,
+            },
+        )
+        self.assertEqual(
+            summary["thresholds"],
+            {
+                "zero_tolerance": 1.0e-9,
+                "max_cpu_relative_delta": 0.05,
+                "min_direction_dot": 0.99,
+                "min_directional_energy_ratio": 0.05,
+                "min_wet_to_reference_ratio": 0.05,
+                "min_wet_stereo_difference": 0.01,
+                "common_output_scale_tolerance": 1.0e-6,
+                "min_enclosed_growth_ratio": 1.10,
+                "min_non_black_ratio": 0.10,
+                "min_luma_stddev": 8.0,
+            },
+        )
+        self.assertEqual(
+            set(summary["cases"]),
+            {"open_space", "near_wall", "enclosed"},
+        )
+        near_wall = summary["cases"]["near_wall"]
+        self.assertEqual(
+            near_wall["manifest_path"],
+            str(cases["near_wall"].path.resolve()),
+        )
+        self.assertEqual(
+            near_wall["result"],
+            str(output_path.parent / "NearWall_Result.json"),
+        )
+        self.assertEqual(
+            near_wall["screenshot"],
+            str(output_path.parent / "NearWall.png"),
+        )
+        self.assertEqual(near_wall["log"], str(evidence["near_wall"].log_path))
+        self.assertEqual(near_wall["hardware_indirect_valid_paths"], 1000)
+        self.assertEqual(
+            near_wall["reference_sha256"],
+            hashlib.sha256(
+                Path(str(cases["near_wall"].payload["reference_wav"])).read_bytes()
+            ).hexdigest(),
+        )
+        self.assertGreater(
+            summary["comparisons"]["enclosed_to_near_wall_paths_ratio"],
+            1.0,
+        )
+        self.assertFalse(
+            output_path.with_suffix(output_path.suffix + ".tmp").exists()
+        )
+
+    def test_full_mode_stops_after_first_nonzero_case(self) -> None:
+        _, evidence, project_path, engine_root = self.make_cli_fixture(
+            "first-failure"
+        )
+        output_path = self.temporary_root / "failure" / "summary.json"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        def run_until_failure(
+            command: list[str],
+            **_: object,
+        ) -> subprocess.CompletedProcess[str]:
+            environment = self.environment_from_command(command)
+            if environment == "open_space":
+                return self.successful_case_result(command, evidence)
+            return subprocess.CompletedProcess(
+                command,
+                17,
+                stdout="near_wall helper stdout\n",
+                stderr="near_wall helper failed\n",
+            )
+
+        arguments = [
+            "--engine-root",
+            str(engine_root),
+            "--project",
+            str(project_path),
+            "--output",
+            str(output_path),
+        ]
+        with self.cli_patches(arguments, engine_root, project_path):
+            with mock.patch.object(
+                validate_reflection_environment_matrix.subprocess,
+                "run",
+                side_effect=run_until_failure,
+            ) as run_mock:
+                with contextlib.redirect_stdout(stdout):
+                    with contextlib.redirect_stderr(stderr):
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            "NearWall.*code 17",
+                        ):
+                            validate_reflection_environment_matrix.main()
+
+        commands = [call.args[0] for call in run_mock.call_args_list]
+        self.assertEqual(
+            [self.environment_from_command(command) for command in commands],
+            ["open_space", "near_wall"],
+        )
+        self.assertIn("near_wall helper stdout", stdout.getvalue())
+        self.assertIn("near_wall helper failed", stderr.getvalue())
+        self.assertNotIn("R3_REFLECTION_MATRIX_PASS", stdout.getvalue())
+        self.assertFalse(output_path.exists())
+
+    def test_run_editor_case_rejects_success_without_result_json(self) -> None:
+        output_root = self.temporary_root / "missing-result"
+        completed = subprocess.CompletedProcess(
+            ["helper"],
+            0,
+            stdout="helper completed\n",
+            stderr="helper warning\n",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with mock.patch.object(
+            validate_reflection_environment_matrix.subprocess,
+            "run",
+            return_value=completed,
+        ) as run_mock:
+            with contextlib.redirect_stdout(stdout):
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "OpenSpace result JSON does not exist",
+                    ):
+                        validate_reflection_environment_matrix.run_editor_case(
+                            self.temporary_root / "repo",
+                            self.temporary_root / "engine",
+                            self.temporary_root / "project" / "Test.uproject",
+                            "open_space",
+                            12.5,
+                            output_root,
+                        )
+
+        self.assertEqual(run_mock.call_args.kwargs["timeout"], 72.5)
+        self.assertEqual(stdout.getvalue(), "helper completed\n")
+        self.assertEqual(stderr.getvalue(), "helper warning\n")
+
+    def test_timeout_is_reported_as_fail_and_never_writes_summary(self) -> None:
+        _, _, project_path, engine_root = self.make_cli_fixture("timeout")
+        output_path = self.temporary_root / "timeout" / "summary.json"
+        stderr = io.StringIO()
+        arguments = [
+            "--engine-root",
+            str(engine_root),
+            "--project",
+            str(project_path),
+            "--timeout",
+            "5.5",
+            "--output",
+            str(output_path),
+        ]
+
+        with self.cli_patches(arguments, engine_root, project_path):
+            with mock.patch.object(
+                validate_reflection_environment_matrix.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["helper"], 65.5),
+            ) as run_mock:
+                with contextlib.redirect_stderr(stderr):
+                    result = validate_reflection_environment_matrix.entrypoint()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(run_mock.call_args.kwargs["timeout"], 65.5)
+        self.assertTrue(stderr.getvalue().startswith("R3_REFLECTION_MATRIX_FAIL "))
+        self.assertFalse(output_path.exists())
+
+    def test_manifest_only_rechecks_semantics_without_end_to_end_pass_marker(
+        self,
+    ) -> None:
+        cases, evidence, project_path, engine_root = self.make_cli_fixture(
+            "manifest-only"
+        )
+        for case_evidence in evidence.values():
+            case_evidence.result_path.unlink()
+            case_evidence.screenshot_path.unlink()
+            case_evidence.log_path.unlink()
+        for ir_path in project_path.parent.rglob("*IR.uasset"):
+            ir_path.unlink()
+
+        output_path = self.temporary_root / "recheck" / "summary.json"
+        output_path.parent.mkdir(parents=True)
+        output_path.write_text("stale summary\n", encoding="utf-8")
+        arguments = [
+            "--project",
+            str(project_path),
+            "--output",
+            str(output_path),
+            "--open-space-manifest",
+            str(cases["open_space"].path),
+            "--near-wall-manifest",
+            str(cases["near_wall"].path),
+            "--enclosed-manifest",
+            str(cases["enclosed"].path),
+        ]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with self.cli_patches(arguments, engine_root, project_path):
+            with mock.patch.object(
+                validate_reflection_environment_matrix.subprocess,
+                "run",
+                side_effect=AssertionError("Editor must not launch"),
+            ) as run_mock:
+                with contextlib.redirect_stdout(stdout):
+                    with contextlib.redirect_stderr(stderr):
+                        result = validate_reflection_environment_matrix.main()
+
+        self.assertEqual(result, 0)
+        run_mock.assert_not_called()
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(
+            stdout.getvalue().splitlines(),
+            [
+                "R3_REFLECTION_MATRIX_RECHECK_PASS bounces=32 "
+                f'manifest="{output_path}"'
+            ],
+        )
+        self.assertNotIn("R3_REFLECTION_MATRIX_PASS", stdout.getvalue())
+        summary = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertIs(summary["passed"], True)
+        self.assertIs(summary["end_to_end"], False)
+        for case_payload in summary["cases"].values():
+            self.assertNotIn("result", case_payload)
+            self.assertNotIn("screenshot", case_payload)
+            self.assertNotIn("log", case_payload)
+        self.assertFalse(
+            output_path.with_suffix(output_path.suffix + ".tmp").exists()
+        )
 
 
 if __name__ == "__main__":
