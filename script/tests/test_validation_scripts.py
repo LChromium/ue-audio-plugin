@@ -5,7 +5,7 @@ import io
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +15,7 @@ sys.path.insert(0, str(SCRIPT_ROOT))
 
 import launch_runtime_validation
 import validation_environment
+import validate_visible_editor_ab_scene
 
 
 def make_direct_sweep_summary(
@@ -130,6 +131,7 @@ def make_editor_ab_artifact_marker(
     *,
     direct_preset: str = "clear",
     reflection_environment: str = "enclosed",
+    reflection_bounces: int = 32,
 ) -> str:
     return (
         "UERayTracingAudioEditor A/B artifacts ready: "
@@ -146,10 +148,29 @@ def make_editor_ab_artifact_marker(
         'wet="C:/Artifacts/wet.wav" '
         'full="C:/Artifacts/full.wav" '
         'manifest="C:/Artifacts/manifest.json" '
-        "reflection_rays=4096 reflection_bounces=8 hw_paths=12 "
+        "reflection_rays=4096 "
+        f"reflection_bounces={reflection_bounces} hw_paths=12 "
         "hw_gain=0.2 direct_level=0.5 wet_level=0.2 full_level=0.6 "
         "direct_wet_difference=0.4 wet_stereo_difference=0.2 "
         "directional_wet=1 common_scale=1.000000."
+    )
+
+
+def make_editor_scene_marker(
+    *,
+    geometry: int = 1,
+    reflection_environment: str = "near_wall",
+    reflection_bounces: int = 32,
+) -> str:
+    return (
+        "UERayTracingAudioEditor validation scene ready: "
+        f"source=1 listener=1 geometry={geometry} lighting=1 bake_ui=1 "
+        "direct_preset=clear "
+        f"reflection_environment={reflection_environment} "
+        f"reflection_bounces={reflection_bounces} "
+        "source_listener_distance_cm=200.00 "
+        "air_absorption_profile=default "
+        "air_absorption_per_meter=(0.000200,0.000600,0.001200)."
     )
 
 
@@ -174,6 +195,112 @@ def make_acoustic_validation_summary(
 class FakeRunningProcess:
     def poll(self) -> None:
         return None
+
+
+class FakeVisibleEditorProcess:
+    pid = 2468
+    returncode = None
+
+    def poll(self) -> None:
+        return None
+
+
+def run_visible_editor_helper(
+    root: Path,
+    *,
+    log_text: str,
+    timeout: float = 45.0,
+    image_metrics: tuple[int, int, float, float, float] = (
+        1280,
+        720,
+        0.75,
+        48.0,
+        12.0,
+    ),
+) -> tuple[int | None, BaseException | None, Path, str, list[str]]:
+    project_path = root / "Project" / "Test.uproject"
+    project_path.parent.mkdir(parents=True, exist_ok=True)
+    screenshot_path = root / "editor.png"
+    result_path = root / "result.json"
+    process = FakeVisibleEditorProcess()
+
+    def capture_metrics(
+        _window_handle: int,
+        output_path: Path,
+    ) -> tuple[int, int, float, float, float]:
+        output_path.write_bytes(b"synthetic screenshot")
+        return image_metrics
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with patch.object(
+        sys,
+        "argv",
+        [
+            "validate_visible_editor_ab_scene.py",
+            "--engine-root",
+            str(root / "UE_5.7"),
+            "--project",
+            str(project_path),
+            "--timeout",
+            str(timeout),
+            "--artifacts",
+            "--direct-preset",
+            "clear",
+            "--reflection-environment",
+            "near_wall",
+            "--reflection-bounces",
+            "32",
+            "--screenshot",
+            str(screenshot_path),
+            "--result-json",
+            str(result_path),
+        ],
+    ), patch.object(
+        validate_visible_editor_ab_scene.validation_environment,
+        "resolve_engine_root",
+        return_value=root / "UE_5.7",
+    ), patch.object(
+        validate_visible_editor_ab_scene.validation_environment,
+        "resolve_project_path",
+        return_value=project_path,
+    ), patch.object(
+        validate_visible_editor_ab_scene,
+        "visible_unreal_windows",
+        side_effect=([], [(101, process.pid, "Unreal Editor")]),
+    ), patch.object(
+        validate_visible_editor_ab_scene,
+        "client_bounds",
+        return_value=(0, 0, 1280, 720),
+    ), patch.object(
+        validate_visible_editor_ab_scene,
+        "capture_metrics",
+        side_effect=capture_metrics,
+    ), patch.object(
+        validate_visible_editor_ab_scene,
+        "read_log",
+        return_value=log_text,
+    ), patch.object(
+        validate_visible_editor_ab_scene.subprocess,
+        "Popen",
+        return_value=process,
+    ) as popen_mock, patch.object(
+        validate_visible_editor_ab_scene,
+        "stop_process",
+    ), redirect_stdout(stdout), redirect_stderr(stderr):
+        try:
+            status = validate_visible_editor_ab_scene.main()
+            error: BaseException | None = None
+        except (Exception, SystemExit) as exc:
+            status = None
+            error = exc
+
+    command = (
+        list(popen_mock.call_args.args[0])
+        if popen_mock.call_args is not None
+        else []
+    )
+    return status, error, result_path, stdout.getvalue(), command
 
 
 class ValidationEnvironmentTests(unittest.TestCase):
@@ -290,6 +417,14 @@ class RuntimeValidationTests(unittest.TestCase):
         self.assertIn("-UERayTracingAudioValidationEditorBake", command)
         self.assertIn("-UERayTracingAudioValidationDirectPreset=clear", command)
         self.assertIn(
+            "-UERayTracingAudioValidationReflectionEnvironment=enclosed",
+            command,
+        )
+        self.assertIn(
+            "-UERayTracingAudioValidationReflectionBounces=8",
+            command,
+        )
+        self.assertIn(
             "-ini:Engine:[Audio]:UnfocusedVolumeMultiplier=1.0",
             command,
         )
@@ -298,6 +433,50 @@ class RuntimeValidationTests(unittest.TestCase):
             launch_runtime_validation.EDITOR_VALIDATION_MARKERS,
         )
         self.assertNotIn("-UERayTracingAudioValidationDirectSweep", command)
+
+    def test_editor_command_configures_environment_and_clamps_bounces(
+        self,
+    ) -> None:
+        command = launch_runtime_validation.build_editor_command(
+            Path("UnrealEditor.exe"),
+            Path("Test.uproject"),
+            Path("Editor.log"),
+            editor_reflection_environment="near_wall",
+            editor_reflection_bounces=32,
+        )
+        self.assertIn(
+            "-UERayTracingAudioValidationReflectionEnvironment=near_wall",
+            command,
+        )
+        self.assertIn(
+            "-UERayTracingAudioValidationReflectionBounces=32",
+            command,
+        )
+
+        for requested, expected in ((0, 1), (65, 64)):
+            with self.subTest(requested=requested):
+                clamped = launch_runtime_validation.build_editor_command(
+                    Path("UnrealEditor.exe"),
+                    Path("Test.uproject"),
+                    Path("Editor.log"),
+                    editor_reflection_bounces=requested,
+                )
+                self.assertIn(
+                    "-UERayTracingAudioValidationReflectionBounces="
+                    f"{expected}",
+                    clamped,
+                )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unknown Editor reflection environment",
+        ):
+            launch_runtime_validation.build_editor_command(
+                Path("UnrealEditor.exe"),
+                Path("Test.uproject"),
+                Path("Editor.log"),
+                editor_reflection_environment="warehouse",
+            )
 
     def test_editor_cli_applies_distance_and_air_profile_only_to_editor(
         self,
@@ -360,47 +539,49 @@ class RuntimeValidationTests(unittest.TestCase):
     ) -> None:
         marker = (
             "LogTemp: Display: UERayTracingAudioEditor validation scene ready: "
-            "source=1 listener=1 geometry=0 lighting=1 bake_ui=1 "
-            "direct_preset=clear reflection_environment=open_space "
-            "source_listener_distance_cm=400.00 "
-            "air_absorption_profile=stress "
-            "air_absorption_per_meter=(0.010000,0.040000,0.120000)."
+            "source=1 listener=1 geometry=1 lighting=1 bake_ui=1 "
+            "direct_preset=clear reflection_environment=near_wall "
+            "reflection_bounces=32 source_listener_distance_cm=200.00 "
+            "air_absorption_profile=default "
+            "air_absorption_per_meter=(0.000200,0.000600,0.001200)."
         )
         values = launch_runtime_validation.validate_editor_scene_ready(
             marker,
             expected_direct_preset="clear",
-            expected_reflection_environment="open_space",
-            expected_distance_cm=400,
-            expected_air_absorption_profile="stress",
+            expected_reflection_environment="near_wall",
+            expected_distance_cm=200,
+            expected_air_absorption_profile="default",
+            expected_reflection_bounces=32,
         )
-        self.assertEqual(values["distance_cm"], 400.0)
-        self.assertEqual(values["air_absorption_profile"], "stress")
+        self.assertEqual(values["geometry"], 1)
+        self.assertEqual(values["reflection_bounces"], 32)
+        self.assertEqual(values["distance_cm"], 200.0)
+        self.assertEqual(values["air_absorption_profile"], "default")
         self.assertEqual(
             values["air_absorption_per_meter"],
-            (0.01, 0.04, 0.12),
+            (0.0002, 0.0006, 0.0012),
         )
 
-        legacy_marker = (
-            "UERayTracingAudioEditor validation scene ready: source=1 "
-            "listener=1 geometry=7 lighting=1 bake_ui=1 "
-            "direct_preset=clear reflection_environment=enclosed "
-            "source_listener_distance_cm=200.00."
+        missing_bounce_marker = marker.replace(
+            "reflection_bounces=32 ",
+            "",
         )
         with self.assertRaisesRegex(
             RuntimeError,
             "strict Editor validation scene marker",
         ):
             launch_runtime_validation.validate_editor_scene_ready(
-                legacy_marker,
+                missing_bounce_marker,
                 expected_direct_preset="clear",
-                expected_reflection_environment="enclosed",
+                expected_reflection_environment="near_wall",
                 expected_distance_cm=200,
                 expected_air_absorption_profile="default",
+                expected_reflection_bounces=32,
             )
 
         wrong_vector_marker = marker.replace(
-            "(0.010000,0.040000,0.120000)",
             "(0.000200,0.000600,0.001200)",
+            "(0.010000,0.040000,0.120000)",
         )
         with self.assertRaisesRegex(
             RuntimeError,
@@ -409,9 +590,10 @@ class RuntimeValidationTests(unittest.TestCase):
             launch_runtime_validation.validate_editor_scene_ready(
                 wrong_vector_marker,
                 expected_direct_preset="clear",
-                expected_reflection_environment="open_space",
-                expected_distance_cm=400,
-                expected_air_absorption_profile="stress",
+                expected_reflection_environment="near_wall",
+                expected_distance_cm=200,
+                expected_air_absorption_profile="default",
+                expected_reflection_bounces=32,
             )
 
         with self.assertRaisesRegex(
@@ -421,13 +603,35 @@ class RuntimeValidationTests(unittest.TestCase):
             launch_runtime_validation.validate_editor_scene_ready(
                 marker,
                 expected_direct_preset="hard_occluded",
-                expected_reflection_environment="open_space",
-                expected_distance_cm=400,
-                expected_air_absorption_profile="stress",
+                expected_reflection_environment="near_wall",
+                expected_distance_cm=200,
+                expected_air_absorption_profile="default",
+                expected_reflection_bounces=32,
             )
 
+        for rejected, reason in (
+            (
+                marker.replace("geometry=1", "geometry=7"),
+                "fixture geometry count",
+            ),
+            (
+                marker.replace("reflection_bounces=32", "reflection_bounces=8"),
+                "reflection bounces",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(RuntimeError, reason):
+                    launch_runtime_validation.validate_editor_scene_ready(
+                        rejected,
+                        expected_direct_preset="clear",
+                        expected_reflection_environment="near_wall",
+                        expected_distance_cm=200,
+                        expected_air_absorption_profile="default",
+                        expected_reflection_bounces=32,
+                    )
+
         duplicate_marker = marker + "\n" + marker.replace(
-            "air_absorption_profile=stress ",
+            "air_absorption_profile=default ",
             "air_absorption_profile=malformed ",
         )
         with self.assertRaisesRegex(
@@ -437,9 +641,10 @@ class RuntimeValidationTests(unittest.TestCase):
             launch_runtime_validation.validate_editor_scene_ready(
                 duplicate_marker,
                 expected_direct_preset="clear",
-                expected_reflection_environment="open_space",
-                expected_distance_cm=400,
-                expected_air_absorption_profile="stress",
+                expected_reflection_environment="near_wall",
+                expected_distance_cm=200,
+                expected_air_absorption_profile="default",
+                expected_reflection_bounces=32,
             )
 
     def test_editor_ab_artifact_marker_matches_producer_order_and_environment(
@@ -452,10 +657,13 @@ class RuntimeValidationTests(unittest.TestCase):
             marker,
             expected_direct_preset="clear",
             expected_reflection_environment="near_wall",
+            expected_reflection_bounces=32,
         )
         self.assertEqual(values["direct_preset"], "clear")
         self.assertEqual(values["reflection_environment"], "near_wall")
         self.assertEqual(values["distance_cm"], 200.0)
+        self.assertEqual(values["reflection_rays"], 4096)
+        self.assertEqual(values["reflection_bounces"], 32)
         self.assertEqual(values["common_scale"], 1.0)
 
     def test_editor_ready_waits_for_complete_ab_artifact_marker(
@@ -506,13 +714,165 @@ class RuntimeValidationTests(unittest.TestCase):
                         rejected,
                         expected_direct_preset="clear",
                         expected_reflection_environment="enclosed",
+                        expected_reflection_bounces=32,
                     )
         with self.assertRaisesRegex(RuntimeError, "reflection environment"):
             launch_runtime_validation.validate_editor_ab_artifacts_marker(
                 marker,
                 expected_direct_preset="clear",
                 expected_reflection_environment="open_space",
+                expected_reflection_bounces=32,
             )
+
+        with self.assertRaisesRegex(RuntimeError, "reflection bounces"):
+            launch_runtime_validation.validate_editor_ab_artifacts_marker(
+                make_editor_ab_artifact_marker(reflection_bounces=8),
+                expected_direct_preset="clear",
+                expected_reflection_environment="enclosed",
+                expected_reflection_bounces=32,
+            )
+
+    def test_visible_editor_helper_accepts_environment_and_result_options(
+        self,
+    ) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "validate_visible_editor_ab_scene.py",
+                "--reflection-environment",
+                "near_wall",
+                "--result-json",
+                "Saved/near-wall.json",
+            ],
+        ):
+            args = validate_visible_editor_ab_scene.parse_args()
+
+        self.assertEqual(args.reflection_environment, "near_wall")
+        self.assertEqual(args.result_json, Path("Saved/near-wall.json"))
+
+    def test_visible_editor_helper_writes_strict_atomic_result_json(
+        self,
+    ) -> None:
+        scene_marker = make_editor_scene_marker()
+        artifact_marker = make_editor_ab_artifact_marker(
+            reflection_environment="near_wall",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status, error, result_path, output, command = (
+                run_visible_editor_helper(
+                    root,
+                    log_text=scene_marker + "\n" + artifact_marker,
+                )
+            )
+
+            self.assertEqual(status, 0)
+            self.assertIsNone(error)
+            self.assertTrue(result_path.is_file())
+            self.assertFalse(
+                result_path.with_suffix(result_path.suffix + ".tmp").exists()
+            )
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schema_version"], 1)
+            self.assertTrue(payload["passed"])
+            self.assertEqual(
+                payload["scene"]["reflection_environment"],
+                "near_wall",
+            )
+            self.assertEqual(payload["scene"]["geometry"], 1)
+            self.assertEqual(payload["scene"]["reflection_bounces"], 32)
+            self.assertEqual(payload["artifacts"]["reflection_rays"], 4096)
+            self.assertEqual(payload["artifacts"]["reflection_bounces"], 32)
+            self.assertEqual(
+                payload["image_metrics"],
+                {
+                    "width": 1280,
+                    "height": 720,
+                    "non_black_ratio": 0.75,
+                    "mean_luma": 48.0,
+                    "luma_stddev": 12.0,
+                },
+            )
+            self.assertEqual(payload["screenshot"], str(root / "editor.png"))
+            self.assertIn("UERayTracingAudioEditorVisible-", payload["log"])
+            self.assertEqual(output.count(scene_marker), 1)
+            self.assertEqual(output.count(artifact_marker), 1)
+            self.assertIn(
+                "-UERayTracingAudioValidationReflectionEnvironment=near_wall",
+                command,
+            )
+            self.assertIn(
+                "-UERayTracingAudioValidationReflectionBounces=32",
+                command,
+            )
+
+    def test_visible_editor_helper_never_writes_failed_result_json(self) -> None:
+        scene_marker = make_editor_scene_marker()
+        artifact_marker = make_editor_ab_artifact_marker(
+            reflection_environment="near_wall",
+        )
+        cases = (
+            (
+                "timeout",
+                scene_marker + "\n" + artifact_marker,
+                0.0,
+                (1280, 720, 0.75, 48.0, 12.0),
+                1,
+                None,
+            ),
+            (
+                "artifact failure",
+                "UERayTracingAudioEditor A/B artifacts failed: synthetic",
+                45.0,
+                (1280, 720, 0.75, 48.0, 12.0),
+                1,
+                None,
+            ),
+            (
+                "malformed scene",
+                scene_marker.replace("reflection_bounces=32 ", "")
+                + "\n"
+                + artifact_marker,
+                45.0,
+                (1280, 720, 0.75, 48.0, 12.0),
+                None,
+                "strict Editor validation scene marker",
+            ),
+            (
+                "black frame",
+                scene_marker + "\n" + artifact_marker,
+                45.0,
+                (1280, 720, 0.75, 0.0, 0.0),
+                1,
+                None,
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, (
+                label,
+                log_text,
+                timeout,
+                metrics,
+                expected_status,
+                expected_error,
+            ) in enumerate(cases):
+                with self.subTest(label=label):
+                    case_root = root / str(index)
+                    status, error, result_path, _, _ = run_visible_editor_helper(
+                        case_root,
+                        log_text=log_text,
+                        timeout=timeout,
+                        image_metrics=metrics,
+                    )
+                    self.assertEqual(status, expected_status)
+                    if expected_error is None:
+                        self.assertIsNone(error)
+                    else:
+                        self.assertIsInstance(error, RuntimeError)
+                        self.assertRegex(str(error), expected_error)
+                    self.assertFalse(result_path.exists())
 
     def test_direct_sweep_gate_accepts_one_strict_hardware_marker(self) -> None:
         values = self.validate_direct_sweep(

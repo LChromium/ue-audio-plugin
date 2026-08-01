@@ -161,6 +161,11 @@ EDITOR_AB_ARTIFACTS_FAILURE_MARKER = "UERayTracingAudioEditor A/B artifacts fail
 EDITOR_LISTENING_UI_MARKER = "UERayTracingAudioEditor listening acceptance ready:"
 EDITOR_DIRECT_PRESETS = ("clear", "soft_occluded", "hard_occluded")
 EDITOR_REFLECTION_ENVIRONMENTS = ("enclosed", "open_space", "near_wall")
+EDITOR_EXPECTED_GEOMETRY = {
+    "open_space": 0,
+    "near_wall": 1,
+    "enclosed": 7,
+}
 EDITOR_VALIDATION_DISTANCES_CM = (100, 200, 400)
 EDITOR_AIR_ABSORPTION_PROFILES = ("off", "default", "stress")
 EDITOR_AIR_ABSORPTION_VECTORS = {
@@ -174,6 +179,7 @@ EDITOR_VISIBLE_SCENE_PATTERN = re.compile(
     r"lighting=1 bake_ui=1 "
     r"direct_preset=(?P<direct_preset>[a-z_]+) "
     r"reflection_environment=(?P<reflection_environment>[a-z_]+) "
+    r"reflection_bounces=(?P<reflection_bounces>[0-9]+) "
     r"source_listener_distance_cm=(?P<distance_cm>[0-9.eE+-]+) "
     r"air_absorption_profile=(?P<air_absorption_profile>[a-z_]+) "
     r"air_absorption_per_meter=\("
@@ -194,7 +200,9 @@ EDITOR_AB_ARTIFACTS_PATTERN = re.compile(
     r"ir_asset=\"(?P<ir_asset>[^\"]+)\" imported_assets=(?P<imported_assets>[0-9]+) "
     r"reference=\"(?P<reference>[^\"]+)\" direct=\"(?P<direct>[^\"]+)\" "
     r"wet=\"(?P<wet>[^\"]+)\" full=\"(?P<full>[^\"]+)\" "
-    r"manifest=\"(?P<manifest>[^\"]+)\".*?"
+    r"manifest=\"(?P<manifest>[^\"]+)\" "
+    r"reflection_rays=(?P<reflection_rays>[0-9]+) "
+    r"reflection_bounces=(?P<reflection_bounces>[0-9]+) .*?"
     r"direct_level=(?P<direct_level>[0-9.eE+-]+) "
     r"wet_level=(?P<wet_level>[0-9.eE+-]+).*?"
     r"direct_wet_difference=(?P<direct_wet_difference>[0-9.eE+-]+).*?"
@@ -323,6 +331,7 @@ def validate_editor_scene_ready(
     expected_reflection_environment: str,
     expected_distance_cm: int,
     expected_air_absorption_profile: str,
+    expected_reflection_bounces: int,
 ) -> dict[str, object]:
     if expected_direct_preset not in EDITOR_DIRECT_PRESETS:
         raise ValueError(
@@ -368,6 +377,8 @@ def validate_editor_scene_ready(
         )
 
     distance_cm = float(match.group("distance_cm"))
+    actual_geometry = int(match.group("geometry"))
+    actual_bounces = int(match.group("reflection_bounces"))
     profile = match.group("air_absorption_profile")
     air_absorption = tuple(
         float(match.group(group))
@@ -387,6 +398,19 @@ def validate_editor_scene_ready(
             "reflection environment "
             f"({match.group('reflection_environment')} != "
             f"{expected_reflection_environment})"
+        )
+    if actual_geometry != EDITOR_EXPECTED_GEOMETRY[
+        expected_reflection_environment
+    ]:
+        failures.append(
+            "fixture geometry count "
+            f"({actual_geometry} != "
+            f"{EDITOR_EXPECTED_GEOMETRY[expected_reflection_environment]})"
+        )
+    if actual_bounces != expected_reflection_bounces:
+        failures.append(
+            f"reflection bounces ({actual_bounces} != "
+            f"{expected_reflection_bounces})"
         )
     if abs(distance_cm - expected_distance_cm) > 0.1:
         failures.append(
@@ -415,11 +439,12 @@ def validate_editor_scene_ready(
         )
 
     return {
-        "geometry": int(match.group("geometry")),
+        "geometry": actual_geometry,
         "direct_preset": match.group("direct_preset"),
         "reflection_environment": match.group(
             "reflection_environment"
         ),
+        "reflection_bounces": actual_bounces,
         "distance_cm": distance_cm,
         "air_absorption_profile": profile,
         "air_absorption_per_meter": air_absorption,
@@ -431,6 +456,7 @@ def validate_editor_ab_artifacts_marker(
     *,
     expected_direct_preset: str,
     expected_reflection_environment: str,
+    expected_reflection_bounces: int,
 ) -> dict[str, object]:
     match = _extract_exactly_one_strict_marker(
         log_text,
@@ -452,6 +478,12 @@ def validate_editor_ab_artifacts_marker(
             "reflection environment "
             f"({match.group('reflection_environment')} != "
             f"{expected_reflection_environment})"
+        )
+    actual_bounces = int(match.group("reflection_bounces"))
+    if actual_bounces != expected_reflection_bounces:
+        failures.append(
+            f"reflection bounces ({actual_bounces} != "
+            f"{expected_reflection_bounces})"
         )
     if failures:
         raise RuntimeError(
@@ -477,6 +509,8 @@ def validate_editor_ab_artifacts_marker(
         "auto_checks",
         "distinct",
         "imported_assets",
+        "reflection_rays",
+        "reflection_bounces",
         "directional_wet",
     ):
         values[name] = int(match.group(name))
@@ -644,6 +678,7 @@ def build_editor_command(
     editor_direct_preset: str = "clear",
     editor_distance_cm: int = 200,
     editor_air_absorption_profile: str = "default",
+    editor_reflection_environment: str = "enclosed",
     editor_reflection_bounces: int = 8,
     interactive_runtime: bool = False,
 ) -> list[str]:
@@ -663,6 +698,12 @@ def build_editor_command(
             f"{editor_air_absorption_profile!r}; "
             f"expected one of {EDITOR_AIR_ABSORPTION_PROFILES}."
         )
+    if editor_reflection_environment not in EDITOR_REFLECTION_ENVIRONMENTS:
+        raise ValueError(
+            "Unknown Editor reflection environment "
+            f"{editor_reflection_environment!r}; "
+            f"expected one of {EDITOR_REFLECTION_ENVIRONMENTS}."
+        )
     command = [
         str(editor_exe),
         str(project_path),
@@ -674,6 +715,8 @@ def build_editor_command(
         f"-UERayTracingAudioValidationDistanceCm={editor_distance_cm:g}",
         "-UERayTracingAudioValidationAirAbsorptionProfile="
         f"{editor_air_absorption_profile}",
+        "-UERayTracingAudioValidationReflectionEnvironment="
+        f"{editor_reflection_environment}",
         f"-UERayTracingAudioValidationReflectionBounces={max(1, min(editor_reflection_bounces, 64))}",
         f"-UERayTracingAudioValidationSourceCount={max(2, min(source_count, 32))}",
         *VALIDATION_AUDIO_OVERRIDES,
@@ -1501,6 +1544,8 @@ def start_editor_for_user(
         editor_direct_preset=editor_direct_preset,
         editor_distance_cm=editor_distance_cm,
         editor_air_absorption_profile=editor_air_absorption_profile,
+        editor_reflection_environment="enclosed",
+        editor_reflection_bounces=8,
         interactive_runtime=interactive_runtime,
     )
     print("\n=== Launch Editor For User ===")
@@ -1559,6 +1604,7 @@ def start_editor_for_user(
             expected_air_absorption_profile=(
                 editor_air_absorption_profile
             ),
+            expected_reflection_bounces=8,
         )
         editor_scene_line = next(
             line.strip()
@@ -1581,6 +1627,7 @@ def start_editor_for_user(
             editor_log,
             expected_direct_preset=editor_direct_preset,
             expected_reflection_environment="enclosed",
+            expected_reflection_bounces=8,
         )
         artifacts_match = EDITOR_AB_ARTIFACTS_PATTERN.search(editor_log)
         assert artifacts_match is not None

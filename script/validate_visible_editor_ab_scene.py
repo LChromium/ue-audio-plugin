@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -27,12 +28,18 @@ def parse_args() -> argparse.Namespace:
         choices=launch_runtime_validation.EDITOR_DIRECT_PRESETS,
         default="clear",
     )
+    parser.add_argument(
+        "--reflection-environment",
+        choices=launch_runtime_validation.EDITOR_REFLECTION_ENVIRONMENTS,
+        default="enclosed",
+    )
     parser.add_argument("--reflection-bounces", type=int, default=8)
     parser.add_argument(
         "--screenshot",
         type=Path,
         default=Path("Saved/Validation/editor-ab-scene.png"),
     )
+    parser.add_argument("--result-json", type=Path)
     return parser.parse_args()
 
 
@@ -70,6 +77,7 @@ def main() -> int:
         phase_log_path,
         editor_ab_artifacts=args.artifacts,
         editor_direct_preset=args.direct_preset,
+        editor_reflection_environment=args.reflection_environment,
         editor_reflection_bounces=args.reflection_bounces,
     )
 
@@ -129,6 +137,42 @@ def main() -> int:
             )
             return 1
 
+        effective_reflection_bounces = max(
+            1,
+            min(args.reflection_bounces, 64),
+        )
+        scene_values = launch_runtime_validation.validate_editor_scene_ready(
+            log_text,
+            expected_direct_preset=args.direct_preset,
+            expected_reflection_environment=args.reflection_environment,
+            expected_distance_cm=200,
+            expected_air_absorption_profile="default",
+            expected_reflection_bounces=effective_reflection_bounces,
+        )
+        artifact_values: dict[str, object] | None = None
+        if args.artifacts:
+            artifact_values = (
+                launch_runtime_validation.validate_editor_ab_artifacts_marker(
+                    log_text,
+                    expected_direct_preset=args.direct_preset,
+                    expected_reflection_environment=args.reflection_environment,
+                    expected_reflection_bounces=effective_reflection_bounces,
+                )
+            )
+
+        scene_line = next(
+            line.strip()
+            for line in log_text.splitlines()
+            if launch_runtime_validation.EDITOR_VISIBLE_SCENE_MARKER in line
+        )
+        artifact_line = None
+        if args.artifacts:
+            artifact_line = next(
+                line.strip()
+                for line in log_text.splitlines()
+                if launch_runtime_validation.EDITOR_AB_ARTIFACTS_MARKER in line
+            )
+
         runtime_window: tuple[int, int, str] | None = None
         window_deadline = time.monotonic() + 15.0
         while time.monotonic() < window_deadline:
@@ -165,12 +209,9 @@ def main() -> int:
             window_handle,
             screenshot_path,
         )
-        scene_line = next(
-            line.strip()
-            for line in log_text.splitlines()
-            if target_marker in line
-        )
         print(f"EDITOR_AB_SCENE_MARKER {scene_line}")
+        if artifact_line is not None:
+            print(f"EDITOR_AB_ARTIFACT_MARKER {artifact_line}")
         print(
             "EDITOR_AB_SCENE_METRICS "
             f"pid={process_id} title={title!r} size={width}x{height} "
@@ -183,6 +224,35 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+
+        result_json_path = args.result_json
+        if result_json_path is not None and not result_json_path.is_absolute():
+            result_json_path = repo_root / result_json_path
+        payload = {
+            "schema_version": 1,
+            "passed": True,
+            "scene": scene_values,
+            "artifacts": artifact_values if args.artifacts else None,
+            "image_metrics": {
+                "width": width,
+                "height": height,
+                "non_black_ratio": non_black_ratio,
+                "mean_luma": mean_luma,
+                "luma_stddev": luma_stddev,
+            },
+            "screenshot": str(screenshot_path),
+            "log": str(phase_log_path),
+        }
+        if result_json_path is not None:
+            result_json_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = result_json_path.with_suffix(
+                result_json_path.suffix + ".tmp"
+            )
+            temporary_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            temporary_path.replace(result_json_path)
 
         print("EDITOR_AB_SCENE_PASS Editor contains the actual A/B scene and Bake UI.")
         return 0
