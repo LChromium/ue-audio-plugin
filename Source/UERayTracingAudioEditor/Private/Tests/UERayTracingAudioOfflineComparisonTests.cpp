@@ -9,6 +9,7 @@
 #include "Components/UERayTracingAudioListenerComponent.h"
 #include "Components/UERayTracingAudioSourceComponent.h"
 #include "Editor.h"
+#include "Dom/JsonObject.h"
 #include "Engine/Engine.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
@@ -17,7 +18,10 @@
 #include "HAL/FileManager.h"
 #include "Managers/UERayTracingAudioManager.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "Sound/SoundWave.h"
 #include "UObject/GarbageCollection.h"
 #include "UObject/UObjectGlobals.h"
@@ -1421,6 +1425,55 @@ bool FUERayTracingAudioOfflineComparisonContractTest::RunTest(const FString& Par
     TestEqual(TEXT("Wet WAV is sample-aligned"), WetSize, ReferenceSize);
     TestEqual(TEXT("Full WAV is sample-aligned"), FullSize, ReferenceSize);
     TestTrue(TEXT("Comparison manifest exists"), IFileManager::Get().FileSize(*Result.ManifestFilename) > 0);
+
+    FString ManifestJson;
+    TSharedPtr<FJsonObject> ManifestRoot;
+    TestTrue(
+        TEXT("Comparison manifest can be read"),
+        FFileHelper::LoadFileToString(
+            ManifestJson,
+            *Result.ManifestFilename));
+    const TSharedRef<TJsonReader<>> ManifestReader =
+        TJsonReaderFactory<>::Create(ManifestJson);
+    TestTrue(
+        TEXT("Comparison manifest is valid JSON"),
+        FJsonSerializer::Deserialize(ManifestReader, ManifestRoot)
+            && ManifestRoot.IsValid());
+    if (ManifestRoot.IsValid())
+    {
+        double ImpulseResponseFrames = 0.0;
+        double ImpulseResponseDurationSeconds = 0.0;
+        const bool bHasImpulseResponseFrames =
+            ManifestRoot->TryGetNumberField(
+                TEXT("impulse_response_frames"),
+                ImpulseResponseFrames);
+        const bool bHasImpulseResponseDuration =
+            ManifestRoot->TryGetNumberField(
+                TEXT("impulse_response_duration_seconds"),
+                ImpulseResponseDurationSeconds);
+        TestTrue(
+            TEXT("Manifest records actual impulse-response frames"),
+            bHasImpulseResponseFrames);
+        TestTrue(
+            TEXT("Manifest records actual impulse-response duration"),
+            bHasImpulseResponseDuration);
+        if (bHasImpulseResponseFrames)
+        {
+            TestEqual(
+                TEXT("Manifest impulse-response frames come from interleaved IR layout"),
+                ImpulseResponseFrames,
+                3.0);
+        }
+        if (bHasImpulseResponseDuration)
+        {
+            TestTrue(
+                TEXT("Manifest impulse-response duration uses the output sample rate"),
+                FMath::IsNearlyEqual(
+                    ImpulseResponseDurationSeconds,
+                    3.0 / 8000.0,
+                    1.0e-12));
+        }
+    }
 
     IFileManager::Get().DeleteDirectory(*FPaths::GetPath(Result.ManifestFilename), false, true);
     return true;

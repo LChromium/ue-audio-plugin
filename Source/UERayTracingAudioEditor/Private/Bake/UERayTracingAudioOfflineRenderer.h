@@ -62,6 +62,8 @@ struct FUERayTracingAudioOfflineRenderResult
     int32 SampleRate = 0;
     int32 NumChannels = 0;
     int32 ImpulseResponseNumChannels = 1;
+    int32 ImpulseResponseNumFrames = 0;
+    double ImpulseResponseDurationSeconds = 0.0;
     int32 NumFrames = 0;
     float DurationSeconds = 0.0f;
     float DirectGain = 1.0f;

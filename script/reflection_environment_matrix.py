@@ -16,6 +16,14 @@ ENVIRONMENTS = ("open_space", "near_wall", "enclosed")
 EXPECTED_GEOMETRY = {"open_space": 0, "near_wall": 1, "enclosed": 7}
 REFLECTION_RAYS = 4096
 REFLECTION_BOUNCES = 32
+BAKE_OUTPUT_SAMPLE_RATE = 16000
+BAKE_OUTPUT_CHANNELS = 2
+IMPULSE_RESPONSE_CHANNELS = 2
+IMPULSE_RESPONSE_FRAMES = 16000
+IMPULSE_RESPONSE_DURATION_SECONDS = 1.0
+VALIDATION_WET_MIX = 0.8
+FIXED_FLOAT_TOLERANCE = 1.0e-6
+IR_DURATION_CONSISTENCY_TOLERANCE = 1.0e-9
 ZERO_TOLERANCE = 1.0e-9
 MAX_CPU_RELATIVE_DELTA = 0.05
 MIN_DIRECTION_DOT = 0.99
@@ -38,6 +46,9 @@ COMMON_PROVENANCE_FIELDS = (
     "sample_rate",
     "channels",
     "impulse_response_channels",
+    "impulse_response_frames",
+    "impulse_response_duration_seconds",
+    "wet_mix",
     "frames",
 )
 FAILURE_PATTERNS = (
@@ -55,6 +66,9 @@ FINITE_FIELDS = (
     "sample_rate",
     "channels",
     "impulse_response_channels",
+    "impulse_response_frames",
+    "impulse_response_duration_seconds",
+    "wet_mix",
     "frames",
     "post_scale_peak",
     "clipped_sample_count",
@@ -452,12 +466,37 @@ def validate_case_manifest(case: CaseManifest) -> dict[str, float | int | str]:
         failures.append("4096 reflection rays")
     if numbers["reflection_bounce_count"] != REFLECTION_BOUNCES:
         failures.append("32 reflection bounces")
-    if numbers["sample_rate"] != 16000:
+    if numbers["sample_rate"] != BAKE_OUTPUT_SAMPLE_RATE:
         failures.append("16000 Hz sample rate")
-    if numbers["channels"] != 2:
+    if numbers["channels"] != BAKE_OUTPUT_CHANNELS:
         failures.append("stereo channels")
-    if numbers["impulse_response_channels"] != 2:
+    if numbers["impulse_response_channels"] != IMPULSE_RESPONSE_CHANNELS:
         failures.append("directional-stereo impulse response")
+    if numbers["impulse_response_frames"] != IMPULSE_RESPONSE_FRAMES:
+        failures.append("16000 impulse-response frames")
+    if not math.isclose(
+        numbers["impulse_response_duration_seconds"],
+        IMPULSE_RESPONSE_DURATION_SECONDS,
+        rel_tol=0.0,
+        abs_tol=FIXED_FLOAT_TOLERANCE,
+    ):
+        failures.append("1.0-second impulse-response duration")
+    if not math.isclose(
+        numbers["wet_mix"],
+        VALIDATION_WET_MIX,
+        rel_tol=0.0,
+        abs_tol=FIXED_FLOAT_TOLERANCE,
+    ):
+        failures.append("0.8 validation Wet mix")
+    if numbers["sample_rate"] <= 0.0 or not math.isclose(
+        numbers["impulse_response_duration_seconds"],
+        numbers["impulse_response_frames"] / numbers["sample_rate"]
+        if numbers["sample_rate"] > 0.0
+        else 0.0,
+        rel_tol=0.0,
+        abs_tol=IR_DURATION_CONSISTENCY_TOLERANCE,
+    ):
+        failures.append("impulse-response duration matches frames/sample rate")
 
     for field, failure in (
         ("hardware_ray_tracing", "hardware ray tracing provenance"),
@@ -592,6 +631,9 @@ def validate_case_manifest(case: CaseManifest) -> dict[str, float | int | str]:
         "sample_rate",
         "channels",
         "impulse_response_channels",
+        "impulse_response_frames",
+        "impulse_response_duration_seconds",
+        "wet_mix",
         "frames",
         "common_output_scale",
         "hardware_indirect_valid_paths",

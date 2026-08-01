@@ -598,6 +598,8 @@ namespace
         Root->SetNumberField(TEXT("sample_rate"), Result.SampleRate);
         Root->SetNumberField(TEXT("channels"), Result.NumChannels);
         Root->SetNumberField(TEXT("impulse_response_channels"), Result.ImpulseResponseNumChannels);
+        Root->SetNumberField(TEXT("impulse_response_frames"), Result.ImpulseResponseNumFrames);
+        Root->SetNumberField(TEXT("impulse_response_duration_seconds"), Result.ImpulseResponseDurationSeconds);
         Root->SetNumberField(TEXT("frames"), Result.NumFrames);
         Root->SetNumberField(TEXT("duration_seconds"), Result.DurationSeconds);
         Root->SetNumberField(TEXT("direct_gain"), Result.DirectGain);
@@ -711,6 +713,12 @@ FUERayTracingAudioOfflineRenderResult FUERayTracingAudioOfflineRenderer::RenderC
         Result.Error = TEXT("Directional stereo bake currently supports mono or stereo input SoundWaves.");
         return Result;
     }
+    Result.ImpulseResponseNumFrames =
+        Request.ImpulseResponse.Num()
+        / Request.ImpulseResponseNumChannels;
+    Result.ImpulseResponseDurationSeconds =
+        static_cast<double>(Result.ImpulseResponseNumFrames)
+        / static_cast<double>(Request.OutputSampleRate);
 
     TArray<TArray<float>> ReferenceChannels;
     TArray<TArray<float>> WetChannels;

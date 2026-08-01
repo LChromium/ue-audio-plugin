@@ -87,6 +87,9 @@ FINITE_FIELDS = (
     "sample_rate",
     "channels",
     "impulse_response_channels",
+    "impulse_response_frames",
+    "impulse_response_duration_seconds",
+    "wet_mix",
     "frames",
     "post_scale_peak",
     "clipped_sample_count",
@@ -183,6 +186,9 @@ def make_payload(environment: str) -> dict[str, object]:
         "sample_rate": 16000,
         "channels": 2,
         "impulse_response_channels": 2,
+        "impulse_response_frames": 16000,
+        "impulse_response_duration_seconds": 1.0,
+        "wet_mix": 0.8,
         "frames": 160000,
         "samples_finite": True,
         "audio_safety_checks_passed": True,
@@ -629,9 +635,45 @@ class ReflectionEnvironmentCaseTests(unittest.TestCase):
             ("sample_rate", 48000, "16000 Hz sample rate"),
             ("channels", 1, "stereo channels"),
             ("impulse_response_channels", 1, "directional-stereo impulse response"),
+            ("impulse_response_frames", 8000, "16000 impulse-response frames"),
+            (
+                "impulse_response_duration_seconds",
+                0.5,
+                "1.0-second impulse-response duration",
+            ),
+            ("wet_mix", 0.123, "0.8 validation Wet mix"),
         ):
             with self.subTest(field=field):
                 self.assert_rejected("near_wall", field, value, message)
+
+    def test_rejects_missing_or_non_finite_ir_duration_and_wet_mix(self) -> None:
+        for field in ("impulse_response_duration_seconds", "wet_mix"):
+            for invalid_name, invalid_value in (
+                ("missing", None),
+                ("NaN", math.nan),
+                ("infinity", math.inf),
+            ):
+                with self.subTest(field=field, invalid=invalid_name):
+                    payload = make_payload("near_wall")
+                    if invalid_name == "missing":
+                        del payload[field]
+                    else:
+                        payload[field] = invalid_value
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        f"finite numeric {field}",
+                    ):
+                        reflection_environment_matrix.validate_case_manifest(
+                            make_case("near_wall", payload)
+                        )
+
+    def test_rejects_ir_duration_inconsistent_with_frames_and_rate(self) -> None:
+        self.assert_rejected(
+            "near_wall",
+            "impulse_response_duration_seconds",
+            1.0 + 5.0e-7,
+            "impulse-response duration matches frames/sample rate",
+        )
 
     def test_rejects_hardware_cpu_disagreement_for_every_compared_metric(self) -> None:
         for hardware_field, cpu_field in HARDWARE_CPU_PAIRS:
@@ -1894,6 +1936,12 @@ class ReflectionEnvironmentMatrixCliTests(unittest.TestCase):
                 "air_absorption_profile": "default",
                 "reflection_rays": 4096,
                 "reflection_bounces": 32,
+                "bake_output_sample_rate": 16000,
+                "bake_output_channels": 2,
+                "impulse_response_channels": 2,
+                "impulse_response_frames": 16000,
+                "impulse_response_duration_seconds": 1.0,
+                "validation_wet_mix": 0.8,
             },
         )
         self.assertEqual(
@@ -1930,6 +1978,9 @@ class ReflectionEnvironmentMatrixCliTests(unittest.TestCase):
         )
         self.assertEqual(near_wall["log"], str(evidence["near_wall"].log_path))
         self.assertEqual(near_wall["hardware_indirect_valid_paths"], 1000)
+        self.assertEqual(near_wall["impulse_response_frames"], 16000)
+        self.assertEqual(near_wall["impulse_response_duration_seconds"], 1.0)
+        self.assertEqual(near_wall["wet_mix"], 0.8)
         self.assertEqual(
             near_wall["reference_sha256"],
             hashlib.sha256(
