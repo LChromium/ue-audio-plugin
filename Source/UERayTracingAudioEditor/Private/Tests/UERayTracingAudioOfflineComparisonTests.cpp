@@ -730,42 +730,6 @@ bool FUERayTracingAudioEditorValidationFixtureNormalizationTest::RunTest(
             Initial.Source->GetIndirectMix(),
             0.8f));
 
-    AStaticMeshActor* DuplicateSourceActor = SpawnTaggedFixtureActor(
-        *World,
-        FName(TEXT("VRTA_AB_Source")));
-    UUERayTracingAudioSourceComponent* DuplicateSource =
-        DuplicateSourceActor
-        ? NewObject<UUERayTracingAudioSourceComponent>(
-            DuplicateSourceActor,
-            TEXT("DuplicateValidationSource"))
-        : nullptr;
-    if (DuplicateSourceActor && DuplicateSource)
-    {
-        DuplicateSourceActor->AddInstanceComponent(DuplicateSource);
-        DuplicateSource->OnComponentCreated();
-        DuplicateSource->RegisterComponent();
-    }
-    AStaticMeshActor* DuplicateFloorActor = SpawnTaggedFixtureActor(
-        *World,
-        FName(TEXT("VRTA_AB_Floor")));
-    UUERayTracingAudioGeometryComponent* DuplicateFloor =
-        DuplicateFloorActor
-        ? NewObject<UUERayTracingAudioGeometryComponent>(
-            DuplicateFloorActor,
-            TEXT("DuplicateValidationGeometry"))
-        : nullptr;
-    if (DuplicateFloorActor && DuplicateFloor)
-    {
-        DuplicateFloorActor->AddInstanceComponent(DuplicateFloor);
-        DuplicateFloor->OnComponentCreated();
-        DuplicateFloor->RegisterComponent();
-    }
-    TestNotNull(TEXT("Duplicate Source fixture actor"), DuplicateSourceActor);
-    TestNotNull(TEXT("Duplicate Floor fixture actor"), DuplicateFloorActor);
-    TestNull(
-        TEXT("Ambiguous tagged Source lookup is rejected before normalization"),
-        FUERayTracingAudioEditorValidationScene::FindTaggedSource(World));
-
     AStaticMeshActor* ExistingSourceActor = Cast<AStaticMeshActor>(
         Initial.Source->GetOwner());
     AStaticMeshActor* ExistingFloorActor = nullptr;
@@ -775,10 +739,7 @@ bool FUERayTracingAudioEditorValidationFixtureNormalizationTest::RunTest(
             && ActorIt->ActorHasTag(FName(TEXT("VRTA_AB_Floor"))))
         {
             ExistingFloorActor = Cast<AStaticMeshActor>(*ActorIt);
-            if (ExistingFloorActor != DuplicateFloorActor)
-            {
-                break;
-            }
+            break;
         }
     }
     TestNotNull(TEXT("Existing Source actor can be mutated"), ExistingSourceActor);
@@ -849,7 +810,7 @@ bool FUERayTracingAudioEditorValidationFixtureNormalizationTest::RunTest(
             200.0f,
             EUERayTracingAudioEditorAirAbsorptionProfile::Default);
     TestTrue(
-        TEXT("Duplicate and mutated fixture is normalized to ready"),
+        TEXT("Mutated fixture properties and duplicate component are normalized to ready"),
         Normalized.bSucceeded);
 
     const auto FindActorsForRole = [World](const FName Role)
@@ -975,6 +936,242 @@ bool FUERayTracingAudioEditorValidationFixtureNormalizationTest::RunTest(
             ? FindActorsForRole(FName(TEXT("VRTA_AB_Floor")))[0]
             : nullptr,
         StableFloorActor.Get());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioEditorValidationRoleAmbiguityRejectedTest,
+    "UERayTracingAudio.Editor.ValidationRoleAmbiguityRejected",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioEditorValidationRoleAmbiguityRejectedTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    const auto CountWorldActors = [](UWorld& World)
+    {
+        int32 Count = 0;
+        for (TActorIterator<AActor> ActorIt(&World); ActorIt; ++ActorIt)
+        {
+            ++Count;
+        }
+        return Count;
+    };
+    const auto EnsurePersistentScene = [](UWorld& World)
+    {
+        return FUERayTracingAudioEditorValidationScene::EnsureScene(
+            World,
+            EUERayTracingAudioEditorValidationSceneMode::Persistent,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+            200.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default);
+    };
+
+    {
+        FManagedEditorTestWorld ManagedWorld(
+            TEXT("UERayTracingAudioValidationDuplicateRole"));
+        UWorld* World = ManagedWorld.Get();
+        TestNotNull(TEXT("Duplicate-role test World"), World);
+        if (!World)
+        {
+            return false;
+        }
+        const FUERayTracingAudioEditorValidationSceneResult Initial =
+            FUERayTracingAudioEditorValidationScene::EnsureScene(
+                *World,
+                EUERayTracingAudioEditorValidationSceneMode::Transient,
+                EUERayTracingAudioEditorDirectPreset::Clear,
+                EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+                200.0f,
+                EUERayTracingAudioEditorAirAbsorptionProfile::Default);
+        TestTrue(TEXT("Duplicate-role baseline fixture"), Initial.bSucceeded);
+        AActor* ExistingSource = Initial.Source.IsValid()
+            ? Initial.Source->GetOwner()
+            : nullptr;
+        AStaticMeshActor* DuplicateSource = SpawnTaggedFixtureActor(
+            *World,
+            FName(TEXT("VRTA_AB_Source")));
+        TestNotNull(TEXT("Existing Source for duplicate-role case"), ExistingSource);
+        TestNotNull(TEXT("Duplicate Source for duplicate-role case"), DuplicateSource);
+        if (!Initial.bSucceeded || !ExistingSource || !DuplicateSource)
+        {
+            return false;
+        }
+
+        const int32 ActorCountBefore = CountWorldActors(*World);
+        const TArray<FName> ExistingTagsBefore = ExistingSource->Tags;
+        const TArray<FName> DuplicateTagsBefore = DuplicateSource->Tags;
+        const FTransform ExistingTransformBefore = ExistingSource->GetActorTransform();
+        const FTransform DuplicateTransformBefore = DuplicateSource->GetActorTransform();
+        const TWeakObjectPtr<AActor> ExistingWeak = ExistingSource;
+        const TWeakObjectPtr<AActor> DuplicateWeak = DuplicateSource;
+        int32 ModifiedObjectCount = 0;
+        const FDelegateHandle ModifiedHandle =
+            FCoreUObjectDelegates::OnObjectModified.AddLambda(
+                [&ModifiedObjectCount](UObject*)
+                {
+                    ++ModifiedObjectCount;
+                });
+        const FUERayTracingAudioEditorValidationSceneResult Rejected =
+            EnsurePersistentScene(*World);
+        FCoreUObjectDelegates::OnObjectModified.Remove(ModifiedHandle);
+
+        TestFalse(TEXT("Duplicate known role is rejected"), Rejected.bSucceeded);
+        TestTrue(
+            TEXT("Duplicate-role rejection reports role topology"),
+            Rejected.Message.Contains(TEXT("role"), ESearchCase::IgnoreCase));
+        TestEqual(
+            TEXT("Duplicate-role rejection does not modify any UObject"),
+            ModifiedObjectCount,
+            0);
+        TestEqual(
+            TEXT("Duplicate-role rejection preserves Actor count"),
+            CountWorldActors(*World),
+            ActorCountBefore);
+        TestTrue(TEXT("Original duplicate-role Actor survives"), ExistingWeak.IsValid());
+        TestTrue(TEXT("Added duplicate-role Actor survives"), DuplicateWeak.IsValid());
+        TestTrue(
+            TEXT("Original duplicate-role tags are preserved"),
+            ExistingSource->Tags == ExistingTagsBefore);
+        TestTrue(
+            TEXT("Added duplicate-role tags are preserved"),
+            DuplicateSource->Tags == DuplicateTagsBefore);
+        TestTrue(
+            TEXT("Original duplicate-role transform is preserved"),
+            ExistingSource->GetActorTransform().Equals(ExistingTransformBefore));
+        TestTrue(
+            TEXT("Added duplicate-role transform is preserved"),
+            DuplicateSource->GetActorTransform().Equals(DuplicateTransformBefore));
+    }
+
+    {
+        FManagedEditorTestWorld ManagedWorld(
+            TEXT("UERayTracingAudioValidationMultiRole"));
+        UWorld* World = ManagedWorld.Get();
+        TestNotNull(TEXT("Multi-role test World"), World);
+        if (!World)
+        {
+            return false;
+        }
+        const FUERayTracingAudioEditorValidationSceneResult Initial =
+            FUERayTracingAudioEditorValidationScene::EnsureScene(
+                *World,
+                EUERayTracingAudioEditorValidationSceneMode::Transient,
+                EUERayTracingAudioEditorDirectPreset::Clear,
+                EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+                200.0f,
+                EUERayTracingAudioEditorAirAbsorptionProfile::Default);
+        TestTrue(TEXT("Multi-role baseline fixture"), Initial.bSucceeded);
+        AActor* SourceActor = Initial.Source.IsValid()
+            ? Initial.Source->GetOwner()
+            : nullptr;
+        AActor* ListenerActor = Initial.Listener.IsValid()
+            ? Initial.Listener->GetOwner()
+            : nullptr;
+        TestNotNull(TEXT("Source for multi-role case"), SourceActor);
+        TestNotNull(TEXT("Listener for multi-role case"), ListenerActor);
+        if (!Initial.bSucceeded || !SourceActor || !ListenerActor)
+        {
+            return false;
+        }
+        TestTrue(
+            TEXT("Remove the original Listener before constructing isolated multi-role case"),
+            World->DestroyActor(ListenerActor, false, false));
+        SourceActor->Tags.AddUnique(FName(TEXT("VRTA_AB_Listener")));
+
+        const int32 ActorCountBefore = CountWorldActors(*World);
+        const TArray<FName> TagsBefore = SourceActor->Tags;
+        const FTransform TransformBefore = SourceActor->GetActorTransform();
+        const TWeakObjectPtr<AActor> SourceWeak = SourceActor;
+        int32 ModifiedObjectCount = 0;
+        const FDelegateHandle ModifiedHandle =
+            FCoreUObjectDelegates::OnObjectModified.AddLambda(
+                [&ModifiedObjectCount](UObject*)
+                {
+                    ++ModifiedObjectCount;
+                });
+        const FUERayTracingAudioEditorValidationSceneResult Rejected =
+            EnsurePersistentScene(*World);
+        FCoreUObjectDelegates::OnObjectModified.Remove(ModifiedHandle);
+
+        TestFalse(TEXT("One Actor with two known roles is rejected"), Rejected.bSucceeded);
+        TestEqual(
+            TEXT("Multi-role rejection does not modify any UObject"),
+            ModifiedObjectCount,
+            0);
+        TestEqual(
+            TEXT("Multi-role rejection preserves Actor count"),
+            CountWorldActors(*World),
+            ActorCountBefore);
+        TestTrue(TEXT("Multi-role Actor survives rejection"), SourceWeak.IsValid());
+        TestTrue(
+            TEXT("Both known role tags survive rejection"),
+            SourceActor->Tags == TagsBefore);
+        TestTrue(
+            TEXT("Multi-role Actor transform survives rejection"),
+            SourceActor->GetActorTransform().Equals(TransformBefore));
+    }
+
+    {
+        FManagedEditorTestWorld ManagedWorld(
+            TEXT("UERayTracingAudioValidationUnknownRole"));
+        UWorld* World = ManagedWorld.Get();
+        TestNotNull(TEXT("Unknown-role test World"), World);
+        if (!World)
+        {
+            return false;
+        }
+        const FUERayTracingAudioEditorValidationSceneResult Initial =
+            FUERayTracingAudioEditorValidationScene::EnsureScene(
+                *World,
+                EUERayTracingAudioEditorValidationSceneMode::Transient,
+                EUERayTracingAudioEditorDirectPreset::Clear,
+                EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+                200.0f,
+                EUERayTracingAudioEditorAirAbsorptionProfile::Default);
+        TestTrue(TEXT("Unknown-role baseline fixture"), Initial.bSucceeded);
+        AStaticMeshActor* UnknownRoleActor = SpawnTaggedFixtureActor(
+            *World,
+            FName(TEXT("VRTA_AB_UnknownRole")));
+        TestNotNull(TEXT("Validation-tagged unknown-role Actor"), UnknownRoleActor);
+        if (!Initial.bSucceeded || !UnknownRoleActor)
+        {
+            return false;
+        }
+
+        const int32 ActorCountBefore = CountWorldActors(*World);
+        const TArray<FName> TagsBefore = UnknownRoleActor->Tags;
+        const FTransform TransformBefore = UnknownRoleActor->GetActorTransform();
+        const TWeakObjectPtr<AActor> UnknownWeak = UnknownRoleActor;
+        int32 ModifiedObjectCount = 0;
+        const FDelegateHandle ModifiedHandle =
+            FCoreUObjectDelegates::OnObjectModified.AddLambda(
+                [&ModifiedObjectCount](UObject*)
+                {
+                    ++ModifiedObjectCount;
+                });
+        const FUERayTracingAudioEditorValidationSceneResult Rejected =
+            EnsurePersistentScene(*World);
+        FCoreUObjectDelegates::OnObjectModified.Remove(ModifiedHandle);
+
+        TestFalse(TEXT("Validation-tagged Actor without a known role is rejected"), Rejected.bSucceeded);
+        TestEqual(
+            TEXT("Unknown-role rejection does not modify any UObject"),
+            ModifiedObjectCount,
+            0);
+        TestEqual(
+            TEXT("Unknown-role rejection preserves Actor count"),
+            CountWorldActors(*World),
+            ActorCountBefore);
+        TestTrue(TEXT("Unknown-role Actor survives rejection"), UnknownWeak.IsValid());
+        TestTrue(
+            TEXT("Unknown-role tags survive rejection"),
+            UnknownRoleActor->Tags == TagsBefore);
+        TestTrue(
+            TEXT("Unknown-role Actor transform survives rejection"),
+            UnknownRoleActor->GetActorTransform().Equals(TransformBefore));
+    }
     return true;
 }
 

@@ -169,11 +169,11 @@ namespace
         return Match;
     }
 
-    void NormalizeKnownRoleTags(
+    bool ValidateTaggedRoleTopology(
         UWorld& World,
-        const EUERayTracingAudioEditorValidationSceneMode Mode,
-        bool& bOutMutated)
+        FString& OutError)
     {
+        TMap<FName, AActor*> RoleOwners;
         for (TActorIterator<AActor> ActorIt(&World); ActorIt; ++ActorIt)
         {
             AActor* Actor = *ActorIt;
@@ -189,41 +189,28 @@ namespace
                     ActorRoles.Add(Role);
                 }
             }
-            if (ActorRoles.Num() <= 1)
+            if (ActorRoles.Num() != 1)
             {
-                continue;
+                OutError = FString::Printf(
+                    TEXT("Validation role topology rejected actor %s: expected exactly one known validation role, found %d."),
+                    *Actor->GetPathName(),
+                    ActorRoles.Num());
+                return false;
             }
 
-            FName PreferredRole = ActorRoles[0];
-            const FName SourceRole(TEXT("VRTA_AB_Source"));
-            const FName ListenerRole(TEXT("VRTA_AB_Listener"));
-            if (Actor->ActorHasTag(SourceRole)
-                && Actor->FindComponentByClass<
-                    UUERayTracingAudioSourceComponent>())
+            const FName Role = ActorRoles[0];
+            if (AActor* const* ExistingOwner = RoleOwners.Find(Role))
             {
-                PreferredRole = SourceRole;
+                OutError = FString::Printf(
+                    TEXT("Validation role topology rejected duplicate role %s on actors %s and %s."),
+                    *Role.ToString(),
+                    *(*ExistingOwner)->GetPathName(),
+                    *Actor->GetPathName());
+                return false;
             }
-            else if (Actor->ActorHasTag(ListenerRole)
-                && Actor->FindComponentByClass<
-                    UUERayTracingAudioListenerComponent>())
-            {
-                PreferredRole = ListenerRole;
-            }
-
-            if (Mode
-                == EUERayTracingAudioEditorValidationSceneMode::Persistent)
-            {
-                Actor->Modify();
-            }
-            for (const FName Role : ActorRoles)
-            {
-                if (Role != PreferredRole)
-                {
-                    Actor->Tags.Remove(Role);
-                }
-            }
-            bOutMutated = true;
+            RoleOwners.Add(Role, Actor);
         }
+        return true;
     }
 
     template <typename TActor>
@@ -233,51 +220,29 @@ namespace
         const EUERayTracingAudioEditorValidationSceneMode Mode,
         bool& bOutMutated)
     {
-        TActor* Keep = nullptr;
-        FString KeepPath;
-        TArray<TWeakObjectPtr<AActor>> Matches;
-        for (TActorIterator<AActor> ActorIt(&World); ActorIt; ++ActorIt)
+        AActor* Match = FindTaggedActor(World, Role);
+        if (!Match)
         {
-            AActor* Actor = *ActorIt;
-            if (!Actor->ActorHasTag(ValidationSceneTag)
-                || !Actor->ActorHasTag(Role))
-            {
-                continue;
-            }
-            Matches.Add(Actor);
-            if (TActor* TypedActor = Cast<TActor>(Actor))
-            {
-                const FString ActorPath = TypedActor->GetPathName();
-                if (!Keep || ActorPath < KeepPath)
-                {
-                    Keep = TypedActor;
-                    KeepPath = ActorPath;
-                }
-            }
+            return nullptr;
         }
-
-        for (const TWeakObjectPtr<AActor>& Match : Matches)
+        if (TActor* TypedActor = Cast<TActor>(Match))
         {
-            AActor* Actor = Match.Get();
-            if (!IsValid(Actor) || Actor == Keep)
-            {
-                continue;
-            }
-            if (Mode
-                == EUERayTracingAudioEditorValidationSceneMode::Persistent)
-            {
-                Actor->Modify();
-            }
-            if (World.DestroyActor(
-                    Actor,
-                    false,
-                    Mode
-                        == EUERayTracingAudioEditorValidationSceneMode::Persistent))
-            {
-                bOutMutated = true;
-            }
+            return TypedActor;
         }
-        return Keep;
+        if (Mode
+            == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+        {
+            Match->Modify();
+        }
+        if (World.DestroyActor(
+                Match,
+                false,
+                Mode
+                    == EUERayTracingAudioEditorValidationSceneMode::Persistent))
+        {
+            bOutMutated = true;
+        }
+        return nullptr;
     }
 
     bool RemoveStaleTaggedGeometry(
@@ -661,6 +626,10 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         Result.Message = TEXT("The Editor A/B validation scene can only be created in an editor world.");
         return Result;
     }
+    if (!ValidateTaggedRoleTopology(World, Result.Message))
+    {
+        return Result;
+    }
 
     UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
     UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
@@ -680,7 +649,6 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
 
     const TArrayView<const FGeometryDefinition> GeometryDefinitions = GetGeometryDefinitions(ReflectionEnvironment);
     bool bMutatedActors = false;
-    NormalizeKnownRoleTags(World, Mode, bMutatedActors);
     if (!RemoveStaleTaggedGeometry(
             World,
             GeometryDefinitions,
