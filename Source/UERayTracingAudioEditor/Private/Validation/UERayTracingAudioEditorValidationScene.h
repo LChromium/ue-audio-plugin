@@ -47,6 +47,7 @@ struct FUERayTracingAudioEditorValidationSceneResult
     TWeakObjectPtr<UUERayTracingAudioSourceComponent> Source;
     TWeakObjectPtr<UUERayTracingAudioListenerComponent> Listener;
     int32 GeometryCount = 0;
+    int32 ReflectionBounces = 8;
     EUERayTracingAudioEditorDirectPreset DirectPreset = EUERayTracingAudioEditorDirectPreset::Clear;
     EUERayTracingAudioEditorReflectionEnvironment ReflectionEnvironment = EUERayTracingAudioEditorReflectionEnvironment::Enclosed;
     EUERayTracingAudioEditorAirAbsorptionProfile AirAbsorptionProfile =
@@ -72,7 +73,8 @@ public:
         EUERayTracingAudioEditorReflectionEnvironment ReflectionEnvironment = EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
         float DistanceCmOverride = -1.0f,
         EUERayTracingAudioEditorAirAbsorptionProfile AirProfile =
-            EUERayTracingAudioEditorAirAbsorptionProfile::Default);
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default,
+        int32 ReflectionBounces = 8);
 
     static EUERayTracingAudioEditorDirectPreset ParseDirectPreset(const FString& Value);
     static const TCHAR* GetDirectPresetName(EUERayTracingAudioEditorDirectPreset DirectPreset);

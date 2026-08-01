@@ -448,6 +448,80 @@ bool FUERayTracingAudioEditorValidationFixtureControlsTest::RunTest(
         UntaggedSource->GetAirAbsorptionPerMeter(),
         FVector(9.0f, 8.0f, 7.0f));
 
+    const FUERayTracingAudioEditorValidationSceneResult NearWall32 =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::NearWall,
+            200.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default,
+            32);
+    TestTrue(TEXT("Near-wall 32-bounce fixture succeeds"), NearWall32.bSucceeded);
+    TestEqual(TEXT("Near-wall owns one Geometry"), CountTaggedGeometry(), 1);
+    TestEqual(TEXT("Result records 32 bounces"), NearWall32.ReflectionBounces, 32);
+    TestEqual(
+        TEXT("Source executes 32 realtime bounces"),
+        NearWall32.Source.IsValid()
+            ? NearWall32.Source->GetMaxReflectionBounces()
+            : -1,
+        32);
+
+    const FUERayTracingAudioEditorValidationSceneResult LowBounce =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::NearWall,
+            200.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default,
+            0);
+    TestTrue(TEXT("Low-bounce fixture succeeds"), LowBounce.bSucceeded);
+    TestEqual(TEXT("Result clamps zero bounces to one"), LowBounce.ReflectionBounces, 1);
+    TestEqual(
+        TEXT("Source executes the one-bounce lower clamp"),
+        LowBounce.Source.IsValid()
+            ? LowBounce.Source->GetMaxReflectionBounces()
+            : -1,
+        1);
+
+    const FUERayTracingAudioEditorValidationSceneResult HighBounce =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::NearWall,
+            200.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default,
+            65);
+    TestTrue(TEXT("High-bounce fixture succeeds"), HighBounce.bSucceeded);
+    TestEqual(TEXT("Result clamps 65 bounces to 64"), HighBounce.ReflectionBounces, 64);
+    TestEqual(
+        TEXT("Source executes the 64-bounce upper clamp"),
+        HighBounce.Source.IsValid()
+            ? HighBounce.Source->GetMaxReflectionBounces()
+            : -1,
+        64);
+
+    const FUERayTracingAudioEditorValidationSceneResult Enclosed32 =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+            200.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default,
+            32);
+    TestTrue(TEXT("Enclosed 32-bounce fixture succeeds"), Enclosed32.bSucceeded);
+    TestEqual(TEXT("Enclosed owns seven Geometry actors"), CountTaggedGeometry(), 7);
+    TestEqual(TEXT("Enclosed result records 32 bounces"), Enclosed32.ReflectionBounces, 32);
+    TestEqual(
+        TEXT("Enclosed Source executes 32 realtime bounces"),
+        Enclosed32.Source.IsValid()
+            ? Enclosed32.Source->GetMaxReflectionBounces()
+            : -1,
+        32);
+
     ManagedWorld.DestroyAndCollectGarbage();
     TestTrue(
         TEXT("Destroyed stale tagged geometry actor weak pointer is stale after GC"),

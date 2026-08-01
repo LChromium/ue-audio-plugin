@@ -647,9 +647,11 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
     const EUERayTracingAudioEditorDirectPreset DirectPreset,
     const EUERayTracingAudioEditorReflectionEnvironment ReflectionEnvironment,
     const float DistanceCmOverride,
-    const EUERayTracingAudioEditorAirAbsorptionProfile AirProfile)
+    const EUERayTracingAudioEditorAirAbsorptionProfile AirProfile,
+    const int32 ReflectionBounces)
 {
     FUERayTracingAudioEditorValidationSceneResult Result;
+    Result.ReflectionBounces = FMath::Clamp(ReflectionBounces, 1, 64);
     Result.DirectPreset = DirectPreset;
     Result.ReflectionEnvironment = ReflectionEnvironment;
     Result.AirAbsorptionProfile = AirProfile;
@@ -783,7 +785,7 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
             Result.AirAbsorptionPerMeter,
             UE_KINDA_SMALL_NUMBER)
         || Source->NumReflectionRays != 4096
-        || Source->MaxReflectionBounces != 8
+        || Source->MaxReflectionBounces != Result.ReflectionBounces
         || !FMath::IsNearlyEqual(Source->IndirectDurationSeconds, 2.0f)
         || Source->IndirectMode
             != EUERayTracingAudioIndirectMode::HybridReverb
@@ -804,7 +806,7 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
     Source->bHardOcclusion = DirectPreset == EUERayTracingAudioEditorDirectPreset::HardOccluded;
     Source->AirAbsorptionPerMeter = Result.AirAbsorptionPerMeter;
     Source->NumReflectionRays = 4096;
-    Source->MaxReflectionBounces = 8;
+    Source->MaxReflectionBounces = Result.ReflectionBounces;
     Source->IndirectDurationSeconds = 2.0f;
     Source->IndirectMode = EUERayTracingAudioIndirectMode::HybridReverb;
     Source->SetIndirectDataSource(

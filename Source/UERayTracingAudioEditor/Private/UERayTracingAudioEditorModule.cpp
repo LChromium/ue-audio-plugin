@@ -59,6 +59,16 @@ namespace
 {
     constexpr int32 ComparisonWaveformBinCount = 512;
 
+    int32 GetValidationReflectionBounces()
+    {
+        int32 ReflectionBounces = 8;
+        FParse::Value(
+            FCommandLine::Get(),
+            TEXT("UERayTracingAudioValidationReflectionBounces="),
+            ReflectionBounces);
+        return FMath::Clamp(ReflectionBounces, 1, 64);
+    }
+
     bool LoadComparisonWaveform(
         const FString& Filename,
         TArray<float>& OutPeakEnvelope,
@@ -1103,7 +1113,8 @@ namespace
                     DirectPreset,
                     ValidationReflectionEnvironment,
                     ValidationDistanceCm,
-                    ValidationAirProfile);
+                    ValidationAirProfile,
+                    GetValidationReflectionBounces());
             ValidationDirectPreset = DirectPreset;
             EffectiveValidationDistanceCm =
                 SceneResult.SourceListenerDistanceCm;
@@ -2066,6 +2077,7 @@ bool FUERayTracingAudioEditorModule::TickValidationScene(const float DeltaTime)
         FCommandLine::Get(),
         TEXT("UERayTracingAudioValidationAirAbsorptionProfile="),
         AirAbsorptionProfileValue);
+    const int32 ReflectionBounces = GetValidationReflectionBounces();
 
     const FUERayTracingAudioEditorValidationSceneResult SceneResult =
         FUERayTracingAudioEditorValidationScene::EnsureScene(
@@ -2083,7 +2095,8 @@ bool FUERayTracingAudioEditorModule::TickValidationScene(const float DeltaTime)
             FUERayTracingAudioEditorValidationScene::ParseReflectionEnvironment(ReflectionEnvironmentValue),
             DistanceCmOverride,
             FUERayTracingAudioEditorValidationScene::
-                ParseAirAbsorptionProfile(AirAbsorptionProfileValue));
+                ParseAirAbsorptionProfile(AirAbsorptionProfileValue),
+            ReflectionBounces);
     if (!SceneResult.bSucceeded)
     {
         UE_LOG(
@@ -2099,10 +2112,11 @@ bool FUERayTracingAudioEditorModule::TickValidationScene(const float DeltaTime)
     UE_LOG(
         LogTemp,
         Display,
-        TEXT("UERayTracingAudioEditor validation scene ready: source=1 listener=1 geometry=%d lighting=1 bake_ui=1 direct_preset=%s reflection_environment=%s source_listener_distance_cm=%.2f air_absorption_profile=%s air_absorption_per_meter=(%.6f,%.6f,%.6f)."),
+        TEXT("UERayTracingAudioEditor validation scene ready: source=1 listener=1 geometry=%d lighting=1 bake_ui=1 direct_preset=%s reflection_environment=%s reflection_bounces=%d source_listener_distance_cm=%.2f air_absorption_profile=%s air_absorption_per_meter=(%.6f,%.6f,%.6f)."),
         SceneResult.GeometryCount,
         FUERayTracingAudioEditorValidationScene::GetDirectPresetName(SceneResult.DirectPreset),
         FUERayTracingAudioEditorValidationScene::GetReflectionEnvironmentName(SceneResult.ReflectionEnvironment),
+        SceneResult.ReflectionBounces,
         SceneResult.SourceListenerDistanceCm,
         FUERayTracingAudioEditorValidationScene::GetAirAbsorptionProfileName(
             SceneResult.AirAbsorptionProfile),
@@ -2112,12 +2126,6 @@ bool FUERayTracingAudioEditorModule::TickValidationScene(const float DeltaTime)
 
     if (FParse::Param(FCommandLine::Get(), TEXT("UERayTracingAudioValidationEditorBake")))
     {
-        int32 ReflectionBounces = 8;
-        FParse::Value(
-            FCommandLine::Get(),
-            TEXT("UERayTracingAudioValidationReflectionBounces="),
-            ReflectionBounces);
-        ReflectionBounces = FMath::Clamp(ReflectionBounces, 1, 64);
         USoundWave* SoundWave = FindRecommendedProjectSoundWave();
         UUERayTracingAudioSourceComponent* Source = SceneResult.Source.Get();
         UUERayTracingAudioListenerComponent* Listener = SceneResult.Listener.Get();
@@ -2138,7 +2146,7 @@ bool FUERayTracingAudioEditorModule::TickValidationScene(const float DeltaTime)
                 *Listener,
                 *SoundWave,
                 FUERayTracingAudioEditorValidationScene::GetDirectPresetName(SceneResult.DirectPreset),
-                ReflectionBounces,
+                SceneResult.ReflectionBounces,
                 StartError,
                 FUERayTracingAudioEditorValidationScene::GetReflectionEnvironmentName(SceneResult.ReflectionEnvironment)))
         {
