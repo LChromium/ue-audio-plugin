@@ -206,6 +206,52 @@ def pcm16_is_zero(path: Path) -> bool:
         )
 
 
+def _validate_pcm16_wav(
+    path: Path,
+    *,
+    expected_channels: float,
+    expected_sample_rate: float,
+    expected_frames: float,
+    label: str,
+    failures: list[str],
+) -> None:
+    try:
+        with wave.open(str(path), "rb") as stream:
+            actual_channels = stream.getnchannels()
+            actual_sample_width = stream.getsampwidth()
+            actual_sample_rate = stream.getframerate()
+            actual_frames = stream.getnframes()
+            compression_type = stream.getcomptype()
+            frame_data = stream.readframes(actual_frames)
+    except (EOFError, OSError, wave.Error):
+        failures.append(f"{label} valid uncompressed PCM16 WAV")
+        return
+
+    if compression_type != "NONE" or actual_sample_width != 2:
+        failures.append(f"{label} valid uncompressed PCM16 WAV")
+    if actual_channels != expected_channels:
+        failures.append(
+            f"{label} actual WAV channels "
+            f"({actual_channels} != {expected_channels:g})"
+        )
+    if actual_sample_rate != expected_sample_rate:
+        failures.append(
+            f"{label} actual WAV sample rate "
+            f"({actual_sample_rate} != {expected_sample_rate:g})"
+        )
+    if actual_frames != expected_frames:
+        failures.append(
+            f"{label} actual WAV frame count "
+            f"({actual_frames} != {expected_frames:g})"
+        )
+    expected_data_size = actual_frames * actual_channels * actual_sample_width
+    if len(frame_data) != expected_data_size:
+        failures.append(
+            f"{label} complete PCM frame data "
+            f"({len(frame_data)} != {expected_data_size} bytes)"
+        )
+
+
 def load_case_evidence(environment: str, result_path: Path) -> CaseEvidence:
     if environment not in ENVIRONMENTS:
         raise RuntimeError(f"Unknown reflection environment: {environment!r}")
@@ -260,15 +306,39 @@ def load_case_evidence(environment: str, result_path: Path) -> CaseEvidence:
     if log_path is None:
         failures.append("Editor log path")
 
+    reference_path = None
     manifest_path = None
+    expected_manifest_path = None
     artifacts = mappings.get("artifacts")
     if artifacts is not None:
+        reference_path = _resolve_path(
+            artifacts.get("reference"),
+            resolved_result_path.parent,
+        )
+        if reference_path is None:
+            failures.append("artifact Reference path")
+        else:
+            reference_suffix = "_Reference.wav"
+            reference_name = reference_path.name
+            safe_prefix = reference_name[: -len(reference_suffix)]
+            if not reference_name.endswith(reference_suffix) or not safe_prefix:
+                failures.append("canonical Reference WAV suffix")
+            else:
+                expected_manifest_path = reference_path.with_name(
+                    f"{safe_prefix}_Manifest.json"
+                ).resolve()
+
         manifest_path = _resolve_path(
             artifacts.get("manifest"),
             resolved_result_path.parent,
         )
         if manifest_path is None:
             failures.append("artifact manifest path")
+        elif (
+            expected_manifest_path is not None
+            and not _paths_equal(manifest_path, expected_manifest_path)
+        ):
+            failures.append("Reference/Manifest naming contract")
         elif not manifest_path.is_file():
             failures.append(f"artifact manifest exists ({manifest_path})")
 
@@ -609,7 +679,8 @@ def validate_matrix_manifests(
             )
             continue
 
-        metrics_by_environment[environment] = validate_case_manifest(case)
+        metrics = validate_case_manifest(case)
+        metrics_by_environment[environment] = metrics
         wav_paths: dict[str, Path] = {}
         for field in WAV_FIELDS:
             path = _resolve_path(case.payload.get(field), case.path.parent)
@@ -621,6 +692,15 @@ def validate_matrix_manifests(
                 failures.append(
                     f"{display_name} WAV file exists ({field}={path})"
                 )
+                continue
+            _validate_pcm16_wav(
+                path,
+                expected_channels=float(metrics["channels"]),
+                expected_sample_rate=float(metrics["sample_rate"]),
+                expected_frames=float(metrics["frames"]),
+                label=f"{display_name} {field}",
+                failures=failures,
+            )
         paths_by_environment[environment] = wav_paths
 
     if failures:
@@ -787,7 +867,7 @@ def _strict_number(
     failure: str,
 ) -> float | None:
     value = values.get(field)
-    if isinstance(value, bool) or value is None:
+    if type(value) not in (int, float):
         failures.append(failure)
         return None
     try:

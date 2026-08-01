@@ -238,13 +238,28 @@ def make_case(environment: str, payload: dict[str, object] | None = None) -> Cas
     )
 
 
-def write_pcm16(path: Path, samples: list[int] | tuple[int, ...]) -> None:
+def write_wave(
+    path: Path,
+    samples: list[int] | tuple[int, ...],
+    *,
+    channels: int = 2,
+    sample_width: int = 2,
+    sample_rate: int = 16000,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as stream:
-        stream.setnchannels(2)
-        stream.setsampwidth(2)
-        stream.setframerate(16000)
-        stream.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+        stream.setnchannels(channels)
+        stream.setsampwidth(sample_width)
+        stream.setframerate(sample_rate)
+        if sample_width == 1:
+            frame_data = bytes(samples)
+        else:
+            frame_data = struct.pack(f"<{len(samples)}h", *samples)
+        stream.writeframes(frame_data)
+
+
+def write_pcm16(path: Path, samples: list[int] | tuple[int, ...]) -> None:
+    write_wave(path, samples)
 
 
 def json_path_value(path: Path, base: Path, relative_paths: bool) -> str:
@@ -952,11 +967,11 @@ class ReflectionEnvironmentMatrixManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "common_output_scale"):
             reflection_environment_matrix.validate_matrix_manifests(cases)
 
-    def test_rejects_unequal_frame_provenance(self) -> None:
+    def test_rejects_manifest_frames_disagreeing_with_wav_headers(self) -> None:
         cases = self.make_cases()
         cases = replace_case_payload(cases, "enclosed", frames=3)
 
-        with self.assertRaisesRegex(RuntimeError, "common frames"):
+        with self.assertRaisesRegex(RuntimeError, "actual WAV frame count"):
             reflection_environment_matrix.validate_matrix_manifests(cases)
 
     def test_rejects_each_missing_wav_file(self) -> None:
@@ -967,6 +982,74 @@ class ReflectionEnvironmentMatrixManifestTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(RuntimeError, "WAV file exists"):
                     reflection_environment_matrix.validate_matrix_manifests(cases)
+
+    def test_rejects_corrupt_wav_for_every_case_and_artifact(self) -> None:
+        for environment in reflection_environment_matrix.ENVIRONMENTS:
+            for field in (
+                "reference_wav",
+                "direct_wav",
+                "wet_wav",
+                "full_wav",
+            ):
+                with self.subTest(environment=environment, field=field):
+                    cases = self.make_cases(f"corrupt-{environment}-{field}")
+                    Path(str(cases[environment].payload[field])).write_bytes(
+                        b"not a RIFF/WAVE file"
+                    )
+                    display_name = "".join(
+                        part.title() for part in environment.split("_")
+                    )
+
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        f"{display_name} {field} valid uncompressed PCM16 WAV",
+                    ):
+                        reflection_environment_matrix.validate_matrix_manifests(
+                            cases
+                        )
+
+    def test_rejects_actual_wav_header_mismatch(self) -> None:
+        mutations = (
+            (
+                "channels",
+                {"samples": [120, -120], "channels": 1},
+                "actual WAV channels",
+            ),
+            (
+                "sample-rate",
+                {"samples": [120, -120, 60, -60], "sample_rate": 48000},
+                "actual WAV sample rate",
+            ),
+            (
+                "sample-width",
+                {
+                    "samples": [128, 129, 127, 128],
+                    "sample_width": 1,
+                },
+                "valid uncompressed PCM16 WAV",
+            ),
+            (
+                "frames",
+                {"samples": [120, -120]},
+                "actual WAV frame count",
+            ),
+        )
+        for label, options, message in mutations:
+            with self.subTest(label=label):
+                cases = self.make_cases(f"header-{label}")
+                target = Path(str(cases["near_wall"].payload["wet_wav"]))
+                write_wave(target, **options)
+
+                with self.assertRaisesRegex(RuntimeError, message):
+                    reflection_environment_matrix.validate_matrix_manifests(cases)
+
+    def test_rejects_truncated_wav_frame_data(self) -> None:
+        cases = self.make_cases("truncated-frame-data")
+        target = Path(str(cases["near_wall"].payload["wet_wav"]))
+        target.write_bytes(target.read_bytes()[:-2])
+
+        with self.assertRaisesRegex(RuntimeError, "complete PCM frame data"):
+            reflection_environment_matrix.validate_matrix_manifests(cases)
 
     def test_rejects_near_wall_or_enclosed_wet_and_full_matching_open_space(self) -> None:
         for environment in ("near_wall", "enclosed"):
@@ -1163,6 +1246,62 @@ class ReflectionEnvironmentEvidenceTests(unittest.TestCase):
             self.assertTrue(case_evidence.log_path.is_absolute())
             self.assertTrue(case_evidence.case.path.is_absolute())
 
+    def test_load_rejects_existing_copied_manifest_outside_reference_directory(
+        self,
+    ) -> None:
+        cases, _, _ = make_complete_matrix(
+            self.temporary_root / "copied-manifest",
+            load_evidence=False,
+        )
+        manifest_path = cases["near_wall"].path
+        result_path = manifest_path.parent / "near_wall_Result.json"
+        copied_manifest = (
+            manifest_path.parent / "copied" / manifest_path.name
+        )
+        copied_manifest.parent.mkdir(parents=True)
+        copied_manifest.write_bytes(manifest_path.read_bytes())
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        payload["artifacts"]["manifest"] = str(copied_manifest)
+        result_path.write_text(
+            json.dumps(payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Reference/Manifest naming contract",
+        ):
+            reflection_environment_matrix.load_case_evidence(
+                "near_wall",
+                result_path,
+            )
+
+    def test_load_rejects_noncanonical_reference_wav_suffix(self) -> None:
+        cases, _, _ = make_complete_matrix(
+            self.temporary_root / "reference-suffix",
+            load_evidence=False,
+        )
+        manifest_path = cases["near_wall"].path
+        result_path = manifest_path.parent / "near_wall_Result.json"
+        reference_path = manifest_path.parent / "near_wall_Reference.wav"
+        noncanonical_reference = manifest_path.parent / "near_wall_Input.wav"
+        noncanonical_reference.write_bytes(reference_path.read_bytes())
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        payload["artifacts"]["reference"] = str(noncanonical_reference)
+        result_path.write_text(
+            json.dumps(payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "canonical Reference WAV suffix",
+        ):
+            reflection_environment_matrix.load_case_evidence(
+                "near_wall",
+                result_path,
+            )
+
     def test_rejects_result_with_wrong_schema_version_or_pass_flag(self) -> None:
         for field, value, message in (
             ("schema_version", 2, "schema_version=1"),
@@ -1240,6 +1379,58 @@ class ReflectionEnvironmentEvidenceTests(unittest.TestCase):
                         evidence,
                         project_root,
                     )
+
+    def test_rejects_non_json_numbers_for_scene_distance_and_luma_fields(
+        self,
+    ) -> None:
+        fields = (
+            (
+                "scene",
+                "distance_cm",
+                "200.0",
+                "scene source/listener distance",
+            ),
+            (
+                "image_metrics",
+                "non_black_ratio",
+                "0.75",
+                "finite non-black screenshot ratio",
+            ),
+            (
+                "image_metrics",
+                "luma_stddev",
+                "12.0",
+                "finite screenshot luma standard deviation",
+            ),
+        )
+        invalid_kinds = (
+            ("string", None),
+            ("boolean", True),
+            ("nan", math.nan),
+            ("infinity", math.inf),
+        )
+        for mapping_name, field, numeric_string, message in fields:
+            for kind, value in invalid_kinds:
+                with self.subTest(field=field, kind=kind):
+                    _, evidence, project_root = self.make_matrix(
+                        f"number-{field}-{kind}"
+                    )
+                    evidence = self.replace_evidence_mapping(
+                        evidence,
+                        "near_wall",
+                        mapping_name,
+                        **{
+                            field: (
+                                numeric_string if kind == "string" else value
+                            )
+                        },
+                    )
+
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        reflection_environment_matrix.validate_end_to_end_evidence(
+                            evidence,
+                            project_root,
+                        )
 
     def test_rejects_wrong_geometry_for_each_environment(self) -> None:
         for environment in reflection_environment_matrix.ENVIRONMENTS:
