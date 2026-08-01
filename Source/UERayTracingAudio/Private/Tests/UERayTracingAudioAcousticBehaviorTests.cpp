@@ -111,6 +111,40 @@ bool FUERayTracingAudioIndirectBatchInterfaceTest::RunTest(const FString& Parame
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioNonBuildableGeometryRejectedTest,
+    "UERayTracingAudio.RHI.NonBuildableGeometryRejected",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioNonBuildableGeometryRejectedTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    FUERayTracingAudioScene Scene;
+    TArray<FUERayTracingAudioGeometryExport> Geometry;
+    Geometry.AddDefaulted();
+    Scene.SetStaticGeometry(MoveTemp(Geometry));
+
+    FUERayTracingAudioEnergyFieldTraceRequest Request;
+    Request.Scene = &Scene;
+    Request.NumReflectionRays = 8;
+    Request.MaxReflectionBounces = 1;
+    Request.NumDelayBins = 4;
+    Request.DurationSeconds = 0.1f;
+
+    FUERayTracingAudioRayTracingDevice Device;
+    AddInfo(
+        *FString::Printf(
+            TEXT("Non-buildable geometry regression: ray_tracing_available=%d"),
+            Device.IsRayTracingAvailable() ? 1 : 0));
+    FUERayTracingAudioEnergyFieldTraceResult Result;
+    TestFalse(
+        TEXT("A non-empty scene with no buildable acoustic instance is rejected"),
+        Device.SimulateIndirectEnergyField(Request, Result));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUERayTracingAudioAsyncQueryCancellationTest,
     "UERayTracingAudio.RHI.AsyncQueryCancellation",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

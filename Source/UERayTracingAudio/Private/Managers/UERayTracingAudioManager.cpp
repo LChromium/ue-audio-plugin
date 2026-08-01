@@ -1153,11 +1153,18 @@ bool FUERayTracingAudioManager::RebuildSceneForBake(UWorld* World)
                 continue;
             }
 
-            FUERayTracingAudioGeometryExport GeometryExport;
-            if (GeometryComponent->BuildGeometryExport(GeometryExport))
+            if (!GeometryComponent->bExportToAcousticScene)
             {
-                GeometryExports.Add(MoveTemp(GeometryExport));
+                continue;
             }
+
+            FUERayTracingAudioGeometryExport GeometryExport;
+            if (!GeometryComponent->BuildGeometryExport(GeometryExport))
+            {
+                return false;
+            }
+
+            GeometryExports.Add(MoveTemp(GeometryExport));
         }
     }
 

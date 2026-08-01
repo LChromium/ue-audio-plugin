@@ -1140,6 +1140,11 @@ namespace
 
         if (Instances.IsEmpty())
         {
+            if (!Geometry.IsEmpty())
+            {
+                return false;
+            }
+
             // DXR needs a TLAS to execute a ray dispatch even when the logical
             // acoustic scene is empty. Keep this sentinel out of Geometry and
             // give it an all-zero instance mask so no plugin ray can intersect

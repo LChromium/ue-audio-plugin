@@ -254,23 +254,60 @@ bool FUERayTracingAudioEditorEmptySceneBakeAdmissionTest::RunTest(
     Settings.NumRays = 4096;
     Settings.MaxBounces = 32;
     Settings.bRequireHardwareRayTracing = false;
-    const TSharedPtr<FUERayTracingAudioBakeJob> Job =
+    const TSharedPtr<FUERayTracingAudioBakeJob> EmptySceneJob =
         Manager.StartImpulseResponseBake(Source, Listener, Settings, true);
 
-    TestNotNull(TEXT("Empty-scene bake returns a job"), Job.Get());
-    if (!Job.IsValid())
+    TestNotNull(TEXT("Empty-scene bake returns a job"), EmptySceneJob.Get());
+    if (!EmptySceneJob.IsValid())
     {
         return false;
     }
     TestEqual(
         TEXT("A valid zero-geometry acoustic scene is admitted for tracing"),
-        Job->GetState(),
+        EmptySceneJob->GetState(),
         EUERayTracingAudioBakeJobState::Running);
     TestEqual(
         TEXT("The admitted empty acoustic scene retains the zero signature"),
         Manager.GetCurrentSceneSignature(World),
         FString(TEXT("00000000")));
-    Job->Cancel();
+    EmptySceneJob->Cancel();
+
+    AActor* GeometryActor = World->SpawnActor<AActor>();
+    TestNotNull(TEXT("Export-failure Geometry actor exists"), GeometryActor);
+    if (!GeometryActor)
+    {
+        return false;
+    }
+    UUERayTracingAudioGeometryComponent* Geometry =
+        NewObject<UUERayTracingAudioGeometryComponent>(GeometryActor);
+    GeometryActor->AddInstanceComponent(Geometry);
+    Geometry->RegisterComponent();
+
+    const TSharedPtr<FUERayTracingAudioBakeJob> ExportFailureJob =
+        Manager.StartImpulseResponseBake(Source, Listener, Settings, true);
+    TestNotNull(TEXT("Export-failure bake returns a job"), ExportFailureJob.Get());
+    if (!ExportFailureJob.IsValid())
+    {
+        return false;
+    }
+    TestEqual(
+        TEXT("An enabled geometry component without a primitive fails the bake"),
+        ExportFailureJob->GetState(),
+        EUERayTracingAudioBakeJobState::Failed);
+
+    Geometry->bExportToAcousticScene = false;
+    const TSharedPtr<FUERayTracingAudioBakeJob> ExcludedGeometryJob =
+        Manager.StartImpulseResponseBake(Source, Listener, Settings, true);
+    TestNotNull(TEXT("Excluded-geometry bake returns a job"), ExcludedGeometryJob.Get());
+    if (!ExcludedGeometryJob.IsValid())
+    {
+        return false;
+    }
+    TestEqual(
+        TEXT("An explicitly excluded geometry component preserves empty-scene admission"),
+        ExcludedGeometryJob->GetState(),
+        EUERayTracingAudioBakeJobState::Running);
+    ExcludedGeometryJob->Cancel();
     return true;
 }
 
