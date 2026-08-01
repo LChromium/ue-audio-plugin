@@ -1947,6 +1947,8 @@ class ReflectionEnvironmentMatrixCliTests(unittest.TestCase):
         self.assertEqual(
             summary["thresholds"],
             {
+                "fixed_float_tolerance": 1.0e-6,
+                "ir_duration_consistency_tolerance": 1.0e-9,
                 "zero_tolerance": 1.0e-9,
                 "max_cpu_relative_delta": 0.05,
                 "min_direction_dot": 0.99,

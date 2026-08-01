@@ -863,6 +863,8 @@ def validate_matrix_manifests(
         case_summary[environment] = summary
 
     thresholds: dict[str, float] = {
+        "fixed_float_tolerance": FIXED_FLOAT_TOLERANCE,
+        "ir_duration_consistency_tolerance": IR_DURATION_CONSISTENCY_TOLERANCE,
         "zero_tolerance": ZERO_TOLERANCE,
         "max_cpu_relative_delta": MAX_CPU_RELATIVE_DELTA,
         "min_direction_dot": MIN_DIRECTION_DOT,
