@@ -31,6 +31,9 @@ struct FUERayTracingAudioSimulationSnapshotRegistry::FEntry
     {
         std::atomic<uint32> ReaderCount { 0 };
         FUERayTracingAudioSimulationSnapshot Snapshot;
+        // Writer-thread-only. A pinned slot is tombstoned immediately and its
+        // owning kernels are reclaimed at the next control-thread service.
+        bool bPendingReclaim = false;
     };
 
     std::atomic<uint64> AudioComponentId { EmptyAudioComponentId };
@@ -243,6 +246,20 @@ bool FUERayTracingAudioSimulationSnapshotRegistry::Publish(
     Entry.Sequence.fetch_add(1, std::memory_order_seq_cst);
     const int32 CurrentSlot =
         Entry.PublishedSlot.load(std::memory_order_acquire);
+    const auto IsWritableOrReclaimable = [](FEntry::FSlot& Slot)
+    {
+        const bool bUnpinned = Slot.ReaderCount.load(
+            std::memory_order_seq_cst) == 0;
+        if (bUnpinned && Slot.bPendingReclaim)
+        {
+            // Publish already owns the writer lock and holds this entry at an
+            // odd sequence. Reclaiming only the current entry's three slots
+            // avoids a registry-wide scan on every simulation publication.
+            Slot.Snapshot = FUERayTracingAudioSimulationSnapshot();
+            Slot.bPendingReclaim = false;
+        }
+        return bUnpinned && !Slot.bPendingReclaim;
+    };
     int32 TargetSlot = INDEX_NONE;
     for (int32 SlotOffset = 1;
         SlotOffset <= SnapshotSlotsPerEntry;
@@ -253,8 +270,7 @@ bool FUERayTracingAudioSimulationSnapshotRegistry::Publish(
             ? SlotOffset - 1
             : (CurrentSlot + SlotOffset) % SnapshotSlotsPerEntry;
         if (CandidateSlot != CurrentSlot
-            && Entry.Slots[CandidateSlot].ReaderCount.load(
-                std::memory_order_seq_cst) == 0)
+            && IsWritableOrReclaimable(Entry.Slots[CandidateSlot]))
         {
             TargetSlot = CandidateSlot;
             break;
@@ -262,8 +278,7 @@ bool FUERayTracingAudioSimulationSnapshotRegistry::Publish(
     }
     if (TargetSlot == INDEX_NONE
         && CurrentSlot != INDEX_NONE
-        && Entry.Slots[CurrentSlot].ReaderCount.load(
-            std::memory_order_seq_cst) == 0)
+        && IsWritableOrReclaimable(Entry.Slots[CurrentSlot]))
     {
         TargetSlot = CurrentSlot;
     }
@@ -276,6 +291,7 @@ bool FUERayTracingAudioSimulationSnapshotRegistry::Publish(
     }
 
     Entry.Slots[TargetSlot].Snapshot = MoveTemp(Snapshot);
+    Entry.Slots[TargetSlot].bPendingReclaim = false;
     Entry.PublishedSlot.store(TargetSlot, std::memory_order_release);
     Entry.Sequence.fetch_add(1, std::memory_order_seq_cst);
     return true;
@@ -351,12 +367,25 @@ void FUERayTracingAudioSimulationSnapshotRegistry::Remove(
     Entry.AudioComponentId.store(
         TombstoneAudioComponentId,
         std::memory_order_release);
+    for (FEntry::FSlot& Slot : Entry.Slots)
+    {
+        if (Slot.ReaderCount.load(std::memory_order_seq_cst) == 0)
+        {
+            Slot.Snapshot = FUERayTracingAudioSimulationSnapshot();
+            Slot.bPendingReclaim = false;
+        }
+        else
+        {
+            Slot.bPendingReclaim = true;
+        }
+    }
     Entry.Sequence.fetch_add(1, std::memory_order_seq_cst);
 }
 
 void FUERayTracingAudioSimulationSnapshotRegistry::Reset()
 {
     FScopeLock ScopeLock(&WriterLock);
+    ReclaimRetiredSnapshotsLocked();
     for (int32 EntryIndex = 0;
         EntryIndex < EntryCapacity;
         ++EntryIndex)
@@ -374,7 +403,62 @@ void FUERayTracingAudioSimulationSnapshotRegistry::Reset()
         Entry.AudioComponentId.store(
             TombstoneAudioComponentId,
             std::memory_order_release);
+        for (FEntry::FSlot& Slot : Entry.Slots)
+        {
+            if (Slot.ReaderCount.load(std::memory_order_seq_cst) == 0)
+            {
+                Slot.Snapshot = FUERayTracingAudioSimulationSnapshot();
+                Slot.bPendingReclaim = false;
+            }
+            else
+            {
+                Slot.bPendingReclaim = true;
+            }
+        }
         Entry.Sequence.fetch_add(1, std::memory_order_seq_cst);
+    }
+}
+
+void FUERayTracingAudioSimulationSnapshotRegistry::
+    ReclaimRetiredSnapshots()
+{
+    FScopeLock ScopeLock(&WriterLock);
+    ReclaimRetiredSnapshotsLocked();
+}
+
+void FUERayTracingAudioSimulationSnapshotRegistry::
+    ReclaimRetiredSnapshotsLocked()
+{
+    for (int32 EntryIndex = 0;
+        EntryIndex < EntryCapacity;
+        ++EntryIndex)
+    {
+        FEntry& Entry = Entries[EntryIndex];
+        bool bCommitOpen = false;
+        for (FEntry::FSlot& Slot : Entry.Slots)
+        {
+            if (!Slot.bPendingReclaim
+                || Slot.ReaderCount.load(
+                    std::memory_order_seq_cst) != 0)
+            {
+                continue;
+            }
+            if (!bCommitOpen)
+            {
+                Entry.Sequence.fetch_add(
+                    1,
+                    std::memory_order_seq_cst);
+                bCommitOpen = true;
+            }
+            Slot.Snapshot = FUERayTracingAudioSimulationSnapshot();
+            Slot.bPendingReclaim = false;
+        }
+        if (bCommitOpen)
+        {
+            Entry.Sequence.fetch_add(
+                1,
+                std::memory_order_seq_cst);
+        }
     }
 }
 

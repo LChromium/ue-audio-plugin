@@ -1,6 +1,6 @@
 # 实现状态
 
-更新日期：2026-07-30
+更新日期：2026-08-01
 
 ## 当前结论
 
@@ -316,3 +316,37 @@ Final fixed-runtime evidence:
 - Editor scene/UI readiness is `source=1 listener=1 geometry=7 lighting=1 bake_ui=1`, `200 cm / default / (0.0002,0.0006,0.0012)`. PID `10276` is responding and remains open for the user.
 
 Open ledger (not marked complete): Task 1's effective-crossover startup log hard-codes 48 kHz; Task 2 lacks focused ignored-listener-removal identity, scene-address-stability, and pending-request World-cleanup coverage; Task 3 needs invalid/out-of-order crossover, non-finite band-gain, and finite-input-overflow hardening; Task 4 needs transitive callback-safety/logging audit coverage, remaining Editor mode/bake/artifact/validation assignments routed through public Source setters, and saturating Direct diagnostic counters; Task 7 duplicate tagged Source roles select the first iteration result rather than rejecting ambiguity. Human Pass, moving-player/moving-occlusion listening, audible distance/air comparison, click/pop judgment, true multi-PIE hardware isolation, and the OpenSpace/NearWall/Enclosed R3 matrix also remain open. The overall plugin goal is not complete.
+
+### Task 8 Final Fix Wave: whole-branch hardening
+
+Implementation status: all one P1 and twelve P2 findings from the final whole-branch review are fixed and automatically verified. This hardening does not close the remaining Human/R3 acceptance work.
+
+RHI query publication now uses a synchronized immutable state handoff instead of concurrently accessing one `TSharedPtr`. Query back-references from readback items/segments are weak, cancellation is explicit, render-thread retirement is bounded, and Manager listener loss/removal cancels affected World queries. Direct `MaxDistanceCm` is enforced at the boundary. Direct and Indirect results report actual hardware use only after successful RHI dispatch, so a capable device, fallback, or empty scene cannot falsely satisfy the hardware gate.
+
+No-listener publication now restores Direct bypass/unity and zeroes realtime Wet instead of replaying stale snapshots. Non-finite samples are sanitized before every stateful Wet boundary. Snapshot removal/reset immediately reclaims unpinned kernels, defers pinned reclamation to the Manager service point, and performs bounded current-entry reclamation. A convolver whose return mailbox is full suppresses output from its stale owner until the return can be retried, preventing Wet leakage after SourceId reuse.
+
+Editor Bake admission no longer changes an ordinary actor's `AudioComponent.Sound`. Validation ownership is released only when its owning World tears down, allowing sequential PIE without transferring ownership while another World is active. The tagged validation fixture enforces exactly one deterministic actor per role and exactly one acoustic Geometry component per Geometry actor, then normalizes transforms, mesh/collision, and acoustic state before reporting ready; this closes duplicate-role and overlapping-geometry false readiness. Artifact production/parsing now agrees on field order and environment, waits for a complete terminal line, and requires unique strict Direct/HardRT/data-source markers plus the actual Direct and Indirect hardware submission markers.
+
+Final-fix verification on 2026-07-31:
+
+- TDD regressions cover async cancellation/retirement, Direct max-distance boundaries and provenance, listener removal/loss, non-finite Wet recovery, snapshot reclamation, convolver release/reuse, side-effect-free Bake admission, sequential PIE ownership, exact fixture normalization, and strict launcher/artifact contracts.
+- Realtime audit: `39 functions / 40 bodies / 1775 lines`, with lock, heap, shared-ownership, blocking, and UObject callback violations all `0`. Python: `70/70`. `git diff --check`: exit `0`.
+- Prescribed Development build: exit `0`. Focused Automation: ConfigurableDirect `15/15`, Audio `40/40`, Editor `9/9`; full `UERayTracingAudio` Automation `62/62`.
+- Prescribed Shipping build: exit `0`, `34/34` plugin actions. `WITH_UERAYTRACINGAUDIO_VALIDATION` is `0`; exact scenario/HUD/Direct-sweep/F6 entry strings are absent from executable and receipt, while the plugin receipt and seven non-empty Direct/Indirect/RHI/Simulator/SDK objects retain the product runtime.
+- Exact `--editor-ab-artifacts` flow: exit `0`; `hardware=1`, `auto_checks=1`, `distinct=1`, `imported=4`, `directional_wet=1`, `common_scale=1`. The fixture-only Wet send is `0.8`, preserving a recognizable Full dry cue without weakening acceptance thresholds; Wet/reference ratio is `0.567596`, Full/input ratio `0.549702`, and Direct/Wet difference `1.615526`.
+- Exact default launcher: exit `0`. Game log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785502210674966300.log`; Editor log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785502391254800900.log`. Actual Direct/Indirect hardware markers were present; paths/gain matched CPU `171/171` and `0.001625/0.001625`; Direct passed with `215` generations, zero dropout, restored/hardware `1/1`; all three data sources passed; hard realtime was `1581/0/0` callbacks/misses/drops.
+- The 2026-07-31 Editor PID `13228` was responding for that run and has been superseded by the 2026-08-01 final self-review run below.
+
+Still open: the callback-capacity P3 can temporarily treat a Wet-containing oversized buffer as Direct when prepared bridge capacity is exceeded; the prior Task 1-4 minor ledger remains; target-device Human Pass, click/pop and audible-quality judgment, true multi-PIE hardware isolation, and the OpenSpace/NearWall/Enclosed R3 matrix are not automated completions. The rejected Bake UObject-UAF candidate remains unchanged because the reviewed path does not retain the suspected UObject access.
+
+#### 2026-08-01 final self-review addendum
+
+A final Unreal C++ self-review found that duplicate tagged actors were normalized, but two `UUERayTracingAudioGeometryComponent` instances on the retained actor could still export overlapping geometry while first-match validation reported ready. The regression first failed with expected component count `1` and actual count `2`. The fixture now deterministically retains one safe component, transactionally destroys duplicate instance components, rejects multiple non-removable native components, and explicitly requires a final component count of one.
+
+- Prescribed Development build: exit `0`. Realtime audit: `39/40/1775`, all forbidden-operation counts `0`; Python `70/70`; `git diff --check` exit `0`.
+- Fresh Automation: ConfigurableDirect `15/15`, Audio `40/40`, Editor `9/9`, full plugin `62/62`; all four logs contain one `TEST COMPLETE. EXIT CODE: 0`, zero failed tests, and zero Fatal/Assertion markers. Logs are `FinalFix2-ConfigurableDirect.log`, `FinalFix2-Audio.log`, `FinalFix2-Editor.log`, and `FinalFix2-Full.log` under the project `Saved/Logs` directory.
+- Fresh `--editor-ab-artifacts`: exit `0`; hardware/automatic/distinct/imported/directional/common-scale `1/1/1/4/1/1`, Wet/reference `0.567596`, Full/reference `0.549702`, Direct/Wet difference `1.615526`.
+- Fresh default launcher: exit `0`. Game log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785594301982190200.log`; Editor log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785594482652644800.log`. Hardware/CPU paths and gain match at `171/171` and `0.001625/0.001625`; Direct passed with `199` generations, zero dropout, restored/hardware `1/1`; all data sources passed; hard realtime was `1596/0/0`.
+- Final Editor PID `36896` is responding and remains open; Game and Editor logs contain zero Fatal, Unhandled Exception, or Assertion markers.
+
+The overall goal remains open for target-device Human A/B, click/pop and audible-quality judgment, moving-player/occlusion listening, true multi-PIE hardware isolation, and the OpenSpace/NearWall/Enclosed R3 matrix.

@@ -8,6 +8,16 @@ void FUERayTracingAudioBakeJob::Cancel()
         Progress = 0.0f;
         StatusText = TEXT("Cancelled");
     }
+    if (DirectQuery.IsValid())
+    {
+        DirectQuery->Cancel();
+        DirectQuery.Reset();
+    }
+    if (Query.IsValid())
+    {
+        Query->Cancel();
+        Query.Reset();
+    }
 }
 
 EUERayTracingAudioBakeJobState FUERayTracingAudioBakeJob::GetState() const
@@ -43,9 +53,18 @@ bool FUERayTracingAudioBakeJob::GetResult(FUERayTracingAudioBakeResult& OutResul
 
 void FUERayTracingAudioBakeJob::SetFailed(FString InError)
 {
+    if (DirectQuery.IsValid())
+    {
+        DirectQuery->Cancel();
+        DirectQuery.Reset();
+    }
+    if (Query.IsValid())
+    {
+        Query->Cancel();
+        Query.Reset();
+    }
     State = EUERayTracingAudioBakeJobState::Failed;
     Progress = 0.0f;
     StatusText = TEXT("Failed");
     Error = MoveTemp(InError);
-    Query.Reset();
 }

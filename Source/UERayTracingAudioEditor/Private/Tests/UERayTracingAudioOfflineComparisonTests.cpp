@@ -1,4 +1,5 @@
 #include "Bake/UERayTracingAudioOfflineRenderer.h"
+#include "Bake/UERayTracingAudioEditorBakeAdmission.h"
 
 #include "Components/AudioComponent.h"
 #include "Components/SceneComponent.h"
@@ -14,6 +15,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Paths.h"
+#include "Sound/SoundWave.h"
 #include "UObject/GarbageCollection.h"
 #include "UObject/UObjectGlobals.h"
 #include "Validation/UERayTracingAudioEditorValidationScene.h"
@@ -128,6 +130,81 @@ namespace
         }
         return nullptr;
     }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioEditorBakeAdmissionNoSideEffectTest,
+    "UERayTracingAudio.Editor.BakeAdmissionNoSideEffect",
+    EAutomationTestFlags::EditorContext
+        | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioEditorBakeAdmissionNoSideEffectTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    FManagedEditorTestWorld ManagedWorld(
+        TEXT("UERayTracingAudioEditorBakeAdmissionNoSideEffect"));
+    UWorld* World = ManagedWorld.Get();
+    TestNotNull(TEXT("Bake admission test world exists"), World);
+    if (!World)
+    {
+        return false;
+    }
+
+    AActor* SourceActor = World->SpawnActor<AActor>();
+    AActor* ListenerActor = World->SpawnActor<AActor>();
+    TestNotNull(TEXT("Bake admission Source actor exists"), SourceActor);
+    TestNotNull(TEXT("Bake admission Listener actor exists"), ListenerActor);
+    if (!SourceActor || !ListenerActor)
+    {
+        return false;
+    }
+
+    UUERayTracingAudioSourceComponent* Source =
+        NewObject<UUERayTracingAudioSourceComponent>(SourceActor);
+    UAudioComponent* Audio = NewObject<UAudioComponent>(SourceActor);
+    UUERayTracingAudioListenerComponent* Listener =
+        NewObject<UUERayTracingAudioListenerComponent>(ListenerActor);
+    SourceActor->AddInstanceComponent(Source);
+    SourceActor->AddInstanceComponent(Audio);
+    ListenerActor->AddInstanceComponent(Listener);
+    Source->RegisterComponent();
+    Audio->RegisterComponent();
+    Listener->RegisterComponent();
+
+    USoundWave* ExistingSound = NewObject<USoundWave>(SourceActor);
+    USoundWave* UnreadableBakeInput = NewObject<USoundWave>(SourceActor);
+    Audio->SetSound(ExistingSound);
+    FString Error;
+    TestFalse(
+        TEXT("Unreadable imported PCM is rejected"),
+        FUERayTracingAudioEditorBakeAdmission::Validate(
+            World,
+            Source,
+            Listener,
+            UnreadableBakeInput,
+            Error));
+    TestTrue(
+        TEXT("Rejected bake admission explains the PCM requirement"),
+        Error.Contains(TEXT("imported PCM16")));
+    TestEqual(
+        TEXT("Bake admission never replaces ordinary Audio.Sound"),
+        Audio->GetSound(),
+        static_cast<USoundBase*>(ExistingSound));
+
+    TestTrue(
+        TEXT("A bake without an offline A/B input remains admissible"),
+        FUERayTracingAudioEditorBakeAdmission::Validate(
+            World,
+            Source,
+            Listener,
+            nullptr,
+            Error));
+    TestEqual(
+        TEXT("Successful admission also leaves ordinary Audio.Sound unchanged"),
+        Audio->GetSound(),
+        static_cast<USoundBase*>(ExistingSound));
+    return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -384,6 +461,291 @@ bool FUERayTracingAudioEditorValidationFixtureControlsTest::RunTest(
     TestNull(
         TEXT("Destroyed geometry component is released after GC"),
         StaleGeometryComponent.GetEvenIfUnreachable());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioEditorValidationFixtureNormalizationTest,
+    "UERayTracingAudio.Editor.ValidationFixtureNormalization",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioEditorValidationFixtureNormalizationTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    FManagedEditorTestWorld ManagedWorld(
+        TEXT("UERayTracingAudioEditorValidationFixtureNormalization"));
+    UWorld* World = ManagedWorld.Get();
+    TestNotNull(TEXT("Managed normalization Editor World"), World);
+    if (!World)
+    {
+        return false;
+    }
+
+    const FUERayTracingAudioEditorValidationSceneResult Initial =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+            200.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default);
+    TestTrue(TEXT("Initial normalization fixture succeeds"), Initial.bSucceeded);
+    if (!Initial.bSucceeded || !Initial.Source.IsValid())
+    {
+        return false;
+    }
+    TestTrue(
+        TEXT("Validation Wet send preserves a recognizable Full dry cue"),
+        FMath::IsNearlyEqual(
+            Initial.Source->GetIndirectMix(),
+            0.8f));
+
+    AStaticMeshActor* DuplicateSourceActor = SpawnTaggedFixtureActor(
+        *World,
+        FName(TEXT("VRTA_AB_Source")));
+    UUERayTracingAudioSourceComponent* DuplicateSource =
+        DuplicateSourceActor
+        ? NewObject<UUERayTracingAudioSourceComponent>(
+            DuplicateSourceActor,
+            TEXT("DuplicateValidationSource"))
+        : nullptr;
+    if (DuplicateSourceActor && DuplicateSource)
+    {
+        DuplicateSourceActor->AddInstanceComponent(DuplicateSource);
+        DuplicateSource->OnComponentCreated();
+        DuplicateSource->RegisterComponent();
+    }
+    AStaticMeshActor* DuplicateFloorActor = SpawnTaggedFixtureActor(
+        *World,
+        FName(TEXT("VRTA_AB_Floor")));
+    UUERayTracingAudioGeometryComponent* DuplicateFloor =
+        DuplicateFloorActor
+        ? NewObject<UUERayTracingAudioGeometryComponent>(
+            DuplicateFloorActor,
+            TEXT("DuplicateValidationGeometry"))
+        : nullptr;
+    if (DuplicateFloorActor && DuplicateFloor)
+    {
+        DuplicateFloorActor->AddInstanceComponent(DuplicateFloor);
+        DuplicateFloor->OnComponentCreated();
+        DuplicateFloor->RegisterComponent();
+    }
+    TestNotNull(TEXT("Duplicate Source fixture actor"), DuplicateSourceActor);
+    TestNotNull(TEXT("Duplicate Floor fixture actor"), DuplicateFloorActor);
+    TestNull(
+        TEXT("Ambiguous tagged Source lookup is rejected before normalization"),
+        FUERayTracingAudioEditorValidationScene::FindTaggedSource(World));
+
+    AStaticMeshActor* ExistingSourceActor = Cast<AStaticMeshActor>(
+        Initial.Source->GetOwner());
+    AStaticMeshActor* ExistingFloorActor = nullptr;
+    for (TActorIterator<AActor> ActorIt(World); ActorIt; ++ActorIt)
+    {
+        if (ActorIt->ActorHasTag(ValidationSceneTag)
+            && ActorIt->ActorHasTag(FName(TEXT("VRTA_AB_Floor"))))
+        {
+            ExistingFloorActor = Cast<AStaticMeshActor>(*ActorIt);
+            if (ExistingFloorActor != DuplicateFloorActor)
+            {
+                break;
+            }
+        }
+    }
+    TestNotNull(TEXT("Existing Source actor can be mutated"), ExistingSourceActor);
+    TestNotNull(TEXT("Existing Floor actor can be mutated"), ExistingFloorActor);
+    if (!ExistingSourceActor || !ExistingFloorActor)
+    {
+        return false;
+    }
+
+    UUERayTracingAudioGeometryComponent* DuplicateGeometryOnKeptFloor =
+        NewObject<UUERayTracingAudioGeometryComponent>(
+            ExistingFloorActor,
+            TEXT("DuplicateGeometryOnKeptFloor"));
+    TestNotNull(
+        TEXT("Duplicate Geometry component can be added to retained Floor actor"),
+        DuplicateGeometryOnKeptFloor);
+    if (!DuplicateGeometryOnKeptFloor)
+    {
+        return false;
+    }
+    ExistingFloorActor->AddInstanceComponent(DuplicateGeometryOnKeptFloor);
+    DuplicateGeometryOnKeptFloor->OnComponentCreated();
+    DuplicateGeometryOnKeptFloor->RegisterComponent();
+    TInlineComponentArray<UUERayTracingAudioGeometryComponent*>
+        GeometryComponentsBeforeNormalization(ExistingFloorActor);
+    TestEqual(
+        TEXT("Retained Floor starts with two acoustic Geometry components"),
+        GeometryComponentsBeforeNormalization.Num(),
+        2);
+
+    ExistingSourceActor->SetActorTransform(FTransform(
+        FRotator(15.0f, 30.0f, 45.0f),
+        FVector(-900.0f, -800.0f, -700.0f),
+        FVector(3.0f)));
+    ExistingSourceActor->GetStaticMeshComponent()->SetStaticMesh(nullptr);
+    ExistingSourceActor->GetStaticMeshComponent()->SetCollisionEnabled(
+        ECollisionEnabled::NoCollision);
+    ExistingSourceActor->GetStaticMeshComponent()->SetVisibility(false, true);
+    Initial.Source->OccludedGain = 0.99f;
+    Initial.Source->NumOcclusionSamples = 1;
+    Initial.Source->AirAbsorptionPerMeter = FVector(9.0f);
+
+    ExistingFloorActor->SetActorTransform(FTransform(
+        FRotator(25.0f, 10.0f, 5.0f),
+        FVector(-600.0f, -500.0f, -400.0f),
+        FVector(0.1f)));
+    ExistingFloorActor->GetStaticMeshComponent()->SetStaticMesh(nullptr);
+    ExistingFloorActor->GetStaticMeshComponent()->SetCollisionEnabled(
+        ECollisionEnabled::NoCollision);
+    ExistingFloorActor->GetStaticMeshComponent()->SetVisibility(false, true);
+    if (UUERayTracingAudioGeometryComponent* Geometry =
+        ExistingFloorActor->FindComponentByClass<
+            UUERayTracingAudioGeometryComponent>())
+    {
+        Geometry->bExportToAcousticScene = false;
+        Geometry->bAffectsDirectSound = false;
+        Geometry->Absorption = FVector(0.99f);
+        Geometry->Transmission = FVector(0.75f);
+        Geometry->Scattering = 0.95f;
+    }
+
+    const FUERayTracingAudioEditorValidationSceneResult Normalized =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+            200.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default);
+    TestTrue(
+        TEXT("Duplicate and mutated fixture is normalized to ready"),
+        Normalized.bSucceeded);
+
+    const auto FindActorsForRole = [World](const FName Role)
+    {
+        TArray<AActor*> Actors;
+        for (TActorIterator<AActor> ActorIt(World); ActorIt; ++ActorIt)
+        {
+            if (ActorIt->ActorHasTag(ValidationSceneTag)
+                && ActorIt->ActorHasTag(Role))
+            {
+                Actors.Add(*ActorIt);
+            }
+        }
+        return Actors;
+    };
+    const TArray<AActor*> SourceActors = FindActorsForRole(
+        FName(TEXT("VRTA_AB_Source")));
+    const TArray<AActor*> FloorActors = FindActorsForRole(
+        FName(TEXT("VRTA_AB_Floor")));
+    TestEqual(TEXT("Exactly one tagged Source role remains"), SourceActors.Num(), 1);
+    TestEqual(TEXT("Exactly one tagged Floor role remains"), FloorActors.Num(), 1);
+    TestEqual(
+        TEXT("Tagged Source lookup resolves after normalization"),
+        FUERayTracingAudioEditorValidationScene::FindTaggedSource(World),
+        Normalized.Source.Get());
+
+    AStaticMeshActor* NormalizedSourceActor = SourceActors.Num() == 1
+        ? Cast<AStaticMeshActor>(SourceActors[0])
+        : nullptr;
+    AStaticMeshActor* NormalizedFloorActor = FloorActors.Num() == 1
+        ? Cast<AStaticMeshActor>(FloorActors[0])
+        : nullptr;
+    TestNotNull(TEXT("Normalized Source is a StaticMeshActor"), NormalizedSourceActor);
+    TestNotNull(TEXT("Normalized Floor is a StaticMeshActor"), NormalizedFloorActor);
+    if (!NormalizedSourceActor || !NormalizedFloorActor)
+    {
+        return false;
+    }
+
+    TestTrue(
+        TEXT("Source transform is restored"),
+        NormalizedSourceActor->GetActorLocation().Equals(
+            FVector(4900.0f, 200.0f, 120.0f),
+            0.01f)
+            && NormalizedSourceActor->GetActorScale3D().Equals(
+                FVector(0.38f),
+                0.001f));
+    TestNotNull(
+        TEXT("Source mesh is restored"),
+        NormalizedSourceActor->GetStaticMeshComponent()->GetStaticMesh().Get());
+    TestEqual(
+        TEXT("Source collision is restored"),
+        NormalizedSourceActor->GetStaticMeshComponent()->GetCollisionEnabled(),
+        ECollisionEnabled::QueryAndPhysics);
+    TestTrue(
+        TEXT("Source visibility is restored"),
+        NormalizedSourceActor->GetStaticMeshComponent()->IsVisible());
+    TestEqual(
+        TEXT("Source material parameters are restored"),
+        Normalized.Source->GetAirAbsorptionPerMeter(),
+        FVector(0.0002f, 0.0006f, 0.0012f));
+
+    TestTrue(
+        TEXT("Floor transform is restored"),
+        NormalizedFloorActor->GetActorLocation().Equals(
+            FVector(5000.0f, 0.0f, 0.0f),
+            0.01f)
+            && NormalizedFloorActor->GetActorScale3D().Equals(
+                FVector(12.0f, 10.0f, 0.2f),
+                0.001f));
+    TestNotNull(
+        TEXT("Floor mesh is restored"),
+        NormalizedFloorActor->GetStaticMeshComponent()->GetStaticMesh().Get());
+    TestEqual(
+        TEXT("Floor collision is restored"),
+        NormalizedFloorActor->GetStaticMeshComponent()->GetCollisionEnabled(),
+        ECollisionEnabled::QueryAndPhysics);
+    TestTrue(
+        TEXT("Floor visibility is restored"),
+        NormalizedFloorActor->GetStaticMeshComponent()->IsVisible());
+    UUERayTracingAudioGeometryComponent* NormalizedGeometry =
+        NormalizedFloorActor->FindComponentByClass<
+            UUERayTracingAudioGeometryComponent>();
+    TInlineComponentArray<UUERayTracingAudioGeometryComponent*>
+        NormalizedGeometryComponents(NormalizedFloorActor);
+    TestEqual(
+        TEXT("Normalized Floor retains exactly one acoustic Geometry component"),
+        NormalizedGeometryComponents.Num(),
+        1);
+    TestTrue(
+        TEXT("Floor acoustic export/direct/material properties are restored"),
+        IsValid(NormalizedGeometry)
+            && NormalizedGeometry->bExportToAcousticScene
+            && NormalizedGeometry->bAffectsDirectSound
+            && NormalizedGeometry->ExportMode
+                == EUERayTracingAudioGeometryExportMode::BoundingBox
+            && NormalizedGeometry->Absorption.Equals(
+                FVector(0.08f, 0.10f, 0.14f),
+                UE_KINDA_SMALL_NUMBER)
+            && NormalizedGeometry->Transmission.IsNearlyZero()
+            && FMath::IsNearlyEqual(
+                NormalizedGeometry->Scattering,
+                0.20f));
+
+    const TWeakObjectPtr<AActor> StableSourceActor = NormalizedSourceActor;
+    const TWeakObjectPtr<AActor> StableFloorActor = NormalizedFloorActor;
+    const FUERayTracingAudioEditorValidationSceneResult Idempotent =
+        FUERayTracingAudioEditorValidationScene::EnsureScene(
+            *World,
+            EUERayTracingAudioEditorValidationSceneMode::Transient,
+            EUERayTracingAudioEditorDirectPreset::Clear,
+            EUERayTracingAudioEditorReflectionEnvironment::Enclosed,
+            200.0f,
+            EUERayTracingAudioEditorAirAbsorptionProfile::Default);
+    TestTrue(TEXT("Normalized fixture remains ready on a second pass"), Idempotent.bSucceeded);
+    TestEqual(
+        TEXT("Idempotent pass preserves the normalized Source actor"),
+        Idempotent.Source.IsValid() ? Idempotent.Source->GetOwner() : nullptr,
+        StableSourceActor.Get());
+    TestEqual(
+        TEXT("Idempotent pass preserves the normalized Floor actor"),
+        FindActorsForRole(FName(TEXT("VRTA_AB_Floor"))).Num() == 1
+            ? FindActorsForRole(FName(TEXT("VRTA_AB_Floor")))[0]
+            : nullptr,
+        StableFloorActor.Get());
     return true;
 }
 

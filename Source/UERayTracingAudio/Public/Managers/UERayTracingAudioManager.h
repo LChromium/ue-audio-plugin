@@ -111,6 +111,8 @@ private:
     bool RebuildSceneForBake(UWorld* World);
     FString BuildSceneSignature(const FUERayTracingAudioScene& Scene) const;
     FWorldAcousticState& GetOrCreateWorldAcousticState(UWorld* World);
+    void CancelSourceQueries(FSourceSimulationState& State);
+    void InvalidateWorldSources(UWorld* World);
     void RemoveDeadWorldState();
     bool TickSimulationQueue(float DeltaTime);
 

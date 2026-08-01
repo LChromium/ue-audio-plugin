@@ -316,12 +316,33 @@ void FUERayTracingAudioLateReverbRenderer::Configure(
         bUseCurrentParametricTail =
             bRequestedParametricTail
             && bHasPreparedCapacity;
-        CurrentLateReverbGain = IndirectResult->LateReverbGain;
+        CurrentLateReverbGain =
+            FMath::IsFinite(IndirectResult->LateReverbGain)
+            ? FMath::Max(IndirectResult->LateReverbGain, 0.0f)
+            : 0.0f;
         CurrentParametricDelaySeconds = bHasPreparedCapacity
             ? RequestedPreDelaySeconds
             : 0.0f;
-        CurrentReverbTimes = IndirectResult->ReverbTimes;
-        CurrentParametricEq = IndirectResult->ParametricEq;
+        CurrentReverbTimes = FVector(
+            FMath::IsFinite(IndirectResult->ReverbTimes.X)
+                ? FMath::Max(IndirectResult->ReverbTimes.X, 0.0f)
+                : 0.0f,
+            FMath::IsFinite(IndirectResult->ReverbTimes.Y)
+                ? FMath::Max(IndirectResult->ReverbTimes.Y, 0.0f)
+                : 0.0f,
+            FMath::IsFinite(IndirectResult->ReverbTimes.Z)
+                ? FMath::Max(IndirectResult->ReverbTimes.Z, 0.0f)
+                : 0.0f);
+        CurrentParametricEq = FVector(
+            FMath::IsFinite(IndirectResult->ParametricEq.X)
+                ? IndirectResult->ParametricEq.X
+                : 0.0f,
+            FMath::IsFinite(IndirectResult->ParametricEq.Y)
+                ? IndirectResult->ParametricEq.Y
+                : 0.0f,
+            FMath::IsFinite(IndirectResult->ParametricEq.Z)
+                ? IndirectResult->ParametricEq.Z
+                : 0.0f);
 
         if (bHasCurrentPaths && bUseCurrentParametricTail)
         {
@@ -366,7 +387,10 @@ float FUERayTracingAudioLateReverbRenderer::ProcessSample(const float MonoInput)
         return 0.0f;
     }
 
-    DelayBuffer[DelayWriteIndex] = MonoInput;
+    const float SafeInput = FMath::IsFinite(MonoInput)
+        ? MonoInput
+        : 0.0f;
+    DelayBuffer[DelayWriteIndex] = SafeInput;
     DelaySamplesWritten = FMath::Min(
         DelaySamplesWritten + 1,
         DelayBuffer.Num());
@@ -535,8 +559,11 @@ FVector2f FUERayTracingAudioIndirectRenderer::ProcessSample(const float MonoInpu
             IndirectMix = TargetIndirectMix;
         }
     }
-    const FVector2f EarlyWet = EarlyReflections.ProcessSample(MonoInput);
-    const float LateWet = LateReverb.ProcessSample(MonoInput);
+    const float SafeInput = FMath::IsFinite(MonoInput)
+        ? MonoInput
+        : 0.0f;
+    const FVector2f EarlyWet = EarlyReflections.ProcessSample(SafeInput);
+    const float LateWet = LateReverb.ProcessSample(SafeInput);
     const FVector2f Wet(
         (EarlyWet.X + LateWet) * IndirectMix,
         (EarlyWet.Y + LateWet) * IndirectMix);

@@ -114,6 +114,10 @@ namespace
         const FUERayTracingAudioSourceSimulationResult& PreviousResult,
         const float DeltaTimeSeconds)
     {
+        if (NewResult.DistanceAttenuation <= 0.0f)
+        {
+            return NewResult;
+        }
         if (!PreviousResult.bHasDirectResult)
         {
             return NewResult;
@@ -162,6 +166,20 @@ FUERayTracingAudioManager::~FUERayTracingAudioManager()
         FTSTicker::GetCoreTicker().RemoveTicker(SimulationTickerHandle);
         SimulationTickerHandle.Reset();
     }
+    for (TPair<
+            TWeakObjectPtr<UUERayTracingAudioSourceComponent>,
+            FSourceSimulationState>& Pair : SourceSimulationStates)
+    {
+        CancelSourceQueries(Pair.Value);
+    }
+    for (const TSharedPtr<FUERayTracingAudioBakeJob>& Job : ActiveBakeJobs)
+    {
+        if (Job.IsValid())
+        {
+            Job->Cancel();
+        }
+    }
+    SnapshotRegistry->Reset();
 }
 
 void FUERayTracingAudioManager::AddSource(UUERayTracingAudioSourceComponent* Source)
@@ -172,6 +190,10 @@ void FUERayTracingAudioManager::AddSource(UUERayTracingAudioSourceComponent* Sou
 void FUERayTracingAudioManager::RemoveSource(UUERayTracingAudioSourceComponent* Source)
 {
     Sources.Remove(Source);
+    if (FSourceSimulationState* State = SourceSimulationStates.Find(Source))
+    {
+        CancelSourceQueries(*State);
+    }
     SourceSimulationStates.Remove(Source);
     PendingSimulationSources.RemoveAll(
         [Source](const TWeakObjectPtr<UUERayTracingAudioSourceComponent>& PendingSource)
@@ -222,6 +244,7 @@ void FUERayTracingAudioManager::RemoveListener(UUERayTracingAudioListenerCompone
     if (CurrentListener && CurrentListener->Get() == Listener)
     {
         ListenersByWorld.Remove(World);
+        InvalidateWorldSources(World);
     }
 }
 
@@ -437,6 +460,16 @@ void FUERayTracingAudioManager::RequestSourceSimulation(
     }
 
     FSourceSimulationState& State = SourceSimulationStates.FindOrAdd(Source);
+    UWorld* World = Source->GetWorld();
+    if (!IsValid(World) || !IsValid(GetCurrentListener(World)))
+    {
+        if (IsValid(World))
+        {
+            ListenersByWorld.Remove(World);
+            InvalidateWorldSources(World);
+        }
+        return;
+    }
     State.bDirectRequested = bRequestDirect && !State.DirectQuery.IsValid();
     State.bIndirectRequested = bRequestIndirect && !State.IndirectQuery.IsValid();
 
@@ -485,6 +518,7 @@ bool FUERayTracingAudioManager::TickSimulationQueue(float DeltaTime)
 
     FUERayTracingAudioModule::Get().
         ServiceIndirectAudioBridges();
+    SnapshotRegistry->ReclaimRetiredSnapshots();
     PollBakeJobs();
     PollCompletedDirectQueries();
     PollCompletedIndirectQueries();
@@ -921,7 +955,7 @@ TSharedPtr<FUERayTracingAudioBakeJob> FUERayTracingAudioManager::StartImpulseRes
     Job->Result.BakeSettings = ClampedSettings;
     Job->Result.ChannelFormat = EUERayTracingAudioImpulseResponseChannelFormat::Stereo;
     Job->Result.NumChannels = 2;
-    Job->Result.bUsedHardwareRayTracing = RayTracingDevice.IsRayTracingAvailable();
+    Job->Result.bUsedHardwareRayTracing = false;
     Job->Query = RayTracingDevice.SubmitIndirectEnergyField(TraceRequest);
     if (!Job->Query.IsValid())
     {
@@ -963,11 +997,20 @@ void FUERayTracingAudioManager::PollBakeJobs()
 
             if (Job->DirectQuery->IsComplete())
             {
+                Job->bDirectUsedHardwareRayTracing =
+                    Job->DirectQuery->WasHardwareRayTracingUsed();
                 bool bDirectSucceeded = false;
                 TArray<bool> DirectHitResults;
                 if (!Job->DirectQuery->ConsumeResult(bDirectSucceeded, DirectHitResults) || !bDirectSucceeded)
                 {
                     Job->SetFailed(TEXT("The hardware direct-sound bake query failed."));
+                    ActiveBakeJobs.RemoveAtSwap(JobIndex, 1, EAllowShrinking::No);
+                    continue;
+                }
+                if (Job->Result.BakeSettings.bRequireHardwareRayTracing
+                    && !Job->bDirectUsedHardwareRayTracing)
+                {
+                    Job->SetFailed(TEXT("The direct-sound bake completed without an actual hardware ray tracing dispatch."));
                     ActiveBakeJobs.RemoveAtSwap(JobIndex, 1, EAllowShrinking::No);
                     continue;
                 }
@@ -994,6 +1037,8 @@ void FUERayTracingAudioManager::PollBakeJobs()
 
             if (Job->Query->IsComplete())
             {
+                Job->bIndirectUsedHardwareRayTracing =
+                    Job->Query->WasHardwareRayTracingUsed();
                 bool bSucceeded = false;
                 FUERayTracingAudioEnergyFieldTraceResult TraceResult;
                 if (!Job->Query->ConsumeResult(bSucceeded, TraceResult))
@@ -1005,6 +1050,13 @@ void FUERayTracingAudioManager::PollBakeJobs()
                 if (!bSucceeded)
                 {
                     Job->SetFailed(TEXT("The hardware ray tracing bake query failed."));
+                    ActiveBakeJobs.RemoveAtSwap(JobIndex, 1, EAllowShrinking::No);
+                    continue;
+                }
+                if (Job->Result.BakeSettings.bRequireHardwareRayTracing
+                    && !Job->bIndirectUsedHardwareRayTracing)
+                {
+                    Job->SetFailed(TEXT("The indirect-sound bake completed without an actual hardware ray tracing dispatch."));
                     ActiveBakeJobs.RemoveAtSwap(JobIndex, 1, EAllowShrinking::No);
                     continue;
                 }
@@ -1068,6 +1120,9 @@ void FUERayTracingAudioManager::PollBakeJobs()
 
                 Job->Result.BinDurationSeconds = SimulationResult.ImpulseResponseBinDurationSeconds;
                 Job->Result.Samples = MoveTemp(DirectionalStereoImpulseResponse);
+                Job->Result.bUsedHardwareRayTracing =
+                    Job->bDirectUsedHardwareRayTracing
+                    && Job->bIndirectUsedHardwareRayTracing;
                 Job->bIndirectCompleted = true;
             }
         }
@@ -1171,15 +1226,145 @@ FUERayTracingAudioManager::GetOrCreateWorldAcousticState(UWorld* World)
     return *WorldState;
 }
 
+void FUERayTracingAudioManager::CancelSourceQueries(
+    FSourceSimulationState& State)
+{
+    if (State.DirectQuery.IsValid())
+    {
+        State.DirectQuery->Cancel();
+        State.DirectQuery.Reset();
+    }
+    if (State.IndirectQuery.IsValid())
+    {
+        State.IndirectQuery->Cancel();
+        State.IndirectQuery.Reset();
+    }
+    State.PendingDirectInput =
+        FUERayTracingAudioDirectSimulationInput();
+    State.PendingDirectQuery =
+        FUERayTracingAudioDirectSimulationQuery();
+    State.PendingIndirectInput =
+        FUERayTracingAudioIndirectSimulationInput();
+    State.bDirectRequested = false;
+    State.bIndirectRequested = false;
+    State.bQueued = false;
+    State.FirstQueuedTimeSeconds = 0.0;
+}
+
+void FUERayTracingAudioManager::InvalidateWorldSources(UWorld* World)
+{
+    if (!IsValid(World))
+    {
+        return;
+    }
+
+    TSet<TWeakObjectPtr<UUERayTracingAudioSourceComponent>>
+        InvalidatedSources;
+    for (TPair<
+            TWeakObjectPtr<UUERayTracingAudioSourceComponent>,
+            FSourceSimulationState>& Pair : SourceSimulationStates)
+    {
+        UUERayTracingAudioSourceComponent* Source = Pair.Key.Get();
+        FSourceSimulationState& State = Pair.Value;
+        const bool bMatchesWorld =
+            (IsValid(Source) && Source->GetWorld() == World)
+            || State.PendingDirectInput.World == World
+            || State.PendingIndirectInput.World == World;
+        if (!bMatchesWorld)
+        {
+            continue;
+        }
+
+        const bool bAlreadyInvalidated =
+            !State.DirectQuery.IsValid()
+            && !State.IndirectQuery.IsValid()
+            && !State.bDirectRequested
+            && !State.bIndirectRequested
+            && !State.bQueued
+            && State.LatestResult.bHasDirectResult
+            && !State.LatestResult.DirectResult.bHasListener
+            && State.LatestResult.bHasIndirectResult
+            && !State.LatestResult.IndirectResult.bHasListener;
+        CancelSourceQueries(State);
+        InvalidatedSources.Add(Pair.Key);
+        if (bAlreadyInvalidated)
+        {
+            continue;
+        }
+
+        State.LatestResult.DirectResult =
+            FUERayTracingAudioDirectSimulationResult();
+        State.LatestResult.IndirectResult =
+            FUERayTracingAudioIndirectSimulationResult();
+        State.LatestResult.bHasDirectResult = true;
+        State.LatestResult.bHasIndirectResult = true;
+        State.LatestResult.DirectGeneration =
+            ++NextSimulationGeneration;
+        State.LatestResult.IndirectGeneration =
+            ++NextSimulationGeneration;
+        State.LatestResult.Generation =
+            State.LatestResult.IndirectGeneration;
+    }
+
+    PendingSimulationSources.RemoveAll(
+        [&InvalidatedSources](
+            const TWeakObjectPtr<
+                UUERayTracingAudioSourceComponent>& PendingSource)
+        {
+            return !PendingSource.IsValid()
+                || InvalidatedSources.Contains(PendingSource);
+        });
+
+    for (int32 JobIndex = ActiveBakeJobs.Num() - 1;
+        JobIndex >= 0;
+        --JobIndex)
+    {
+        const TSharedPtr<FUERayTracingAudioBakeJob>& Job =
+            ActiveBakeJobs[JobIndex];
+        if (Job.IsValid()
+            && (Job->SimulationInput.World == World
+                || Job->DirectSimulationInput.World == World))
+        {
+            Job->Cancel();
+            ActiveBakeJobs.RemoveAtSwap(
+                JobIndex,
+                1,
+                EAllowShrinking::No);
+        }
+    }
+}
+
 void FUERayTracingAudioManager::RemoveDeadWorldState()
 {
     check(IsInGameThread());
 
+    TArray<TWeakObjectPtr<UWorld>> WorldsWithoutListeners;
     for (auto ListenerIt = ListenersByWorld.CreateIterator(); ListenerIt; ++ListenerIt)
     {
-        if (!ListenerIt.Key().IsValid() || !ListenerIt.Value().IsValid())
+        if (ListenerIt.Key().IsValid()
+            && !ListenerIt.Value().IsValid())
+        {
+            WorldsWithoutListeners.Add(ListenerIt.Key());
+        }
+        if (!ListenerIt.Key().IsValid()
+            || !ListenerIt.Value().IsValid())
         {
             ListenerIt.RemoveCurrent();
+        }
+    }
+    for (const TWeakObjectPtr<UWorld>& World : WorldsWithoutListeners)
+    {
+        InvalidateWorldSources(World.Get());
+    }
+
+    for (auto SourceIt = SourceSimulationStates.CreateIterator();
+        SourceIt;
+        ++SourceIt)
+    {
+        if (!SourceIt.Key().IsValid())
+        {
+            CancelSourceQueries(SourceIt.Value());
+            SourceIt.RemoveCurrent();
         }
     }
 
@@ -1191,27 +1376,34 @@ void FUERayTracingAudioManager::RemoveDeadWorldState()
         }
 
         const FUERayTracingAudioScene* Scene = &StateIt.Value()->Scene;
-        bool bSceneIsReferenced = false;
-        for (const TPair<
+        for (TPair<
             TWeakObjectPtr<UUERayTracingAudioSourceComponent>,
             FSourceSimulationState>& Pair : SourceSimulationStates)
         {
-            bSceneIsReferenced |= Pair.Value.DirectQuery.IsValid()
-                && Pair.Value.PendingDirectInput.Scene == Scene;
-            bSceneIsReferenced |= Pair.Value.IndirectQuery.IsValid()
-                && Pair.Value.PendingIndirectInput.Scene == Scene;
+            if (Pair.Value.PendingDirectInput.Scene == Scene
+                || Pair.Value.PendingIndirectInput.Scene == Scene)
+            {
+                CancelSourceQueries(Pair.Value);
+            }
         }
-        for (const TSharedPtr<FUERayTracingAudioBakeJob>& Job : ActiveBakeJobs)
+        for (int32 JobIndex = ActiveBakeJobs.Num() - 1;
+            JobIndex >= 0;
+            --JobIndex)
         {
-            bSceneIsReferenced |= Job.IsValid()
+            const TSharedPtr<FUERayTracingAudioBakeJob>& Job =
+                ActiveBakeJobs[JobIndex];
+            if (Job.IsValid()
                 && (Job->SimulationInput.Scene == Scene
-                    || Job->DirectSimulationInput.Scene == Scene);
+                    || Job->DirectSimulationInput.Scene == Scene))
+            {
+                Job->Cancel();
+                ActiveBakeJobs.RemoveAtSwap(
+                    JobIndex,
+                    1,
+                    EAllowShrinking::No);
+            }
         }
-
-        if (!bSceneIsReferenced)
-        {
-            StateIt.RemoveCurrent();
-        }
+        StateIt.RemoveCurrent();
     }
 }
 
@@ -1227,6 +1419,8 @@ void FUERayTracingAudioManager::PollCompletedDirectQueries()
 
         bool bSucceeded = false;
         TArray<bool> HitResults;
+        const bool bUsedHardwareRayTracing =
+            State.DirectQuery->WasHardwareRayTracingUsed();
         if (!State.DirectQuery->ConsumeResult(bSucceeded, HitResults))
         {
             continue;
@@ -1236,6 +1430,9 @@ void FUERayTracingAudioManager::PollCompletedDirectQueries()
         UUERayTracingAudioSourceComponent* Source = Pair.Key.Get();
         if (bSucceeded && IsValid(Source) && Source->bEnableDirectSound)
         {
+            State.PendingDirectQuery.BaseResult.
+                bUsedHardwareRayTracing =
+                    bUsedHardwareRayTracing;
             State.LatestResult.DirectResult = StabilizeDirectResult(
                 Simulator.FinalizeDirectSound(
                     State.PendingDirectInput,
@@ -1264,6 +1461,8 @@ void FUERayTracingAudioManager::PollCompletedIndirectQueries()
 
         bool bSucceeded = false;
         FUERayTracingAudioEnergyFieldTraceResult TraceResult;
+        const bool bUsedHardwareRayTracing =
+            State.IndirectQuery->WasHardwareRayTracingUsed();
         if (!State.IndirectQuery->ConsumeResult(bSucceeded, TraceResult))
         {
             continue;
@@ -1276,6 +1475,9 @@ void FUERayTracingAudioManager::PollCompletedIndirectQueries()
             State.LatestResult.IndirectResult = Simulator.FinalizeIndirectSound(
                 State.PendingIndirectInput,
                 MoveTemp(TraceResult));
+            State.LatestResult.IndirectResult.
+                bUsedHardwareRayTracing =
+                    bUsedHardwareRayTracing;
             State.LatestResult.bHasIndirectResult = true;
             State.LatestResult.IndirectGeneration = ++NextSimulationGeneration;
             State.LatestResult.Generation = State.LatestResult.IndirectGeneration;

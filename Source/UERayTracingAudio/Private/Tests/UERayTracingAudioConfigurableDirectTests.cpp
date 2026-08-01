@@ -18,6 +18,9 @@
 #include "Settings/UERayTracingAudioProjectSettings.h"
 #include "UObject/UObjectGlobals.h"
 #include "Validation/UERayTracingAudioDirectSweep.h"
+#if WITH_UERAYTRACINGAUDIO_VALIDATION
+#include "Validation/UERayTracingAudioRuntimeValidation.h"
+#endif
 
 #if __has_include("Audio/UERayTracingAudioAudioDiagnosticsInternal.h")
 #include "Audio/UERayTracingAudioAudioDiagnosticsInternal.h"
@@ -48,6 +51,8 @@ namespace
             FUERayTracingAudioDirectSimulationResult Result;
             Result.bHasListener = true;
             Result.bRayTracingAvailable =
+                Index != CpuFallbackIndex;
+            Result.bUsedHardwareRayTracing =
                 Index != CpuFallbackIndex;
             Result.DistanceCm = DistancesCm[Index];
             Result.DirectVisibility = Visibilities[Index];
@@ -930,6 +935,57 @@ bool FUERayTracingAudioWorldScopedListenerTest::RunTest(const FString&)
         TestTrue(
             TEXT("removing Listener A does not affect World B"),
             Manager.GetCurrentListener(WorldB) == ListenerB);
+
+        Manager.AddSource(SourceA);
+        Manager.AddListener(ListenerA);
+        Manager.RequestSourceSimulation(SourceA, true, true);
+        Manager.RemoveListener(ListenerA);
+        FUERayTracingAudioSourceSimulationResult RemovedListenerResult;
+        TestTrue(
+            TEXT("Listener removal publishes a replacement simulation snapshot"),
+            Manager.GetLatestSourceSimulation(
+                SourceA,
+                RemovedListenerResult));
+        TestTrue(
+            TEXT("Listener removal publishes an explicit no-listener Direct result"),
+            RemovedListenerResult.bHasDirectResult
+                && !RemovedListenerResult.DirectResult.bHasListener);
+        TestTrue(
+            TEXT("No-listener Direct falls back to unity rather than stale attenuation"),
+            FMath::IsNearlyEqual(
+                RemovedListenerResult.DirectResult.OverallGain,
+                1.0f));
+        TestTrue(
+            TEXT("Listener removal publishes zero realtime Wet"),
+            RemovedListenerResult.bHasIndirectResult
+                && !RemovedListenerResult.IndirectResult.bHasListener
+                && !RemovedListenerResult.IndirectResult.bHasValidPaths
+                && FMath::IsNearlyZero(
+                    RemovedListenerResult.IndirectResult.IndirectGain));
+
+        AActor* WeakListenerActor = WorldA->SpawnActor<AActor>();
+        AActor* WeakSourceActor = WorldA->SpawnActor<AActor>();
+        UUERayTracingAudioListenerComponent* WeakListener =
+            NewObject<UUERayTracingAudioListenerComponent>(
+                WeakListenerActor);
+        UUERayTracingAudioSourceComponent* WeakSource =
+            NewObject<UUERayTracingAudioSourceComponent>(WeakSourceActor);
+        Manager.AddSource(WeakSource);
+        Manager.AddListener(WeakListener);
+        WeakListenerActor->Destroy();
+        Manager.RequestSourceSimulation(WeakSource, true, true);
+        FUERayTracingAudioSourceSimulationResult InvalidWeakListenerResult;
+        TestTrue(
+            TEXT("An invalid weak Listener publishes a replacement snapshot"),
+            Manager.GetLatestSourceSimulation(
+                WeakSource,
+                InvalidWeakListenerResult));
+        TestTrue(
+            TEXT("An invalid weak Listener cannot leave stale Direct or Wet"),
+            InvalidWeakListenerResult.bHasDirectResult
+                && !InvalidWeakListenerResult.DirectResult.bHasListener
+                && InvalidWeakListenerResult.bHasIndirectResult
+                && !InvalidWeakListenerResult.IndirectResult.bHasListener);
     }
 
     if (WorldA)
@@ -942,6 +998,107 @@ bool FUERayTracingAudioWorldScopedListenerTest::RunTest(const FString&)
     }
     return true;
 }
+
+#if WITH_UERAYTRACINGAUDIO_VALIDATION
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioRuntimeValidationWorldLifecycleTest,
+    "UERayTracingAudio.Validation.WorldLifecycleOwnership",
+    EAutomationTestFlags::EditorContext
+        | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioRuntimeValidationWorldLifecycleTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    UWorld* WorldA = UWorld::CreateWorld(
+        EWorldType::Game,
+        false,
+        TEXT("UERayTracingAudioValidationLifecycleA"));
+    UWorld* WorldB = UWorld::CreateWorld(
+        EWorldType::Game,
+        false,
+        TEXT("UERayTracingAudioValidationLifecycleB"));
+    UWorld* WorldC = UWorld::CreateWorld(
+        EWorldType::Game,
+        false,
+        TEXT("UERayTracingAudioValidationLifecycleC"));
+    TestNotNull(TEXT("Lifecycle World A exists"), WorldA);
+    TestNotNull(TEXT("Lifecycle World B exists"), WorldB);
+    TestNotNull(TEXT("Lifecycle World C exists"), WorldC);
+    if (!WorldA || !WorldB || !WorldC)
+    {
+        if (WorldA)
+        {
+            WorldA->DestroyWorld(false);
+        }
+        if (WorldB)
+        {
+            WorldB->DestroyWorld(false);
+        }
+        if (WorldC)
+        {
+            WorldC->DestroyWorld(false);
+        }
+        return false;
+    }
+
+    FUERayTracingAudioRuntimeValidation RuntimeValidation;
+    RuntimeValidation.InitializedWorlds.Add(WorldA);
+    RuntimeValidation.InitializedWorlds.Add(WorldB);
+    FUERayTracingAudioRuntimeValidation::FScenarioState& StateA =
+        RuntimeValidation.Scenarios.AddDefaulted_GetRef();
+    StateA.World = WorldA;
+    StateA.bValidationOwner =
+        RuntimeValidation.ClaimValidationOwnership();
+    const bool bFirstScenarioOwnedValidation =
+        StateA.bValidationOwner;
+    FUERayTracingAudioRuntimeValidation::FScenarioState& StateB =
+        RuntimeValidation.Scenarios.AddDefaulted_GetRef();
+    StateB.World = WorldB;
+    StateB.bValidationOwner =
+        RuntimeValidation.ClaimValidationOwnership();
+    TestTrue(
+        TEXT("The first scenario owns validation"),
+        bFirstScenarioOwnedValidation);
+    TestFalse(TEXT("A concurrent scenario is not promoted"), StateB.bValidationOwner);
+
+    RuntimeValidation.HandleWorldBeginTearDown(WorldB);
+    TestTrue(
+        TEXT("Tearing down a non-owner preserves ownership"),
+        RuntimeValidation.bValidationOwnerAssigned);
+    TestEqual(
+        TEXT("The non-owner scenario is removed"),
+        RuntimeValidation.Scenarios.Num(),
+        1);
+    TestFalse(
+        TEXT("The non-owner world may initialize again"),
+        RuntimeValidation.InitializedWorlds.Contains(WorldB));
+
+    RuntimeValidation.HandleWorldBeginTearDown(WorldA);
+    TestFalse(
+        TEXT("Owner teardown releases validation ownership"),
+        RuntimeValidation.bValidationOwnerAssigned);
+    TestTrue(
+        TEXT("Owner teardown removes its scenario"),
+        RuntimeValidation.Scenarios.IsEmpty());
+
+    RuntimeValidation.InitializedWorlds.Add(WorldC);
+    FUERayTracingAudioRuntimeValidation::FScenarioState& StateC =
+        RuntimeValidation.Scenarios.AddDefaulted_GetRef();
+    StateC.World = WorldC;
+    StateC.bValidationOwner =
+        RuntimeValidation.ClaimValidationOwnership();
+    TestTrue(
+        TEXT("A later scenario can claim released ownership"),
+        StateC.bValidationOwner);
+    RuntimeValidation.HandleWorldBeginTearDown(WorldC);
+
+    WorldA->DestroyWorld(false);
+    WorldB->DestroyWorld(false);
+    WorldC->DestroyWorld(false);
+    return true;
+}
+#endif
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUERayTracingAudioWorldScopedGeometryTest,

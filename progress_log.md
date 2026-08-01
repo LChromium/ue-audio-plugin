@@ -154,3 +154,23 @@
 - Exact launcher exited `0`: non-fallback Direct/Indirect markers each `1`; strict sweep passed at `200.000 cm`, visibility `0.000038-0.996866`, gain `0.174779-0.498316`, step `0.00005484`, dropout `0`, restored/hardware `1/1`; three data sources had continuous `24/24` Wet and hard realtime was `1600/0/0`.
 - Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785493624391644500.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785493804953148700.log`; responding Editor PID `10276` remains open.
 - Still open: user-performed Human Pass, moving-player/moving-occlusion and audible distance/air/click-pop checks, true multi-PIE hardware isolation, OpenSpace/NearWall/Enclosed R3, the enumerated Task 1-4 minors, and Task 7 duplicate tagged-Source ambiguity.
+
+## 2026-07-31 - Final Whole-Branch Fix Wave
+
+- Closed the final review's one P1 and twelve P2 findings: synchronized/cancellable RHI query lifetime, Direct distance and actual-hardware semantics, Listener-loss invalidation, finite Wet state, bounded snapshot/convolver reclamation, artifact contract, side-effect-free Bake admission, sequential PIE ownership, deterministic fixture normalization, and strict launcher evidence.
+- RED/GREEN caught two integration defects beyond focused tests: full Automation exposed retired-slot accounting in snapshot reclamation, and the first artifact flow exposed a partial marker-read race plus a Full/Dry correlation failure. Bounded current-entry reclaim, complete-line readiness, and fixture-only Wet send `0.8` fixed them without relaxing thresholds.
+- Final static gates passed: audit `39 functions / 40 bodies / 1775 lines / 0 forbidden`; Python `70/70`; `git diff --check` exit `0`.
+- Final Development build passed. Focused Automation passed ConfigurableDirect `15/15`, Audio `40/40`, Editor `9/9`; full plugin Automation passed `62/62`.
+- Final Shipping build passed `34/34`; macro `WITH_UERAYTRACINGAUDIO_VALIDATION=0`, strict validation strings absent, plugin receipt present, and seven normal Direct/Indirect/RHI/Simulator/SDK objects non-empty.
+- Exact artifact launcher passed: hardware/automatic/distinct/imported/directional/common-scale `1/1/1/4/1/1`; Wet ratio `0.567596`, Full ratio `0.549702`, Direct/Wet difference `1.615526`.
+- Exact default launcher passed: paths `171/171`, Direct `215` generations with no dropout and restored/hardware `1/1`, all data sources passed, hard realtime `1581/0/0`. Game `UERayTracingAudioValidation-Game-1785502210674966300.log`; Editor `UERayTracingAudioValidation-Editor-1785502391254800900.log`.
+- Editor PID `13228` was responding for the 2026-07-31 run and is superseded by the final self-review run below. Oversized-callback P3, prior Task 1-4 minors, Human/R3 listening, and true multi-PIE hardware isolation remain open; duplicate tagged-Source ambiguity is closed by exact-one normalization.
+
+## 2026-08-01 - Final Self-Review Addendum
+
+- Found a remaining false-ready case: the retained tagged Geometry actor could own two acoustic Geometry components, so runtime exported overlapping surfaces while readiness inspected only the first component.
+- RED failed exactly at expected count `1`, actual `2`. Added deterministic safe-component retention, transactional duplicate-instance destruction, rejection of multiple non-removable native components, and final exact-one validation.
+- Prescribed Development build passed; realtime audit `39/40/1775` with zero violations; Python `70/70`; Automation passed ConfigurableDirect `15/15`, Audio `40/40`, Editor `9/9`, and full plugin `62/62`.
+- Fresh artifact flow passed hardware/automatic/distinct/imported/directional/common-scale `1/1/1/4/1/1`, with Wet/reference `0.567596`, Full/reference `0.549702`, and Direct/Wet difference `1.615526`.
+- Fresh default launcher passed paths `171/171`, Direct `199` generations with zero dropout and restored/hardware `1/1`, all three data sources, and hard realtime `1596/0/0`. Game `UERayTracingAudioValidation-Game-1785594301982190200.log`; Editor `UERayTracingAudioValidation-Editor-1785594482652644800.log`.
+- Final Editor PID `36896` is responding and left open. Human A/B, click/pop/audible-quality judgment, moving-player/occlusion listening, true multi-PIE hardware isolation, OpenSpace/NearWall/Enclosed R3, oversized-callback P3, and prior minors remain open.

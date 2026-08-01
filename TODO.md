@@ -237,3 +237,25 @@ v1 必须同时满足：
 - [ ] A user must enter PIE, wait for the hardware/data-source gates, press F8, then use F3/F6 and record target-device Human Pass/Fail for restart, click/pop, silence, timing, recovery, moving-player/moving-occlusion, and audible distance/air behavior. Automated evidence is not Human Pass.
 - [ ] Run and record true multi-PIE hardware isolation and the OpenSpace/NearWall/Enclosed R3 listening matrix; neither is complete.
 - [ ] Deferred technical ledger: Task 1 effective-crossover startup logging assumes 48 kHz; Task 2 lacks focused ignored-listener-removal identity, scene-address-stability, and pending-request World-cleanup regressions; Task 3 needs invalid/out-of-order crossover, non-finite band-gain, and finite-input-overflow hardening; Task 4 needs transitive callback-safety/logging audit coverage, remaining Editor mode/bake/artifact/validation assignments routed through public Source setters, and saturating Direct diagnostic counters; Task 7 duplicate tagged Source roles are resolved by first iteration rather than explicit ambiguity rejection.
+
+## Task 8 Final Fix Wave: whole-branch findings (2026-07-31)
+
+- [x] Removed the asynchronous RHI `TSharedPtr` publication race; broke Query/readback cycles; added explicit cancellation, bounded render-thread retirement, and orphan-release coverage.
+- [x] Enforced Direct `MaxDistanceCm`, fresh no-listener Direct/Wet publication, actual RHI-use provenance, and World-query cancellation on Listener loss/removal.
+- [x] Sanitized non-finite input before stateful Wet DSP; reclaimed removed/reset snapshots safely; suppressed stale convolver output across mailbox-full SourceId reuse.
+- [x] Removed Bake admission's `AudioComponent.Sound` side effect and released validation ownership correctly across sequential PIE.
+- [x] Enforced one normalized Editor fixture actor per role and exactly one acoustic Geometry component per Geometry actor; duplicate tagged-Source ambiguity and overlapping-geometry false readiness are closed.
+- [x] Aligned the artifact producer/parser contract, waited for complete marker writes, and required unique strict terminals plus actual Direct/Indirect hardware markers.
+- [x] Final gates passed: audit `39/40/1775`, Python `70/70`, Development build, focused `15/15 + 40/40 + 9/9`, full Automation `62/62`, diff check, and Shipping `34/34` with validation exclusion.
+- [x] Exact artifact flow passed with `hardware/auto_checks/distinct/imported/directional_wet/common_scale = 1/1/1/4/1/1`; exact default launcher passed with Direct/Indirect hardware, Direct `215` generations, all three data sources, and hard realtime `1581/0/0`.
+- [x] The 2026-07-31 Editor PID `13228` was responding for that run and is superseded by the final self-review run below.
+- [ ] Retain the oversized-callback bridge-capacity P3, prior Task 1-4 minors, target-device Human Pass/click-pop/audible-quality checks, true multi-PIE hardware isolation, and OpenSpace/NearWall/Enclosed R3.
+
+## Final self-review addendum (2026-08-01)
+
+- [x] RED reproduced two acoustic Geometry components on the retained Floor actor: readiness still succeeded and the final component assertion reported expected `1`, actual `2`.
+- [x] Deterministically retain one safe Geometry component, transactionally destroy duplicate instance components, reject multiple non-removable native components, and validate the final exact-one count.
+- [x] Prescribed Development build passed; audit `39/40/1775`, Python `70/70`, focused Automation `15/15 + 40/40 + 9/9`, and full plugin Automation `62/62` all passed.
+- [x] Fresh artifact flow passed `1/1/1/4/1/1`; fresh default launcher passed paths `171/171`, Direct `199` generations with no dropout, all three data sources, and hard realtime `1596/0/0`.
+- [x] Final Editor PID `36896` is responding; Editor log `UERayTracingAudioValidation-Editor-1785594482652644800.log` and Game log `UERayTracingAudioValidation-Game-1785594301982190200.log` contain zero Fatal/Unhandled/Assertion markers.
+- [ ] Human A/B, click/pop/audible-quality judgment, moving-player/occlusion listening, true multi-PIE hardware isolation, and OpenSpace/NearWall/Enclosed R3 remain open.

@@ -23,6 +23,7 @@ namespace
     const FVector ListenerOffset(-100.0, 0.0, 120.0);
     const FVector ClearSourceOffset(-100.0, 200.0, 120.0);
     const FVector OccludedSourceOffset(100.0, 0.0, 120.0);
+    constexpr float ValidationWetMix = 0.8f;
 
     struct FGeometryDefinition
     {
@@ -50,6 +51,24 @@ namespace
     const FGeometryDefinition NearWallGeometryDefinitions[] =
     {
         { TEXT("VRTA A-B Near Wall"), TEXT("VRTA_AB_NearWall"), FVector(0.0, 250.0, 200.0), FVector(6.0, 0.2, 4.0), FVector(0.12, 0.18, 0.28), 0.30f }
+    };
+
+    const FName KnownValidationRoles[] =
+    {
+        FName(TEXT("VRTA_AB_Floor")),
+        FName(TEXT("VRTA_AB_Ceiling")),
+        FName(TEXT("VRTA_AB_BackWall")),
+        FName(TEXT("VRTA_AB_FrontWall")),
+        FName(TEXT("VRTA_AB_LeftWall")),
+        FName(TEXT("VRTA_AB_RightWall")),
+        FName(TEXT("VRTA_AB_OcclusionWall")),
+        FName(TEXT("VRTA_AB_NearWall")),
+        FName(TEXT("VRTA_AB_Source")),
+        FName(TEXT("VRTA_AB_Listener")),
+        FName(TEXT("VRTA_AB_RoomLight")),
+        FName(TEXT("VRTA_AB_SourceLight")),
+        FName(TEXT("VRTA_AB_ListenerLight")),
+        FName(TEXT("VRTA_AB_Camera"))
     };
 
     TArrayView<const FGeometryDefinition> GetGeometryDefinitions(
@@ -135,14 +154,130 @@ namespace
 
     AActor* FindTaggedActor(UWorld& World, const FName Role)
     {
+        AActor* Match = nullptr;
         for (TActorIterator<AActor> ActorIt(&World); ActorIt; ++ActorIt)
         {
             if (ActorIt->ActorHasTag(ValidationSceneTag) && ActorIt->ActorHasTag(Role))
             {
-                return *ActorIt;
+                if (Match)
+                {
+                    return nullptr;
+                }
+                Match = *ActorIt;
             }
         }
-        return nullptr;
+        return Match;
+    }
+
+    void NormalizeKnownRoleTags(
+        UWorld& World,
+        const EUERayTracingAudioEditorValidationSceneMode Mode,
+        bool& bOutMutated)
+    {
+        for (TActorIterator<AActor> ActorIt(&World); ActorIt; ++ActorIt)
+        {
+            AActor* Actor = *ActorIt;
+            if (!Actor->ActorHasTag(ValidationSceneTag))
+            {
+                continue;
+            }
+            TArray<FName> ActorRoles;
+            for (const FName Role : KnownValidationRoles)
+            {
+                if (Actor->ActorHasTag(Role))
+                {
+                    ActorRoles.Add(Role);
+                }
+            }
+            if (ActorRoles.Num() <= 1)
+            {
+                continue;
+            }
+
+            FName PreferredRole = ActorRoles[0];
+            const FName SourceRole(TEXT("VRTA_AB_Source"));
+            const FName ListenerRole(TEXT("VRTA_AB_Listener"));
+            if (Actor->ActorHasTag(SourceRole)
+                && Actor->FindComponentByClass<
+                    UUERayTracingAudioSourceComponent>())
+            {
+                PreferredRole = SourceRole;
+            }
+            else if (Actor->ActorHasTag(ListenerRole)
+                && Actor->FindComponentByClass<
+                    UUERayTracingAudioListenerComponent>())
+            {
+                PreferredRole = ListenerRole;
+            }
+
+            if (Mode
+                == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+            {
+                Actor->Modify();
+            }
+            for (const FName Role : ActorRoles)
+            {
+                if (Role != PreferredRole)
+                {
+                    Actor->Tags.Remove(Role);
+                }
+            }
+            bOutMutated = true;
+        }
+    }
+
+    template <typename TActor>
+    TActor* NormalizeTaggedActorForRole(
+        UWorld& World,
+        const FName Role,
+        const EUERayTracingAudioEditorValidationSceneMode Mode,
+        bool& bOutMutated)
+    {
+        TActor* Keep = nullptr;
+        FString KeepPath;
+        TArray<TWeakObjectPtr<AActor>> Matches;
+        for (TActorIterator<AActor> ActorIt(&World); ActorIt; ++ActorIt)
+        {
+            AActor* Actor = *ActorIt;
+            if (!Actor->ActorHasTag(ValidationSceneTag)
+                || !Actor->ActorHasTag(Role))
+            {
+                continue;
+            }
+            Matches.Add(Actor);
+            if (TActor* TypedActor = Cast<TActor>(Actor))
+            {
+                const FString ActorPath = TypedActor->GetPathName();
+                if (!Keep || ActorPath < KeepPath)
+                {
+                    Keep = TypedActor;
+                    KeepPath = ActorPath;
+                }
+            }
+        }
+
+        for (const TWeakObjectPtr<AActor>& Match : Matches)
+        {
+            AActor* Actor = Match.Get();
+            if (!IsValid(Actor) || Actor == Keep)
+            {
+                continue;
+            }
+            if (Mode
+                == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+            {
+                Actor->Modify();
+            }
+            if (World.DestroyActor(
+                    Actor,
+                    false,
+                    Mode
+                        == EUERayTracingAudioEditorValidationSceneMode::Persistent))
+            {
+                bOutMutated = true;
+            }
+        }
+        return Keep;
     }
 
     bool RemoveStaleTaggedGeometry(
@@ -155,8 +290,19 @@ namespace
         for (TActorIterator<AActor> ActorIt(&World); ActorIt; ++ActorIt)
         {
             AActor* Actor = *ActorIt;
-            if (!Actor->ActorHasTag(ValidationSceneTag)
-                || !Actor->FindComponentByClass<
+            if (!Actor->ActorHasTag(ValidationSceneTag))
+            {
+                continue;
+            }
+
+            const bool bHasKnownGeometryRole = Algo::AnyOf(
+                MakeArrayView(KnownValidationRoles, 8),
+                [Actor](const FName Role)
+                {
+                    return Actor->ActorHasTag(Role);
+                });
+            if (!bHasKnownGeometryRole
+                && !Actor->FindComponentByClass<
                     UUERayTracingAudioGeometryComponent>())
             {
                 continue;
@@ -211,13 +357,49 @@ namespace
         const TCHAR* Label,
         const TCHAR* Role,
         const FTransform& Transform,
+        const EComponentMobility::Type Mobility,
         const EUERayTracingAudioEditorValidationSceneMode Mode,
-        bool& bOutCreated)
+        bool& bOutCreated,
+        bool& bOutMutated)
     {
         const FName RoleName(Role);
-        if (AActor* Existing = FindTaggedActor(World, RoleName))
+        if (AStaticMeshActor* Existing =
+            NormalizeTaggedActorForRole<AStaticMeshActor>(
+                World,
+                RoleName,
+                Mode,
+                bOutMutated))
         {
-            return Cast<AStaticMeshActor>(Existing);
+            UStaticMeshComponent* MeshComponent =
+                Existing->GetStaticMeshComponent();
+            if (!MeshComponent)
+            {
+                return nullptr;
+            }
+            const bool bChanged =
+                !Existing->GetActorTransform().Equals(Transform)
+                || Existing->GetActorLabel() != Label
+                || MeshComponent->GetStaticMesh() != &Mesh
+                || MeshComponent->GetMobility() != Mobility
+                || MeshComponent->GetCollisionEnabled()
+                    != ECollisionEnabled::QueryAndPhysics
+                || !MeshComponent->IsVisible();
+            if (bChanged
+                && Mode
+                    == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+            {
+                Existing->Modify();
+                MeshComponent->Modify();
+            }
+            TagActor(*Existing, RoleName, Label);
+            Existing->SetActorTransform(Transform);
+            MeshComponent->SetStaticMesh(&Mesh);
+            MeshComponent->SetMobility(Mobility);
+            MeshComponent->SetCollisionEnabled(
+                ECollisionEnabled::QueryAndPhysics);
+            MeshComponent->SetVisibility(true, true);
+            bOutMutated |= bChanged;
+            return Existing;
         }
 
         FActorSpawnParameters SpawnParameters;
@@ -235,10 +417,11 @@ namespace
         TagActor(*Actor, RoleName, Label);
         UStaticMeshComponent* MeshComponent = Actor->GetStaticMeshComponent();
         MeshComponent->SetStaticMesh(&Mesh);
-        MeshComponent->SetMobility(EComponentMobility::Static);
+        MeshComponent->SetMobility(Mobility);
         MeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
         MeshComponent->SetVisibility(true, true);
         bOutCreated = true;
+        bOutMutated = true;
         return Actor;
     }
 
@@ -248,9 +431,95 @@ namespace
         const EUERayTracingAudioEditorValidationSceneMode Mode,
         bool& bOutMutated)
     {
-        if (UUERayTracingAudioGeometryComponent* Existing =
-            Actor.FindComponentByClass<UUERayTracingAudioGeometryComponent>())
+        TInlineComponentArray<UUERayTracingAudioGeometryComponent*>
+            GeometryComponents(&Actor);
+        UUERayTracingAudioGeometryComponent* Existing = nullptr;
+        FString ExistingPath;
+        const FName CanonicalComponentName(
+            TEXT("ValidationAcousticGeometry"));
+        for (UUERayTracingAudioGeometryComponent* Candidate
+            : GeometryComponents)
         {
+            if (!IsValid(Candidate))
+            {
+                continue;
+            }
+
+            const FString CandidatePath = Candidate->GetPathName();
+            const bool bCandidateIsNative =
+                Candidate->CreationMethod
+                != EComponentCreationMethod::Instance;
+            const bool bExistingIsNative = Existing
+                && Existing->CreationMethod
+                    != EComponentCreationMethod::Instance;
+            const bool bCandidateIsCanonical =
+                Candidate->GetFName() == CanonicalComponentName;
+            const bool bExistingIsCanonical = Existing
+                && Existing->GetFName() == CanonicalComponentName;
+            if (!Existing
+                || (bCandidateIsNative && !bExistingIsNative)
+                || (bCandidateIsNative == bExistingIsNative
+                    && bCandidateIsCanonical
+                    && !bExistingIsCanonical)
+                || (bCandidateIsNative == bExistingIsNative
+                    && bCandidateIsCanonical == bExistingIsCanonical
+                    && CandidatePath < ExistingPath))
+            {
+                Existing = Candidate;
+                ExistingPath = CandidatePath;
+            }
+        }
+
+        if (Existing)
+        {
+            for (UUERayTracingAudioGeometryComponent* Candidate
+                : GeometryComponents)
+            {
+                if (!IsValid(Candidate) || Candidate == Existing)
+                {
+                    continue;
+                }
+                if (Candidate->CreationMethod
+                    != EComponentCreationMethod::Instance)
+                {
+                    return nullptr;
+                }
+                if (Mode
+                    == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+                {
+                    Actor.Modify();
+                    Candidate->Modify();
+                }
+                Candidate->DestroyComponent();
+                bOutMutated = true;
+            }
+
+            const bool bChanged =
+                !Existing->bExportToAcousticScene
+                || !Existing->bAffectsDirectSound
+                || Existing->ExportMode
+                    != EUERayTracingAudioGeometryExportMode::BoundingBox
+                || !Existing->Absorption.Equals(
+                    Definition.Absorption,
+                    UE_KINDA_SMALL_NUMBER)
+                || !Existing->Transmission.IsNearlyZero()
+                || !FMath::IsNearlyEqual(
+                    Existing->Scattering,
+                    Definition.Scattering);
+            if (bChanged
+                && Mode
+                    == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+            {
+                Existing->Modify();
+            }
+            Existing->bExportToAcousticScene = true;
+            Existing->bAffectsDirectSound = true;
+            Existing->ExportMode =
+                EUERayTracingAudioGeometryExportMode::BoundingBox;
+            Existing->Absorption = Definition.Absorption;
+            Existing->Transmission = FVector::ZeroVector;
+            Existing->Scattering = Definition.Scattering;
+            bOutMutated |= bChanged;
             return Existing;
         }
 
@@ -285,9 +554,27 @@ namespace
         bool& bOutCreated,
         bool& bOutMutated)
     {
-        if (APointLight* Existing = Cast<APointLight>(FindTaggedActor(World, FName(Role))))
+        if (APointLight* Existing =
+            NormalizeTaggedActorForRole<APointLight>(
+                World,
+                FName(Role),
+                Mode,
+                bOutMutated))
         {
-            if (Mode
+            const bool bChanged =
+                !Existing->GetActorLocation().Equals(Location)
+                || Existing->GetActorLabel() != Label
+                || !Existing->PointLightComponent
+                || !FMath::IsNearlyEqual(
+                    Existing->PointLightComponent->Intensity,
+                    Intensity)
+                || !FMath::IsNearlyEqual(
+                    Existing->PointLightComponent->AttenuationRadius,
+                    Radius)
+                || Existing->PointLightComponent->GetLightColor()
+                    != Color
+                || !Existing->PointLightComponent->CastShadows;
+            if (bChanged && Mode
                 == EUERayTracingAudioEditorValidationSceneMode::Persistent)
             {
                 Existing->Modify();
@@ -296,6 +583,7 @@ namespace
                     Existing->PointLightComponent->Modify();
                 }
             }
+            TagActor(*Existing, FName(Role), Label);
             Existing->SetActorLocation(Location);
             if (Existing->PointLightComponent)
             {
@@ -304,7 +592,7 @@ namespace
                 Existing->PointLightComponent->SetLightColor(Color);
                 Existing->PointLightComponent->SetCastShadows(true);
             }
-            bOutMutated = true;
+            bOutMutated |= bChanged;
             return;
         }
 
@@ -346,21 +634,11 @@ FUERayTracingAudioEditorValidationScene::FindTaggedSource(UWorld* World)
     }
 
     const FName SourceRole(TEXT("VRTA_AB_Source"));
-    for (TActorIterator<AActor> ActorIt(World); ActorIt; ++ActorIt)
-    {
-        if (!ActorIt->ActorHasTag(ValidationSceneTag)
-            || !ActorIt->ActorHasTag(SourceRole))
-        {
-            continue;
-        }
-        if (UUERayTracingAudioSourceComponent* Source =
-            ActorIt->FindComponentByClass<
-                UUERayTracingAudioSourceComponent>())
-        {
-            return Source;
-        }
-    }
-    return nullptr;
+    AActor* SourceActor = FindTaggedActor(*World, SourceRole);
+    return IsValid(SourceActor)
+        ? SourceActor->FindComponentByClass<
+            UUERayTracingAudioSourceComponent>()
+        : nullptr;
 }
 
 FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidationScene::EnsureScene(
@@ -400,6 +678,7 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
 
     const TArrayView<const FGeometryDefinition> GeometryDefinitions = GetGeometryDefinitions(ReflectionEnvironment);
     bool bMutatedActors = false;
+    NormalizeKnownRoleTags(World, Mode, bMutatedActors);
     if (!RemoveStaleTaggedGeometry(
             World,
             GeometryDefinitions,
@@ -420,8 +699,10 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
             Definition.Label,
             Definition.Role,
             FTransform(FRotator::ZeroRotator, ValidationOrigin + Definition.Offset, Definition.Scale),
+            EComponentMobility::Static,
             Mode,
-            Result.bCreatedActors);
+            Result.bCreatedActors,
+            bMutatedActors);
         if (!GeometryActor
             || !EnsureGeometryComponent(
                 *GeometryActor,
@@ -436,19 +717,6 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         ++Result.GeometryCount;
     }
 
-    AStaticMeshActor* SourceActor = EnsureStaticMeshActor(
-        World,
-        *SphereMesh,
-        TEXT("VRTA A-B Primary Source (Orange)"),
-        TEXT("VRTA_AB_Source"),
-        FTransform(FRotator::ZeroRotator, ValidationOrigin + ClearSourceOffset, FVector(0.38)),
-        Mode,
-        Result.bCreatedActors);
-    if (!SourceActor)
-    {
-        Result.Message = TEXT("Could not create the Editor A/B source actor.");
-        return Result;
-    }
     // DistanceCmOverride only applies to the Clear preset: it slides the source further
     // along the existing listener-to-source line of sight so the R2 distance-scan and
     // air-absorption validation can compare several distances without disturbing the
@@ -467,23 +735,24 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
     const FString DesiredSourceLabel = FString::Printf(
         TEXT("VRTA A-B Primary Source (Orange) - %s"),
         GetDirectPresetName(DirectPreset));
-    const bool bSourceActorChanged =
-        !SourceActor->GetActorLocation().Equals(
+    AStaticMeshActor* SourceActor = EnsureStaticMeshActor(
+        World,
+        *SphereMesh,
+        *DesiredSourceLabel,
+        TEXT("VRTA_AB_Source"),
+        FTransform(
+            FRotator::ZeroRotator,
             DesiredSourceLocation,
-            UE_KINDA_SMALL_NUMBER)
-        || SourceActor->GetActorLabel() != DesiredSourceLabel
-        || SourceActor->GetStaticMeshComponent()->GetMobility()
-            != EComponentMobility::Movable;
-    if (bSourceActorChanged
-        && Mode == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+            FVector(0.38)),
+        EComponentMobility::Movable,
+        Mode,
+        Result.bCreatedActors,
+        bMutatedActors);
+    if (!SourceActor)
     {
-        SourceActor->Modify();
-        SourceActor->GetStaticMeshComponent()->Modify();
+        Result.Message = TEXT("Could not create the Editor A/B source actor.");
+        return Result;
     }
-    SourceActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
-    SourceActor->SetActorLocation(DesiredSourceLocation);
-    SourceActor->SetActorLabel(DesiredSourceLabel);
-    bMutatedActors |= bSourceActorChanged;
     UUERayTracingAudioSourceComponent* Source =
         SourceActor->FindComponentByClass<UUERayTracingAudioSourceComponent>();
     if (!Source)
@@ -520,7 +789,9 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
             != EUERayTracingAudioIndirectMode::HybridReverb
         || Source->IndirectDataSource
             != EUERayTracingAudioIndirectDataSource::Realtime
-        || !FMath::IsNearlyEqual(Source->IndirectMix, 1.0f);
+        || !FMath::IsNearlyEqual(
+            Source->IndirectMix,
+            ValidationWetMix);
     if (bSourceSettingsChanged
         && Mode == EUERayTracingAudioEditorValidationSceneMode::Persistent)
     {
@@ -538,13 +809,16 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
     Source->IndirectMode = EUERayTracingAudioIndirectMode::HybridReverb;
     Source->SetIndirectDataSource(
         EUERayTracingAudioIndirectDataSource::Realtime);
-    // This scene is an explicit listening fixture, so reflections and the
-    // late-reverb tail should be readily audible without hiding the direct cue.
-    Source->IndirectMix = 1.0f;
+    // This tagged listening fixture keeps reflections readily audible while
+    // retaining a recognizable dry cue in the Full artifact. This does not
+    // change the product default or ordinary Source components.
+    Source->IndirectMix = ValidationWetMix;
     bMutatedActors |= bSourceSettingsChanged;
-    if (!SourceActor->FindComponentByClass<UAudioComponent>())
+    UAudioComponent* ValidationAudio =
+        SourceActor->FindComponentByClass<UAudioComponent>();
+    if (!ValidationAudio)
     {
-        if (!CreateValidationInstanceComponent<UAudioComponent>(
+        ValidationAudio = CreateValidationInstanceComponent<UAudioComponent>(
                 *SourceActor,
                 FName(TEXT("ValidationAudio")),
                 Mode,
@@ -553,12 +827,28 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
                 {
                     Audio.bAutoActivate = false;
                     Audio.bAllowSpatialization = true;
-                }))
+                });
+        if (!ValidationAudio)
         {
             Result.Message =
                 TEXT("Could not create the validation Audio component.");
             return Result;
         }
+    }
+    else
+    {
+        const bool bAudioChanged =
+            ValidationAudio->bAutoActivate
+            || !ValidationAudio->bAllowSpatialization;
+        if (bAudioChanged
+            && Mode
+                == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+        {
+            ValidationAudio->Modify();
+        }
+        ValidationAudio->bAutoActivate = false;
+        ValidationAudio->bAllowSpatialization = true;
+        bMutatedActors |= bAudioChanged;
     }
     Result.Source = Source;
 
@@ -568,30 +858,15 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         TEXT("VRTA A-B Listener (Blue)"),
         TEXT("VRTA_AB_Listener"),
         FTransform(FRotator::ZeroRotator, ValidationOrigin + ListenerOffset, FVector(0.32)),
+        EComponentMobility::Movable,
         Mode,
-        Result.bCreatedActors);
+        Result.bCreatedActors,
+        bMutatedActors);
     if (!ListenerActor)
     {
         Result.Message = TEXT("Could not create the Editor A/B listener actor.");
         return Result;
     }
-    const FVector DesiredListenerLocation =
-        ValidationOrigin + ListenerOffset;
-    const bool bListenerActorChanged =
-        !ListenerActor->GetActorLocation().Equals(
-            DesiredListenerLocation,
-            UE_KINDA_SMALL_NUMBER)
-        || ListenerActor->GetStaticMeshComponent()->GetMobility()
-            != EComponentMobility::Movable;
-    if (bListenerActorChanged
-        && Mode == EUERayTracingAudioEditorValidationSceneMode::Persistent)
-    {
-        ListenerActor->Modify();
-        ListenerActor->GetStaticMeshComponent()->Modify();
-    }
-    ListenerActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
-    ListenerActor->SetActorLocation(DesiredListenerLocation);
-    bMutatedActors |= bListenerActorChanged;
     UUERayTracingAudioListenerComponent* Listener =
         ListenerActor->FindComponentByClass<UUERayTracingAudioListenerComponent>();
     if (!Listener)
@@ -649,21 +924,54 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         Result.bCreatedActors,
         bMutatedActors);
 
-    if (!FindTaggedActor(World, FName(TEXT("VRTA_AB_Camera"))))
+    const FVector CameraLocation =
+        ValidationOrigin + FVector(-480.0, -520.0, 280.0);
+    const FVector CameraTarget =
+        ValidationOrigin + FVector(30.0, 0.0, 150.0);
+    const FTransform CameraTransform(
+        (CameraTarget - CameraLocation).Rotation(),
+        CameraLocation);
+    ACameraActor* Camera =
+        NormalizeTaggedActorForRole<ACameraActor>(
+            World,
+            FName(TEXT("VRTA_AB_Camera")),
+            Mode,
+            bMutatedActors);
+    if (!Camera)
     {
-        const FVector CameraLocation = ValidationOrigin + FVector(-480.0, -520.0, 280.0);
-        const FVector CameraTarget = ValidationOrigin + FVector(30.0, 0.0, 150.0);
         FActorSpawnParameters SpawnParameters;
         SpawnParameters.ObjectFlags = GetObjectFlags(Mode);
         SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-        if (ACameraActor* Camera = World.SpawnActor<ACameraActor>(
+        if (ACameraActor* NewCamera = World.SpawnActor<ACameraActor>(
             ACameraActor::StaticClass(),
-            FTransform((CameraTarget - CameraLocation).Rotation(), CameraLocation),
+            CameraTransform,
             SpawnParameters))
         {
-            TagActor(*Camera, FName(TEXT("VRTA_AB_Camera")), TEXT("VRTA A-B Validation Camera"));
+            TagActor(
+                *NewCamera,
+                FName(TEXT("VRTA_AB_Camera")),
+                TEXT("VRTA A-B Validation Camera"));
             Result.bCreatedActors = true;
         }
+    }
+    else
+    {
+        const bool bCameraChanged =
+            !Camera->GetActorTransform().Equals(CameraTransform)
+            || Camera->GetActorLabel()
+                != TEXT("VRTA A-B Validation Camera");
+        if (bCameraChanged
+            && Mode
+                == EUERayTracingAudioEditorValidationSceneMode::Persistent)
+        {
+            Camera->Modify();
+        }
+        Camera->SetActorTransform(CameraTransform);
+        TagActor(
+            *Camera,
+            FName(TEXT("VRTA_AB_Camera")),
+            TEXT("VRTA A-B Validation Camera"));
+        bMutatedActors |= bCameraChanged;
     }
 
     SceneBounds += SourceActor->GetComponentsBoundingBox(true);
@@ -676,9 +984,88 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
         World.MarkPackageDirty();
     }
 
+    const auto CountActorsForRole = [&World](const FName Role)
+    {
+        int32 Count = 0;
+        for (TActorIterator<AActor> ActorIt(&World); ActorIt; ++ActorIt)
+        {
+            Count += ActorIt->ActorHasTag(ValidationSceneTag)
+                    && ActorIt->ActorHasTag(Role)
+                ? 1
+                : 0;
+        }
+        return Count;
+    };
+    bool bGeometryNormalized = true;
+    for (const FGeometryDefinition& Definition : GeometryDefinitions)
+    {
+        AStaticMeshActor* Actor = Cast<AStaticMeshActor>(
+            FindTaggedActor(World, FName(Definition.Role)));
+        TInlineComponentArray<UUERayTracingAudioGeometryComponent*>
+            GeometryComponents(Actor);
+        UUERayTracingAudioGeometryComponent* Geometry =
+            IsValid(Actor)
+            ? Actor->FindComponentByClass<
+                UUERayTracingAudioGeometryComponent>()
+            : nullptr;
+        UStaticMeshComponent* MeshComponent = IsValid(Actor)
+            ? Actor->GetStaticMeshComponent()
+            : nullptr;
+        bGeometryNormalized &=
+            CountActorsForRole(FName(Definition.Role)) == 1
+            && IsValid(Actor)
+            && IsValid(MeshComponent)
+            && MeshComponent->GetStaticMesh() == CubeMesh
+            && MeshComponent->GetMobility()
+                == EComponentMobility::Static
+            && MeshComponent->GetCollisionEnabled()
+                == ECollisionEnabled::QueryAndPhysics
+            && MeshComponent->IsVisible()
+            && GeometryComponents.Num() == 1
+            && IsValid(Geometry)
+            && Geometry->bExportToAcousticScene
+            && Geometry->bAffectsDirectSound
+            && Geometry->ExportMode
+                == EUERayTracingAudioGeometryExportMode::BoundingBox
+            && Geometry->Absorption.Equals(
+                Definition.Absorption,
+                UE_KINDA_SMALL_NUMBER)
+            && Geometry->Transmission.IsNearlyZero()
+            && FMath::IsNearlyEqual(
+                Geometry->Scattering,
+                Definition.Scattering);
+    }
+    const bool bCoreRolesNormalized =
+        CountActorsForRole(FName(TEXT("VRTA_AB_Source"))) == 1
+        && CountActorsForRole(FName(TEXT("VRTA_AB_Listener"))) == 1
+        && CountActorsForRole(FName(TEXT("VRTA_AB_RoomLight"))) == 1
+        && CountActorsForRole(FName(TEXT("VRTA_AB_SourceLight"))) == 1
+        && CountActorsForRole(FName(TEXT("VRTA_AB_ListenerLight"))) == 1
+        && CountActorsForRole(FName(TEXT("VRTA_AB_Camera"))) == 1
+        && SourceActor->GetActorTransform().Equals(FTransform(
+            FRotator::ZeroRotator,
+            DesiredSourceLocation,
+            FVector(0.38)))
+        && SourceActor->GetStaticMeshComponent()->GetStaticMesh()
+            == SphereMesh
+        && SourceActor->GetStaticMeshComponent()->GetCollisionEnabled()
+            == ECollisionEnabled::QueryAndPhysics
+        && SourceActor->GetStaticMeshComponent()->IsVisible()
+        && ListenerActor->GetActorTransform().Equals(FTransform(
+            FRotator::ZeroRotator,
+            ValidationOrigin + ListenerOffset,
+            FVector(0.32)))
+        && ListenerActor->GetStaticMeshComponent()->GetStaticMesh()
+            == SphereMesh
+        && ListenerActor->GetStaticMeshComponent()->GetCollisionEnabled()
+            == ECollisionEnabled::QueryAndPhysics
+        && ListenerActor->GetStaticMeshComponent()->IsVisible();
+
     Result.bSucceeded = Result.Source.IsValid()
         && Result.Listener.IsValid()
-        && Result.GeometryCount == GeometryDefinitions.Num();
+        && Result.GeometryCount == GeometryDefinitions.Num()
+        && bGeometryNormalized
+        && bCoreRolesNormalized;
     Result.Message = Result.bSucceeded
         ? FString::Printf(
             TEXT("Editor A/B validation scene ready: source=1 listener=1 geometry=%d lighting=1 direct_preset=%s reflection_environment=%s source_listener_distance_cm=%.2f air_absorption_profile=%s air_absorption_per_meter=(%.6f,%.6f,%.6f)."),

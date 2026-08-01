@@ -691,7 +691,11 @@ FUERayTracingAudioDirectSimulationResult FUERayTracingAudioSimulator::SimulateDi
     TraceRequest.SecondaryIgnoredActor = Input.SourceActor;
 
     TArray<bool> HitResults;
-    RayTracingDevice.TraceRays(TraceRequest, Query.Rays, HitResults);
+    RayTracingDevice.TraceRays(
+        TraceRequest,
+        Query.Rays,
+        HitResults,
+        &Query.BaseResult.bUsedHardwareRayTracing);
     return FinalizeDirectSound(Input, MoveTemp(Query), MoveTemp(HitResults));
 }
 
@@ -717,6 +721,16 @@ FUERayTracingAudioDirectSimulationQuery FUERayTracingAudioSimulator::BuildDirect
     Result.AirAbsorption.X = FMath::Exp(-Input.AirAbsorptionPerMeter.X * DistanceMeters);
     Result.AirAbsorption.Y = FMath::Exp(-Input.AirAbsorptionPerMeter.Y * DistanceMeters);
     Result.AirAbsorption.Z = FMath::Exp(-Input.AirAbsorptionPerMeter.Z * DistanceMeters);
+
+    // The configured maximum distance is an audible-range contract, not just
+    // a ray length hint. Keep the boundary inclusive and avoid submitting any
+    // propagation work once the source is strictly outside it.
+    if (Result.DistanceCm > Context.GetMaxDistanceCm())
+    {
+        Result.DistanceAttenuation = 0.0f;
+        Result.OverallGain = 0.0f;
+        return Query;
+    }
 
     if (Input.bUseVolumetricOcclusion && Input.SourceRadiusCm > UE_KINDA_SMALL_NUMBER && Input.NumOcclusionSamples > 1)
     {

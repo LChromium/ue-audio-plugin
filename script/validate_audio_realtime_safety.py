@@ -435,6 +435,84 @@ def audit_repo(repo_root: Path) -> AuditReport:
                 )
             )
 
+    rhi_relative_path = (
+        "Source/UERayTracingAudioSDK/Private/RayTracing/"
+        "UERayTracingAudioRayTracingDevice.cpp"
+    )
+    rhi_path = repo_root / rhi_relative_path
+    rhi_source = (
+        rhi_path.read_text(encoding="utf-8")
+        if rhi_path.is_file()
+        else ""
+    )
+    weak_query_backrefs = (
+        "TWeakPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe> Query;",
+        "TWeakPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe> Query;",
+    )
+    for invariant in weak_query_backrefs:
+        if invariant not in rhi_source:
+            violations.append(
+                AuditViolation(
+                    rhi_relative_path,
+                    "async-readback-state",
+                    "strong-cycle-risk",
+                    invariant,
+                )
+            )
+    forbidden_query_backrefs = (
+        "TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe> Query;",
+        "TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe> Query;",
+    )
+    for invariant in forbidden_query_backrefs:
+        if invariant in rhi_source:
+            violations.append(
+                AuditViolation(
+                    rhi_relative_path,
+                    "async-readback-state",
+                    "strong-cycle-risk",
+                    invariant,
+                )
+            )
+    if "ReadbackState.Reset" in rhi_source:
+        violations.append(
+            AuditViolation(
+                rhi_relative_path,
+                "async-readback-state",
+                "cross-thread-reset",
+                "ReadbackState.Reset",
+            )
+        )
+    for qualified_name in (
+        "FUERayTracingAudioAsyncRayQuery::IsComplete",
+        "FUERayTracingAudioAsyncEnergyFieldQuery::IsComplete",
+    ):
+        bodies = extract_function_bodies(rhi_source, qualified_name)
+        if len(bodies) != 1:
+            violations.append(
+                AuditViolation(
+                    rhi_relative_path,
+                    qualified_name,
+                    "missing-function",
+                    f"found={len(bodies)} expected=1",
+                )
+            )
+            continue
+        publish_observation = bodies[0].find("bReadbackSubmitted.Load()")
+        state_read = bodies[0].find("GetPublishedReadbackState()")
+        if (
+            publish_observation < 0
+            or state_read < 0
+            or publish_observation > state_read
+        ):
+            violations.append(
+                AuditViolation(
+                    rhi_relative_path,
+                    qualified_name,
+                    "publication-order",
+                    "observe bReadbackSubmitted before ReadbackState",
+                )
+            )
+
     return AuditReport(
         audited_functions=len(AUDIO_CALLBACK_SPECS),
         audited_bodies=audited_bodies,

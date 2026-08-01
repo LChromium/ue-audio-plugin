@@ -43,9 +43,10 @@ void FUERayTracingAudioDirectSweepMetrics::Observe(
 
     LastDirectGeneration = DirectGeneration;
     ++GenerationCount;
-    bSawHardwareObservation |= Result.bRayTracingAvailable;
+    bSawHardwareObservation |=
+        Result.bUsedHardwareRayTracing;
     bAllObservationsUsedHardware &=
-        Result.bRayTracingAvailable;
+        Result.bUsedHardwareRayTracing;
     if (!FMath::IsFinite(Result.DistanceCm)
         || !FMath::IsFinite(Result.DirectVisibility)
         || !FMath::IsFinite(Result.OverallGain))

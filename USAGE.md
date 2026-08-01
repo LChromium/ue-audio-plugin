@@ -373,3 +373,27 @@ For the remaining Human check in the Editor left open by the launcher:
 5. In the Bake panel, compare Clear 1/2/4 m and Default/Stress air absorption on the same target headphones/speakers.
 
 Only the user performing that listening may record Human Pass. True multi-PIE hardware isolation, moving-player/moving-occlusion listening, audible distance/air comparison, click/pop judgment, and the OpenSpace/NearWall/Enclosed R3 matrix remain open.
+
+### Final hardening behavior
+
+The final review fixes do not add a second product configuration surface. Existing Project Settings and per-Source controls remain the reusable interface. Their runtime guarantees are now stricter:
+
+- Direct queries strictly beyond the configured maximum distance are silent and skip propagation work; the exact boundary remains included, as covered by the boundary regression.
+- Removing or losing the active Listener cancels pending queries for that World, publishes Direct bypass/unity, and publishes zero realtime Wet. Registering a valid Listener resumes from fresh results rather than a stale room snapshot.
+- A NaN/Inf input sample is sanitized before convolution, pre-delay, and feedback state, so later finite audio can recover instead of inheriting poisoned Wet state.
+- Hardware validation means an RHI dispatch actually succeeded. Capability alone and CPU fallback no longer count as hardware evidence.
+- Removing/resetting Sources reclaims unpinned IR snapshots promptly. Reused SourceIds cannot emit a previous voice's Wet while a convolver return is waiting for Game Thread service.
+
+For an ordinary project Source, **Bake Selected Source** consumes the chosen input SoundWave without silently replacing `AudioComponent.Sound`. Use **Use Selected Source** to opt an untagged Source into the panel. The validation fixture is normalized to exactly one actor for each tagged role and exactly one acoustic Geometry component per Geometry actor; duplicate or modified tagged geometry is repaired transactionally before readiness is reported.
+
+Sequential PIE is supported: when the validation-owner World tears down, only that World's ownership and delegates are released. A later PIE session can become owner; a concurrent non-owner World cannot steal ownership.
+
+To run the strict offline A/B artifact gate:
+
+```powershell
+uv run script\launch_runtime_validation.py --editor-ab-artifacts
+```
+
+The command requires actual Direct and Indirect hardware submission, one complete/unique result for each terminal contract, four imported WAV artifacts, a directional Wet result, and the final `common_scale` field. The validation fixture uses `IndirectMix=0.8` only for this comparison so Full retains an audible/detectable dry cue; it is not a product default and the acceptance thresholds are unchanged. A partial marker still being written, any duplicate/malformed marker, fallback-only evidence, or `auto_checks=0` fails the command.
+
+The fresh 2026-08-01 automatic runs passed both artifact and default flows after exact-one Geometry-component normalization. The default Editor remains open as PID `36896` at `200 cm / default`; its log is `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785594482652644800.log`, and the Game log is `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785594301982190200.log`. These checks establish technical behavior, not the outstanding target-device listening Human Pass or R3 environment matrix.

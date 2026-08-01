@@ -126,11 +126,11 @@ DATA_SOURCE_VALIDATION_PATTERN = re.compile(
 )
 HARD_REALTIME_MARKER = "UERayTracingAudio hard realtime:"
 HARD_REALTIME_PATTERN = re.compile(
-    r"UERayTracingAudio hard realtime:.*?"
-    r"passed=(?P<passed>[01]).*?"
-    r"callbacks=(?P<callbacks>[0-9]+).*?"
-    r"callback_capacity_misses=(?P<callback_capacity_misses>[0-9]+).*?"
-    r"convolution_prepare_drops=(?P<convolution_prepare_drops>[0-9]+)"
+    r"UERayTracingAudio hard realtime: "
+    r"passed=(?P<passed>[01]) "
+    r"callbacks=(?P<callbacks>[0-9]+) "
+    r"callback_capacity_misses=(?P<callback_capacity_misses>[0-9]+) "
+    r"convolution_prepare_drops=(?P<convolution_prepare_drops>[0-9]+)\."
 )
 INTERACTIVE_SMOKE_MARKER = "UERayTracingAudio interactive smoke:"
 INTERACTIVE_SMOKE_PATTERN = re.compile(
@@ -186,6 +186,7 @@ EDITOR_AB_ARTIFACTS_PATTERN = re.compile(
     r"hardware=(?P<hardware>[01]) auto_checks=(?P<auto_checks>[01]) "
     r"distinct=(?P<distinct>[01]) input=\"(?P<input>[^\"]+)\" "
     r"direct_preset=\"(?P<direct_preset>[^\"]+)\" "
+    r"reflection_environment=\"(?P<reflection_environment>[^\"]+)\" "
     r"distance_cm=(?P<distance_cm>[0-9.eE+-]+) "
     r"visibility=(?P<visibility>[0-9.eE+-]+) "
     r"occlusion=(?P<occlusion>[0-9.eE+-]+) "
@@ -198,7 +199,8 @@ EDITOR_AB_ARTIFACTS_PATTERN = re.compile(
     r"wet_level=(?P<wet_level>[0-9.eE+-]+).*?"
     r"direct_wet_difference=(?P<direct_wet_difference>[0-9.eE+-]+).*?"
     r"wet_stereo_difference=(?P<wet_stereo_difference>[0-9.eE+-]+) "
-    r"directional_wet=(?P<directional_wet>[01])"
+    r"directional_wet=(?P<directional_wet>[01]) "
+    r"common_scale=(?P<common_scale>[0-9.eE+-]+)\."
 )
 VALIDATION_RESULT_PATTERN = re.compile(
     r"UERayTracingAudio validation result:.*?sources=(?P<sources>[0-9]+).*?"
@@ -285,6 +287,33 @@ def is_original_project_input_asset(asset_path: str) -> bool:
         asset_path.startswith("/Game/")
         and not asset_path.startswith("/Game/UERayTracingAudio/Validation")
     )
+
+
+def _extract_exactly_one_strict_marker(
+    log_text: str,
+    *,
+    marker: str,
+    pattern: re.Pattern[str],
+    label: str,
+) -> re.Match[str]:
+    marker_lines: list[str] = []
+    for line in log_text.splitlines():
+        marker_index = line.find(marker)
+        if marker_index >= 0:
+            marker_lines.append(line[marker_index:].strip())
+
+    if len(marker_lines) != 1:
+        raise RuntimeError(
+            f"validation requires exactly one strict {label} marker "
+            f"(found {len(marker_lines)})"
+        )
+    match = pattern.fullmatch(marker_lines[0])
+    if match is None:
+        raise RuntimeError(
+            f"validation requires exactly one strict {label} marker "
+            "(found one malformed marker)"
+        )
+    return match
 
 
 def validate_editor_scene_ready(
@@ -395,6 +424,63 @@ def validate_editor_scene_ready(
         "air_absorption_profile": profile,
         "air_absorption_per_meter": air_absorption,
     }
+
+
+def validate_editor_ab_artifacts_marker(
+    log_text: str,
+    *,
+    expected_direct_preset: str,
+    expected_reflection_environment: str,
+) -> dict[str, object]:
+    match = _extract_exactly_one_strict_marker(
+        log_text,
+        marker=EDITOR_AB_ARTIFACTS_MARKER,
+        pattern=EDITOR_AB_ARTIFACTS_PATTERN,
+        label="Editor A/B artifact",
+    )
+    failures: list[str] = []
+    if match.group("direct_preset") != expected_direct_preset:
+        failures.append(
+            "direct preset "
+            f"({match.group('direct_preset')} != {expected_direct_preset})"
+        )
+    if (
+        match.group("reflection_environment")
+        != expected_reflection_environment
+    ):
+        failures.append(
+            "reflection environment "
+            f"({match.group('reflection_environment')} != "
+            f"{expected_reflection_environment})"
+        )
+    if failures:
+        raise RuntimeError(
+            "Editor A/B artifact evidence failed: "
+            + "; ".join(failures)
+        )
+
+    values: dict[str, object] = dict(match.groupdict())
+    for name in (
+        "distance_cm",
+        "visibility",
+        "occlusion",
+        "distance_attenuation",
+        "direct_level",
+        "wet_level",
+        "direct_wet_difference",
+        "wet_stereo_difference",
+        "common_scale",
+    ):
+        values[name] = float(match.group(name))
+    for name in (
+        "hardware",
+        "auto_checks",
+        "distinct",
+        "imported_assets",
+        "directional_wet",
+    ):
+        values[name] = int(match.group(name))
+    return values
 
 
 def validate_direct_sweep(log_text: str) -> dict[str, float | int]:
@@ -715,8 +801,22 @@ def print_audio_path_summary(
     cpu_reference_match = CPU_REFERENCE_PATTERN.search(log_text)
     primary_input_match = PRIMARY_INPUT_PATTERN.search(log_text)
     audio_pipeline_match = AUDIO_PIPELINE_PATTERN.search(log_text)
-    data_source_match = DATA_SOURCE_VALIDATION_PATTERN.search(log_text)
-    hard_realtime_match = HARD_REALTIME_PATTERN.search(log_text)
+    if require_data_sources:
+        hard_realtime_match = _extract_exactly_one_strict_marker(
+            log_text,
+            marker=HARD_REALTIME_MARKER,
+            pattern=HARD_REALTIME_PATTERN,
+            label="hard-real-time",
+        )
+        data_source_match = _extract_exactly_one_strict_marker(
+            log_text,
+            marker=DATA_SOURCE_VALIDATION_MARKER,
+            pattern=DATA_SOURCE_VALIDATION_PATTERN,
+            label="data-source",
+        )
+    else:
+        data_source_match = DATA_SOURCE_VALIDATION_PATTERN.search(log_text)
+        hard_realtime_match = HARD_REALTIME_PATTERN.search(log_text)
     bake_repeatability_match = BAKE_REPEATABILITY_PATTERN.search(log_text)
     interactive_smoke_match = INTERACTIVE_SMOKE_PATTERN.search(log_text)
     has_result = result_match is not None
@@ -867,10 +967,10 @@ def print_audio_path_summary(
         )
     if require_validation:
         missing: list[str] = []
-        if not direct:
-            missing.append("direct hardware/fallback path marker")
-        if not indirect:
-            missing.append("indirect hardware/fallback path marker")
+        if AUDIO_DIRECT_PATH_MARKERS[0] not in log_text:
+            missing.append("direct hardware submission marker")
+        if AUDIO_INDIRECT_PATH_MARKERS[0] not in log_text:
+            missing.append("indirect hardware submission marker")
         if not has_result:
             missing.append(VALIDATION_RESULT_MARKER)
         else:
@@ -1236,8 +1336,31 @@ def wait_for_editor_ready(
                 if EDITOR_AB_ARTIFACTS_FAILURE_MARKER in line
             )
             raise RuntimeError(failure_line)
-        if EDITOR_READY_PATTERN in log_text and all(
-            marker in log_text for marker in required_markers
+        b_artifact_marker_complete = True
+        if EDITOR_AB_ARTIFACTS_MARKER in required_markers:
+            artifact_marker_lines = [
+                line[
+                    line.find(EDITOR_AB_ARTIFACTS_MARKER)
+                :].strip()
+                for line in log_text.splitlines()
+                if EDITOR_AB_ARTIFACTS_MARKER in line
+            ]
+            if len(artifact_marker_lines) > 1:
+                raise RuntimeError(
+                    "Editor emitted more than one A/B artifact marker "
+                    "before initialization completed."
+                )
+            b_artifact_marker_complete = (
+                len(artifact_marker_lines) == 1
+                and EDITOR_AB_ARTIFACTS_PATTERN.fullmatch(
+                    artifact_marker_lines[0]
+                )
+                is not None
+            )
+        if (
+            EDITOR_READY_PATTERN in log_text
+            and all(marker in log_text for marker in required_markers)
+            and b_artifact_marker_complete
         ):
             return
         time.sleep(1.0)
@@ -1248,6 +1371,19 @@ def wait_for_editor_ready(
         for marker in (EDITOR_READY_PATTERN, *required_markers)
         if marker not in log_text
     ]
+    if (
+        EDITOR_AB_ARTIFACTS_MARKER in required_markers
+        and not any(
+            EDITOR_AB_ARTIFACTS_PATTERN.fullmatch(
+                line[line.find(EDITOR_AB_ARTIFACTS_MARKER):].strip()
+            )
+            for line in log_text.splitlines()
+            if EDITOR_AB_ARTIFACTS_MARKER in line
+        )
+    ):
+        missing_markers.append(
+            "complete strict Editor A/B artifact marker"
+        )
     raise RuntimeError(
         f"Editor did not report initialization completion within {timeout_seconds:.1f} seconds; "
         f"missing markers: {missing_markers}."
@@ -1441,9 +1577,13 @@ def start_editor_for_user(
         )
 
     if editor_ab_artifacts:
+        validate_editor_ab_artifacts_marker(
+            editor_log,
+            expected_direct_preset=editor_direct_preset,
+            expected_reflection_environment="enclosed",
+        )
         artifacts_match = EDITOR_AB_ARTIFACTS_PATTERN.search(editor_log)
-        if not artifacts_match:
-            raise RuntimeError("Editor A/B artifact marker could not be parsed.")
+        assert artifacts_match is not None
         failures: list[str] = []
         if int(artifacts_match.group("hardware")) != 1:
             failures.append("hardware ray tracing provenance")

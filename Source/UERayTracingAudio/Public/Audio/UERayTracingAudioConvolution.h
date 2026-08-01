@@ -152,6 +152,8 @@ public:
     int32 DetachAllStates(
         FUERayTracingAudioPreparedConvolverState** OutStates,
         int32 MaxOutStates);
+    void SuppressOutput();
+    bool IsOutputSuppressed() const;
     bool HasOutput() const;
     uint64 GetCurrentRevision() const;
     uint64 GetCurrentOwnerKey() const;
@@ -171,6 +173,7 @@ private:
     int32 CrossfadeSamples = 0;
     int32 CrossfadeSamplesRemaining = 0;
     int32 WarmupSamplesRemaining = 0;
+    bool bOutputSuppressed = false;
 };
 
 class UERAYTRACINGAUDIO_API FUERayTracingAudioCrossfadingConvolver

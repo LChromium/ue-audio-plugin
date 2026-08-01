@@ -178,6 +178,54 @@ bool FUERayTracingAudioSimulationSnapshotRegistryTest::RunTest(const FString& Pa
         TEXT("Concurrent publish/remove never exposes a torn snapshot"),
         TornReadCount.load(std::memory_order_relaxed),
         static_cast<uint64>(0));
+
+    {
+        FUERayTracingAudioConvolutionKernel::FKernelPtr Kernel =
+            FUERayTracingAudioConvolutionKernel::Build(
+                TArray<float>{ 1.0f },
+                48000,
+                8);
+        TWeakPtr<
+            const FUERayTracingAudioConvolutionKernel,
+            ESPMode::ThreadSafe> KernelLifetime = Kernel;
+        FUERayTracingAudioSimulationSnapshot KernelSnapshot;
+        KernelSnapshot.BakedConvolutionKernel = Kernel;
+        Registry.Publish(0xA110ULL, MoveTemp(KernelSnapshot));
+        Kernel.Reset();
+        Registry.Remove(0xA110ULL);
+        TestFalse(
+            TEXT("Remove immediately releases an unpinned snapshot kernel on the writer thread"),
+            KernelLifetime.IsValid());
+    }
+
+    {
+        FUERayTracingAudioConvolutionKernel::FKernelPtr Kernel =
+            FUERayTracingAudioConvolutionKernel::Build(
+                TArray<float>{ 0.5f },
+                48000,
+                8);
+        TWeakPtr<
+            const FUERayTracingAudioConvolutionKernel,
+            ESPMode::ThreadSafe> KernelLifetime = Kernel;
+        FUERayTracingAudioSimulationSnapshot KernelSnapshot;
+        KernelSnapshot.BakedConvolutionKernel = Kernel;
+        Registry.Publish(0xA111ULL, MoveTemp(KernelSnapshot));
+        FUERayTracingAudioSimulationSnapshotRegistry::FSnapshotPtr Pin =
+            Registry.Read(0xA111ULL);
+        Kernel.Reset();
+        Registry.Remove(0xA111ULL);
+        TestTrue(
+            TEXT("Remove preserves a snapshot while an audio read handle pins its slot"),
+            Pin.IsValid() && KernelLifetime.IsValid());
+        Pin = FUERayTracingAudioSimulationSnapshotRegistry::FSnapshotPtr();
+        TestTrue(
+            TEXT("Releasing the audio pin does not destroy shared ownership on the audio path"),
+            KernelLifetime.IsValid());
+        Registry.Reset();
+        TestFalse(
+            TEXT("The next writer service point reclaims a formerly pinned kernel"),
+            KernelLifetime.IsValid());
+    }
     return true;
 }
 

@@ -66,11 +66,17 @@ bool FUERayTracingAudioDirectRayBatchInterfaceTest::RunTest(const FString& Param
     TestTrue(TEXT("An empty ray group completes immediately"), Queries[0]->ConsumeResult(bSucceeded, Hits));
     TestTrue(TEXT("An empty ray group succeeds"), bSucceeded);
     TestTrue(TEXT("An empty ray group returns no hits"), Hits.IsEmpty());
+    TestFalse(
+        TEXT("An empty ray group does not claim an RHI dispatch"),
+        Queries[0]->WasHardwareRayTracingUsed());
 
     bSucceeded = true;
     Hits.Reset();
     TestTrue(TEXT("A non-empty group without a scene completes as unavailable"), Queries[1]->ConsumeResult(bSucceeded, Hits));
     TestFalse(TEXT("A non-empty group without a scene does not claim hardware success"), bSucceeded);
+    TestFalse(
+        TEXT("A non-empty group without a scene does not claim an RHI dispatch"),
+        Queries[1]->WasHardwareRayTracingUsed());
     return true;
 }
 
@@ -97,7 +103,66 @@ bool FUERayTracingAudioIndirectBatchInterfaceTest::RunTest(const FString& Parame
         FUERayTracingAudioEnergyFieldTraceResult Result;
         TestTrue(TEXT("A request without an immutable scene completes immediately"), Query->ConsumeResult(bSucceeded, Result));
         TestFalse(TEXT("A request without a scene does not claim hardware success"), bSucceeded);
+        TestFalse(
+            TEXT("A request without a scene does not claim an RHI dispatch"),
+            Query->WasHardwareRayTracingUsed());
     }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioAsyncQueryCancellationTest,
+    "UERayTracingAudio.RHI.AsyncQueryCancellation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioAsyncQueryCancellationTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe> DirectQuery =
+        MakeShared<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>();
+    DirectQuery->Cancel();
+    DirectQuery->Cancel();
+    TestTrue(TEXT("A cancelled Direct query is terminal"), DirectQuery->IsComplete());
+    TestFalse(
+        TEXT("Cancellation does not fabricate Direct hardware provenance"),
+        DirectQuery->WasHardwareRayTracingUsed());
+    bool bDirectSucceeded = true;
+    TArray<bool> DirectHits;
+    DirectHits.Add(true);
+    TestTrue(
+        TEXT("A cancelled Direct query has one consumable terminal result"),
+        DirectQuery->ConsumeResult(bDirectSucceeded, DirectHits));
+    TestFalse(TEXT("A cancelled Direct query fails"), bDirectSucceeded);
+    TestTrue(TEXT("A cancelled Direct query clears hits"), DirectHits.IsEmpty());
+    TestFalse(
+        TEXT("A cancelled Direct query cannot be consumed twice"),
+        DirectQuery->ConsumeResult(bDirectSucceeded, DirectHits));
+
+    TSharedPtr<
+        FUERayTracingAudioAsyncEnergyFieldQuery,
+        ESPMode::ThreadSafe> IndirectQuery =
+        MakeShared<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>();
+    IndirectQuery->Cancel();
+    IndirectQuery->Cancel();
+    TestTrue(TEXT("A cancelled Indirect query is terminal"), IndirectQuery->IsComplete());
+    TestFalse(
+        TEXT("Cancellation does not fabricate Indirect hardware provenance"),
+        IndirectQuery->WasHardwareRayTracingUsed());
+    bool bIndirectSucceeded = true;
+    FUERayTracingAudioEnergyFieldTraceResult EnergyResult;
+    EnergyResult.DelayBinEnergy.Add(FVector::OneVector);
+    TestTrue(
+        TEXT("A cancelled Indirect query has one consumable terminal result"),
+        IndirectQuery->ConsumeResult(bIndirectSucceeded, EnergyResult));
+    TestFalse(TEXT("A cancelled Indirect query fails"), bIndirectSucceeded);
+    TestTrue(
+        TEXT("A cancelled Indirect query clears energy"),
+        EnergyResult.DelayBinEnergy.IsEmpty());
+    TestFalse(
+        TEXT("A cancelled Indirect query cannot be consumed twice"),
+        IndirectQuery->ConsumeResult(bIndirectSucceeded, EnergyResult));
     return true;
 }
 
@@ -362,6 +427,183 @@ bool FUERayTracingAudioPreparedConvolutionBridgeTest::RunTest(
         TEXT("The bounded audio return path did not overflow"),
         Bridge.GetConvolutionReturnOverflowCount(),
         static_cast<uint64>(0));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioPreparedConvolutionStaleOwnerSuppressionTest,
+    "UERayTracingAudio.Audio.PreparedConvolutionStaleOwnerSuppression",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioPreparedConvolutionStaleOwnerSuppressionTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    constexpr uint64 FirstOwner = 0xA170'1001ULL;
+    constexpr uint64 SecondOwner = 0xA170'1002ULL;
+    constexpr int32 BlockSize = 8;
+    constexpr int32 CrossfadeSamples = 8;
+    FUERayTracingAudioIndirectAudioBridge Bridge;
+    Bridge.Initialize(1, 16, 48000);
+    const FUERayTracingAudioConvolutionKernel::FKernelPtr Kernel =
+        FUERayTracingAudioConvolutionKernel::Build(
+            TArray<float>{ 1.0f },
+            48000,
+            BlockSize);
+    TestTrue(TEXT("Stale-owner test kernel is valid"), Kernel.IsValid());
+    if (!Kernel)
+    {
+        return false;
+    }
+
+    FUERayTracingAudioPreparedCrossfadingConvolver StaleVoice;
+    constexpr int32 NumMailboxFillers = 6;
+    TArray<TUniquePtr<
+        FUERayTracingAudioPreparedCrossfadingConvolver>>
+        MailboxFillers;
+    MailboxFillers.Reserve(NumMailboxFillers);
+    Bridge.PublishConvolutionTargets(
+        FirstOwner,
+        1,
+        Kernel,
+        nullptr,
+        nullptr,
+        nullptr);
+    Bridge.ConfigureConvolver(
+        0,
+        FirstOwner,
+        1,
+        true,
+        EUERayTracingAudioConvolutionLane::BakedLeft,
+        StaleVoice,
+        CrossfadeSamples);
+    Bridge.ServiceConvolutionGameThread(MAX_int32);
+    TestEqual(
+        TEXT("The stale voice adopts its first owner"),
+        Bridge.ConfigureConvolver(
+            0,
+            FirstOwner,
+            1,
+            true,
+            EUERayTracingAudioConvolutionLane::BakedLeft,
+            StaleVoice,
+            CrossfadeSamples),
+        EUERayTracingAudioConvolverConfigureResult::Adopted);
+    for (int32 SampleIndex = 0;
+        SampleIndex < BlockSize + CrossfadeSamples + 8;
+        ++SampleIndex)
+    {
+        StaleVoice.ProcessSample(1.0f);
+    }
+
+    for (int32 FillerIndex = 0;
+        FillerIndex < NumMailboxFillers;
+        ++FillerIndex)
+    {
+        const uint64 FillerOwner =
+            0xA170'2000ULL + static_cast<uint64>(FillerIndex);
+        const uint64 FillerRevision =
+            10ULL + static_cast<uint64>(FillerIndex);
+        TUniquePtr<FUERayTracingAudioPreparedCrossfadingConvolver>
+            Filler = MakeUnique<
+                FUERayTracingAudioPreparedCrossfadingConvolver>();
+        Bridge.PublishConvolutionTargets(
+            FillerOwner,
+            FillerRevision,
+            Kernel,
+            nullptr,
+            nullptr,
+            nullptr);
+        TestEqual(
+            TEXT("A filler voice requests a bounded lease"),
+            Bridge.ConfigureConvolver(
+                0,
+                FillerOwner,
+                FillerRevision,
+                true,
+                EUERayTracingAudioConvolutionLane::BakedLeft,
+                *Filler,
+                CrossfadeSamples),
+            EUERayTracingAudioConvolverConfigureResult::Requested);
+        Bridge.ServiceConvolutionGameThread(MAX_int32);
+        TestEqual(
+            TEXT("A filler voice adopts its bounded lease"),
+            Bridge.ConfigureConvolver(
+                0,
+                FillerOwner,
+                FillerRevision,
+                true,
+                EUERayTracingAudioConvolutionLane::BakedLeft,
+                *Filler,
+                CrossfadeSamples),
+            EUERayTracingAudioConvolverConfigureResult::Adopted);
+        MailboxFillers.Add(MoveTemp(Filler));
+    }
+    for (const TUniquePtr<
+            FUERayTracingAudioPreparedCrossfadingConvolver>& Filler
+        : MailboxFillers)
+    {
+        TestTrue(
+            TEXT("Each filler occupies one return-mailbox slot"),
+            Bridge.ReleaseConvolver(
+                0,
+                EUERayTracingAudioConvolutionLane::BakedLeft,
+                *Filler));
+    }
+    TestEqual(
+        TEXT("Six prepared filler leases occupy six return slots"),
+        MailboxFillers.Num(),
+        NumMailboxFillers);
+    TestFalse(
+        TEXT("A release that requires three slots is bounded when only two remain"),
+        Bridge.ReleaseConvolver(
+            0,
+            EUERayTracingAudioConvolutionLane::BakedLeft,
+            StaleVoice));
+
+    Bridge.PublishConvolutionTargets(
+        SecondOwner,
+        2,
+        Kernel,
+        nullptr,
+        nullptr,
+        nullptr);
+    TestEqual(
+        TEXT("SourceId reuse retries cleanup before adopting a new owner"),
+        Bridge.ConfigureConvolver(
+            0,
+            SecondOwner,
+            2,
+            true,
+            EUERayTracingAudioConvolutionLane::BakedLeft,
+            StaleVoice,
+            CrossfadeSamples),
+        EUERayTracingAudioConvolverConfigureResult::ReturnQueueFull);
+    float SuppressedPeak = 0.0f;
+    for (int32 SampleIndex = 0; SampleIndex < 32; ++SampleIndex)
+    {
+        SuppressedPeak = FMath::Max(
+            SuppressedPeak,
+            FMath::Abs(StaleVoice.ProcessSample(1.0f)));
+    }
+    TestTrue(
+        TEXT("A stale-owner convolver emits zero Wet while return is blocked"),
+        SuppressedPeak <= UE_SMALL_NUMBER);
+
+    Bridge.ServiceConvolutionGameThread(MAX_int32);
+    const EUERayTracingAudioConvolverConfigureResult RetryResult =
+        Bridge.ConfigureConvolver(
+            0,
+            SecondOwner,
+            2,
+            true,
+            EUERayTracingAudioConvolutionLane::BakedLeft,
+            StaleVoice,
+            CrossfadeSamples);
+    TestEqual(
+        TEXT("Cleanup succeeds after the control thread drains returns"),
+        RetryResult,
+        EUERayTracingAudioConvolverConfigureResult::Requested);
     return true;
 }
 
@@ -1059,6 +1301,66 @@ bool FUERayTracingAudioDirectDistanceAmplitudeFalloffTest::RunTest(const FString
                     Expectation.ExpectedAmplitude,
                     UE_KINDA_SMALL_NUMBER));
     }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioDirectMaximumDistanceTest,
+    "UERayTracingAudio.Acoustics.DirectMaximumDistance",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioDirectMaximumDistanceTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    FUERayTracingAudioContextSettings Settings;
+    Settings.ReferenceDistanceCm = 100.0f;
+    Settings.MaxDistanceCm = 300.0f;
+    FUERayTracingAudioContext Context(Settings);
+    FUERayTracingAudioRayTracingDevice Device;
+    FUERayTracingAudioSimulator Simulator(Context);
+    FUERayTracingAudioDirectSimulationInput Input;
+    Input.ListenerLocation = FVector::ZeroVector;
+    Input.AirAbsorptionPerMeter = FVector::ZeroVector;
+    Input.bUseVolumetricOcclusion = false;
+
+    Input.SourceLocation = FVector(300.0f, 0.0f, 0.0f);
+    FUERayTracingAudioDirectSimulationQuery BoundaryQuery =
+        Simulator.BuildDirectSoundQuery(Device, Input);
+    TestEqual(
+        TEXT("The configured maximum-distance boundary remains inclusive"),
+        BoundaryQuery.Rays.Num(),
+        1);
+    TArray<bool> BoundaryHits;
+    BoundaryHits.Add(false);
+    const FUERayTracingAudioDirectSimulationResult BoundaryResult =
+        Simulator.FinalizeDirectSound(
+            Input,
+            MoveTemp(BoundaryQuery),
+            MoveTemp(BoundaryHits));
+    TestTrue(
+        TEXT("Direct sound at the maximum-distance boundary remains audible"),
+        BoundaryResult.OverallGain > 0.0f);
+
+    Input.SourceLocation = FVector(300.01f, 0.0f, 0.0f);
+    FUERayTracingAudioDirectSimulationQuery BeyondQuery =
+        Simulator.BuildDirectSoundQuery(Device, Input);
+    TestTrue(
+        TEXT("Direct sound beyond MaxDistanceCm submits no propagation ray"),
+        BeyondQuery.Rays.IsEmpty());
+    const FUERayTracingAudioDirectSimulationResult BeyondResult =
+        Simulator.FinalizeDirectSound(
+            Input,
+            MoveTemp(BeyondQuery),
+            TArray<bool>());
+    TestEqual(
+        TEXT("Direct attenuation beyond MaxDistanceCm is zero"),
+        BeyondResult.DistanceAttenuation,
+        0.0f);
+    TestEqual(
+        TEXT("Overall Direct gain beyond MaxDistanceCm is zero"),
+        BeyondResult.OverallGain,
+        0.0f);
     return true;
 }
 

@@ -7,6 +7,7 @@
 #include "Assets/UERayTracingAudioImpulseResponseAsset.h"
 #include "Bake/UERayTracingAudioBakeJob.h"
 #include "Bake/UERayTracingAudioOfflineRenderer.h"
+#include "Bake/UERayTracingAudioEditorBakeAdmission.h"
 #include "Components/AudioComponent.h"
 #include "Components/UERayTracingAudioGeometryComponent.h"
 #include "Components/UERayTracingAudioListenerComponent.h"
@@ -1248,39 +1249,16 @@ namespace
             {
                 Listener = FindListener(World);
             }
-            if (!IsValid(Source))
+            FString AdmissionError;
+            if (!FUERayTracingAudioEditorBakeAdmission::Validate(
+                    World,
+                    Source,
+                    Listener,
+                    InputSoundWave.Get(),
+                    AdmissionError))
             {
-                LastStatus = TEXT("Select an Actor that has UERayTracingAudioSourceComponent.");
+                LastStatus = MoveTemp(AdmissionError);
                 return FReply::Handled();
-            }
-            if (!IsValid(Listener))
-            {
-                LastStatus = TEXT("No UERayTracingAudioListenerComponent exists in the current editor world.");
-                return FReply::Handled();
-            }
-
-            if (USoundWave* SoundWave = InputSoundWave.Get())
-            {
-                TArray<uint8> ValidationPcm;
-                uint32 ValidationSampleRate = 0;
-                uint16 ValidationChannels = 0;
-                if (!SoundWave->GetImportedSoundWaveData(
-                        ValidationPcm,
-                        ValidationSampleRate,
-                        ValidationChannels)
-                    || ValidationPcm.IsEmpty()
-                    || ValidationPcm.Num() % sizeof(int16) != 0
-                    || ValidationSampleRate == 0
-                    || ValidationChannels == 0)
-                {
-                    LastStatus = TEXT("The selected SoundWave has no readable imported PCM16 data; A/B bake was not started.");
-                    return FReply::Handled();
-                }
-
-                if (UAudioComponent* Audio = Source->GetOwner()->FindComponentByClass<UAudioComponent>())
-                {
-                    Audio->SetSound(SoundWave);
-                }
             }
 
             SelectedSource = Source;

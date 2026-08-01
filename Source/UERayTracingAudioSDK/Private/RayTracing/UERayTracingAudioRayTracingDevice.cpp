@@ -1973,7 +1973,7 @@ struct FUERayTracingAudioAsyncRayQuery::FReadbackState
 {
     struct FQuerySegment
     {
-        TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe> Query;
+        TWeakPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe> Query;
         int32 RayOffset = 0;
         int32 NumRays = 0;
     };
@@ -1995,7 +1995,7 @@ struct FUERayTracingAudioAsyncEnergyFieldQuery::FReadbackState
 
     struct FItem
     {
-        TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe> Query;
+        TWeakPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe> Query;
         FUERayTracingAudioEnergyFieldTraceRequest Request;
         FUERayTracingAudioEnergyFieldTraceResult Result;
 
@@ -2025,6 +2025,88 @@ bool FUERayTracingAudioRayTracingDevice::IsRayTracingAvailable() const
     return GRHISupportsRayTracing && GRHISupportsRayTracingShaders;
 }
 
+FUERayTracingAudioAsyncEnergyFieldQuery::
+    ~FUERayTracingAudioAsyncEnergyFieldQuery()
+{
+    RetireReadbackState();
+}
+
+bool FUERayTracingAudioAsyncEnergyFieldQuery::IsCancelled() const
+{
+    return bCancelled.Load();
+}
+
+bool FUERayTracingAudioAsyncEnergyFieldQuery::
+    PublishReadbackState_RenderThread(
+        const TSharedPtr<FReadbackState, ESPMode::ThreadSafe>& State)
+{
+    check(IsInRenderingThread());
+    FScopeLock Lock(&ReadbackStateMutex);
+    if (bCancelled.Load() || !State.IsValid())
+    {
+        return false;
+    }
+    ReadbackState = State;
+    bReadbackSubmitted.Store(true);
+    return true;
+}
+
+TSharedPtr<
+    FUERayTracingAudioAsyncEnergyFieldQuery::FReadbackState,
+    ESPMode::ThreadSafe>
+FUERayTracingAudioAsyncEnergyFieldQuery::
+    GetPublishedReadbackState() const
+{
+    FScopeLock Lock(&ReadbackStateMutex);
+    return ReadbackState;
+}
+
+void FUERayTracingAudioAsyncEnergyFieldQuery::RetireReadbackState()
+{
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State;
+    {
+        FScopeLock Lock(&ReadbackStateMutex);
+        State = MoveTemp(ReadbackState);
+    }
+    if (!State.IsValid() || IsInRenderingThread())
+    {
+        return;
+    }
+    ENQUEUE_RENDER_COMMAND(UERayTracingAudioRetireIndirectReadback)(
+        [State = MoveTemp(State)](
+            FRHICommandListImmediate&) mutable
+        {
+            State.Reset();
+        });
+}
+
+void FUERayTracingAudioAsyncEnergyFieldQuery::
+    MarkHardwareRayTracingUsed()
+{
+    bUsedHardwareRayTracing.Store(true);
+}
+
+bool FUERayTracingAudioAsyncEnergyFieldQuery::
+    WasHardwareRayTracingUsed() const
+{
+    return bUsedHardwareRayTracing.Load();
+}
+
+void FUERayTracingAudioAsyncEnergyFieldQuery::Cancel()
+{
+    {
+        FScopeLock Lock(&ResultMutex);
+        if (!bComplete.Load())
+        {
+            bCancelled.Store(true);
+            bSucceeded = false;
+            Result = FUERayTracingAudioEnergyFieldTraceResult();
+            bComplete.Store(true);
+        }
+    }
+    RetireReadbackState();
+}
+
 bool FUERayTracingAudioAsyncEnergyFieldQuery::IsComplete() const
 {
     if (bComplete.Load())
@@ -2032,15 +2114,25 @@ bool FUERayTracingAudioAsyncEnergyFieldQuery::IsComplete() const
         return true;
     }
 
-    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = ReadbackState;
-    if (bReadbackSubmitted.Load() && State.IsValid() && !State->bPollQueued.Exchange(true))
+    // Publication is immutable: observe the release flag before reading the
+    // mutex-protected shared state, and never let the render thread reset the
+    // query member after publication.
+    if (!bReadbackSubmitted.Load())
+    {
+        return false;
+    }
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State =
+        GetPublishedReadbackState();
+    if (State.IsValid() && !State->bPollQueued.Exchange(true))
     {
         TSharedRef<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe> Query =
             const_cast<FUERayTracingAudioAsyncEnergyFieldQuery*>(this)->AsShared();
         ENQUEUE_RENDER_COMMAND(UERayTracingAudioPollIndirectReadback)(
-            [Query](FRHICommandListImmediate& RHICmdList)
+            [Query, State](FRHICommandListImmediate& RHICmdList)
             {
-                Query->PollHardwareReadback_RenderThread(RHICmdList);
+                Query->PollHardwareReadback_RenderThread(
+                    RHICmdList,
+                    State);
             });
     }
 
@@ -2065,6 +2157,7 @@ bool FUERayTracingAudioAsyncEnergyFieldQuery::ConsumeResult(
     bConsumed = true;
     bOutSucceeded = bSucceeded;
     OutResult = MoveTemp(Result);
+    RetireReadbackState();
     return true;
 }
 
@@ -2072,11 +2165,13 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::Complete(
     bool bInSucceeded,
     FUERayTracingAudioEnergyFieldTraceResult&& InResult)
 {
+    FScopeLock Lock(&ResultMutex);
+    if (bComplete.Load() || bCancelled.Load())
     {
-        FScopeLock Lock(&ResultMutex);
-        bSucceeded = bInSucceeded;
-        Result = MoveTemp(InResult);
+        return;
     }
+    bSucceeded = bInSucceeded;
+    Result = MoveTemp(InResult);
     bComplete.Store(true);
 }
 
@@ -2108,13 +2203,16 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::BeginHardwareBatchReadback_RenderT
     State->Items.Reserve(Requests.Num());
     for (int32 RequestIndex = 0; RequestIndex < Requests.Num(); ++RequestIndex)
     {
-        if (!Queries[RequestIndex].IsValid())
+        const TSharedPtr<
+            FUERayTracingAudioAsyncEnergyFieldQuery,
+            ESPMode::ThreadSafe>& Query = Queries[RequestIndex];
+        if (!Query.IsValid() || Query->IsCancelled())
         {
             continue;
         }
 
         FReadbackState::FItem Item;
-        Item.Query = Queries[RequestIndex];
+        Item.Query = Query;
         Item.Request = MoveTemp(Requests[RequestIndex]);
         Item.Result.DelayBinEnergy.Init(FVector::ZeroVector, FMath::Max(Item.Request.NumDelayBins, 1));
         Item.Result.DelayBinDirection.Init(FVector::ZeroVector, Item.Result.DelayBinEnergy.Num());
@@ -2124,7 +2222,7 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::BeginHardwareBatchReadback_RenderT
             || Item.Request.MaxReflectionBounces <= 0
             || Item.Request.DurationSeconds <= 0.0f)
         {
-            Item.Query->Complete(true, MoveTemp(Item.Result));
+            Query->Complete(true, MoveTemp(Item.Result));
             continue;
         }
 
@@ -2146,7 +2244,12 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::BeginHardwareBatchReadback_RenderT
     {
         for (FReadbackState::FItem& Item : State->Items)
         {
-            Item.Query->Complete(false, MoveTemp(Item.Result));
+            if (const TSharedPtr<
+                    FUERayTracingAudioAsyncEnergyFieldQuery,
+                    ESPMode::ThreadSafe> Query = Item.Query.Pin())
+            {
+                Query->Complete(false, MoveTemp(Item.Result));
+            }
         }
         return;
     }
@@ -2167,15 +2270,25 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::BeginHardwareBatchReadback_RenderT
     {
         for (FReadbackState::FItem& Item : State->Items)
         {
-            Item.Query->Complete(false, MoveTemp(Item.Result));
+            if (const TSharedPtr<
+                    FUERayTracingAudioAsyncEnergyFieldQuery,
+                    ESPMode::ThreadSafe> Query = Item.Query.Pin())
+            {
+                Query->Complete(false, MoveTemp(Item.Result));
+            }
         }
         return;
     }
 
     for (FReadbackState::FItem& Item : State->Items)
     {
-        Item.Query->ReadbackState = State;
-        Item.Query->bReadbackSubmitted.Store(true);
+        if (const TSharedPtr<
+                FUERayTracingAudioAsyncEnergyFieldQuery,
+                ESPMode::ThreadSafe> Query = Item.Query.Pin())
+        {
+            Query->MarkHardwareRayTracingUsed();
+            Query->PublishReadbackState_RenderThread(State);
+        }
     }
 #else
     for (const TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>& Query : Queries)
@@ -2188,11 +2301,12 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::BeginHardwareBatchReadback_RenderT
 #endif
 }
 
-void FUERayTracingAudioAsyncEnergyFieldQuery::PollHardwareReadback_RenderThread(FRHICommandListImmediate& RHICmdList)
+void FUERayTracingAudioAsyncEnergyFieldQuery::PollHardwareReadback_RenderThread(
+    FRHICommandListImmediate& RHICmdList,
+    const TSharedPtr<FReadbackState, ESPMode::ThreadSafe>& State)
 {
 #if RHI_RAYTRACING
     check(IsInRenderingThread());
-    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = ReadbackState;
     if (!State.IsValid() || !State->Readback.IsValid())
     {
         Complete(false, FUERayTracingAudioEnergyFieldTraceResult());
@@ -2209,11 +2323,11 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::PollHardwareReadback_RenderThread(
     {
         for (FReadbackState::FItem& Item : State->Items)
         {
-            if (Item.Query.IsValid())
+            if (const TSharedPtr<
+                    FUERayTracingAudioAsyncEnergyFieldQuery,
+                    ESPMode::ThreadSafe> Query = Item.Query.Pin())
             {
-                Item.Query->ReadbackState.Reset();
-                Item.Query->Complete(false, MoveTemp(Item.Result));
-                Item.Query.Reset();
+                Query->Complete(false, MoveTemp(Item.Result));
             }
         }
         State->Readback.Reset();
@@ -2243,13 +2357,18 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::PollHardwareReadback_RenderThread(
     {
         for (FReadbackState::FItem& Item : State->Items)
         {
+            const TSharedPtr<
+                FUERayTracingAudioAsyncEnergyFieldQuery,
+                ESPMode::ThreadSafe> Query = Item.Query.Pin();
             ++Item.BounceIndex;
-            if (Item.BounceIndex >= Item.Request.MaxReflectionBounces || Item.NextPaths.IsEmpty())
+            if (!Query.IsValid() || Query->IsCancelled())
             {
-                TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe> CompletedQuery = Item.Query;
-                Item.Query.Reset();
-                CompletedQuery->ReadbackState.Reset();
-                CompletedQuery->Complete(true, MoveTemp(Item.Result));
+                continue;
+            }
+            if (Item.BounceIndex >= Item.Request.MaxReflectionBounces
+                || Item.NextPaths.IsEmpty())
+            {
+                Query->Complete(true, MoveTemp(Item.Result));
                 continue;
             }
 
@@ -2267,7 +2386,12 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::PollHardwareReadback_RenderThread(
         State->Items.RemoveAllSwap(
             [](const FReadbackState::FItem& Item)
             {
-                return !Item.Query.IsValid();
+                const TSharedPtr<
+                    FUERayTracingAudioAsyncEnergyFieldQuery,
+                    ESPMode::ThreadSafe> Query = Item.Query.Pin();
+                return !Query.IsValid()
+                    || Query->IsCancelled()
+                    || Query->IsComplete();
             },
             EAllowShrinking::No);
 
@@ -2389,6 +2513,82 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::PollHardwareReadback_RenderThread(
 #endif
 }
 
+FUERayTracingAudioAsyncRayQuery::~FUERayTracingAudioAsyncRayQuery()
+{
+    RetireReadbackState();
+}
+
+bool FUERayTracingAudioAsyncRayQuery::IsCancelled() const
+{
+    return bCancelled.Load();
+}
+
+bool FUERayTracingAudioAsyncRayQuery::
+    PublishReadbackState_RenderThread(
+        const TSharedPtr<FReadbackState, ESPMode::ThreadSafe>& State)
+{
+    check(IsInRenderingThread());
+    FScopeLock Lock(&ReadbackStateMutex);
+    if (bCancelled.Load() || !State.IsValid())
+    {
+        return false;
+    }
+    ReadbackState = State;
+    bReadbackSubmitted.Store(true);
+    return true;
+}
+
+TSharedPtr<FUERayTracingAudioAsyncRayQuery::FReadbackState, ESPMode::ThreadSafe>
+FUERayTracingAudioAsyncRayQuery::GetPublishedReadbackState() const
+{
+    FScopeLock Lock(&ReadbackStateMutex);
+    return ReadbackState;
+}
+
+void FUERayTracingAudioAsyncRayQuery::RetireReadbackState()
+{
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State;
+    {
+        FScopeLock Lock(&ReadbackStateMutex);
+        State = MoveTemp(ReadbackState);
+    }
+    if (!State.IsValid() || IsInRenderingThread())
+    {
+        return;
+    }
+    ENQUEUE_RENDER_COMMAND(UERayTracingAudioRetireDirectReadback)(
+        [State = MoveTemp(State)](
+            FRHICommandListImmediate&) mutable
+        {
+            State.Reset();
+        });
+}
+
+void FUERayTracingAudioAsyncRayQuery::MarkHardwareRayTracingUsed()
+{
+    bUsedHardwareRayTracing.Store(true);
+}
+
+bool FUERayTracingAudioAsyncRayQuery::WasHardwareRayTracingUsed() const
+{
+    return bUsedHardwareRayTracing.Load();
+}
+
+void FUERayTracingAudioAsyncRayQuery::Cancel()
+{
+    {
+        FScopeLock Lock(&ResultMutex);
+        if (!bComplete.Load())
+        {
+            bCancelled.Store(true);
+            bSucceeded = false;
+            Hits.Reset();
+            bComplete.Store(true);
+        }
+    }
+    RetireReadbackState();
+}
+
 bool FUERayTracingAudioAsyncRayQuery::IsComplete() const
 {
     if (bComplete.Load())
@@ -2396,15 +2596,22 @@ bool FUERayTracingAudioAsyncRayQuery::IsComplete() const
         return true;
     }
 
-    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = ReadbackState;
-    if (bReadbackSubmitted.Load() && State.IsValid() && !State->bPollQueued.Exchange(true))
+    if (!bReadbackSubmitted.Load())
+    {
+        return false;
+    }
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State =
+        GetPublishedReadbackState();
+    if (State.IsValid() && !State->bPollQueued.Exchange(true))
     {
         TSharedRef<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe> Query =
             const_cast<FUERayTracingAudioAsyncRayQuery*>(this)->AsShared();
         ENQUEUE_RENDER_COMMAND(UERayTracingAudioPollDirectReadback)(
-            [Query](FRHICommandListImmediate& RHICmdList)
+            [Query, State](FRHICommandListImmediate& RHICmdList)
             {
-                Query->PollHardwareReadback_RenderThread(RHICmdList);
+                Query->PollHardwareReadback_RenderThread(
+                    RHICmdList,
+                    State);
             });
     }
 
@@ -2427,16 +2634,19 @@ bool FUERayTracingAudioAsyncRayQuery::ConsumeResult(bool& bOutSucceeded, TArray<
     bConsumed = true;
     bOutSucceeded = bSucceeded;
     OutHits = MoveTemp(Hits);
+    RetireReadbackState();
     return true;
 }
 
 void FUERayTracingAudioAsyncRayQuery::Complete(bool bInSucceeded, TArray<bool>&& InHits)
 {
+    FScopeLock Lock(&ResultMutex);
+    if (bComplete.Load() || bCancelled.Load())
     {
-        FScopeLock Lock(&ResultMutex);
-        bSucceeded = bInSucceeded;
-        Hits = MoveTemp(InHits);
+        return;
     }
+    bSucceeded = bInSucceeded;
+    Hits = MoveTemp(InHits);
     bComplete.Store(true);
 }
 
@@ -2451,7 +2661,6 @@ void FUERayTracingAudioAsyncRayQuery::BeginHardwareBatchReadback_RenderThread(
 #if RHI_RAYTRACING
     check(IsInRenderingThread());
     TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = MakeShared<FReadbackState, ESPMode::ThreadSafe>();
-    State->NumCombinedRays = CombinedRays.Num();
 
     if (Queries.Num() != RayCounts.Num() || Queries.IsEmpty())
     {
@@ -2464,6 +2673,66 @@ void FUERayTracingAudioAsyncRayQuery::BeginHardwareBatchReadback_RenderThread(
         }
         return;
     }
+
+    int32 OriginalRayOffset = 0;
+    TArray<FUERayTracingAudioRay> ActiveCombinedRays;
+    ActiveCombinedRays.Reserve(CombinedRays.Num());
+    State->Segments.Reserve(Queries.Num());
+    for (int32 QueryIndex = 0;
+        QueryIndex < Queries.Num();
+        ++QueryIndex)
+    {
+        const int32 NumQueryRays = RayCounts[QueryIndex];
+        if (NumQueryRays <= 0
+            || OriginalRayOffset > CombinedRays.Num() - NumQueryRays)
+        {
+            for (const TSharedPtr<
+                    FUERayTracingAudioAsyncRayQuery,
+                    ESPMode::ThreadSafe>& Query : Queries)
+            {
+                if (Query.IsValid())
+                {
+                    Query->Complete(false, TArray<bool>());
+                }
+            }
+            return;
+        }
+
+        const TSharedPtr<
+            FUERayTracingAudioAsyncRayQuery,
+            ESPMode::ThreadSafe>& Query = Queries[QueryIndex];
+        if (Query.IsValid() && !Query->IsCancelled())
+        {
+            FReadbackState::FQuerySegment& Segment =
+                State->Segments.AddDefaulted_GetRef();
+            Segment.Query = Query;
+            Segment.RayOffset = ActiveCombinedRays.Num();
+            Segment.NumRays = NumQueryRays;
+            ActiveCombinedRays.Append(
+                CombinedRays.GetData() + OriginalRayOffset,
+                NumQueryRays);
+        }
+        OriginalRayOffset += NumQueryRays;
+    }
+    if (OriginalRayOffset != CombinedRays.Num())
+    {
+        for (const TSharedPtr<
+                FUERayTracingAudioAsyncRayQuery,
+                ESPMode::ThreadSafe>& Query : Queries)
+        {
+            if (Query.IsValid())
+            {
+                Query->Complete(false, TArray<bool>());
+            }
+        }
+        return;
+    }
+    if (State->Segments.IsEmpty())
+    {
+        return;
+    }
+    CombinedRays = MoveTemp(ActiveCombinedRays);
+    State->NumCombinedRays = CombinedRays.Num();
 
     State->SceneResources = GetOrBuildSceneTLAS_RenderThread(
         RHICmdList,
@@ -2498,35 +2767,15 @@ void FUERayTracingAudioAsyncRayQuery::BeginHardwareBatchReadback_RenderThread(
         return;
     }
 
-    int32 RayOffset = 0;
-    State->Segments.Reserve(Queries.Num());
-    for (int32 QueryIndex = 0; QueryIndex < Queries.Num(); ++QueryIndex)
-    {
-        if (!Queries[QueryIndex].IsValid() || RayCounts[QueryIndex] <= 0)
-        {
-            continue;
-        }
-
-        FReadbackState::FQuerySegment& Segment = State->Segments.AddDefaulted_GetRef();
-        Segment.Query = Queries[QueryIndex];
-        Segment.RayOffset = RayOffset;
-        Segment.NumRays = RayCounts[QueryIndex];
-        RayOffset += Segment.NumRays;
-    }
-
-    if (RayOffset != State->NumCombinedRays || State->Segments.IsEmpty())
-    {
-        for (FReadbackState::FQuerySegment& Segment : State->Segments)
-        {
-            Segment.Query->Complete(false, TArray<bool>());
-        }
-        return;
-    }
-
     for (FReadbackState::FQuerySegment& Segment : State->Segments)
     {
-        Segment.Query->ReadbackState = State;
-        Segment.Query->bReadbackSubmitted.Store(true);
+        if (const TSharedPtr<
+                FUERayTracingAudioAsyncRayQuery,
+                ESPMode::ThreadSafe> Query = Segment.Query.Pin())
+        {
+            Query->MarkHardwareRayTracingUsed();
+            Query->PublishReadbackState_RenderThread(State);
+        }
     }
 #else
     for (const TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>& Query : Queries)
@@ -2539,11 +2788,12 @@ void FUERayTracingAudioAsyncRayQuery::BeginHardwareBatchReadback_RenderThread(
 #endif
 }
 
-void FUERayTracingAudioAsyncRayQuery::PollHardwareReadback_RenderThread(FRHICommandListImmediate& RHICmdList)
+void FUERayTracingAudioAsyncRayQuery::PollHardwareReadback_RenderThread(
+    FRHICommandListImmediate& RHICmdList,
+    const TSharedPtr<FReadbackState, ESPMode::ThreadSafe>& State)
 {
 #if RHI_RAYTRACING
     check(IsInRenderingThread());
-    TSharedPtr<FReadbackState, ESPMode::ThreadSafe> State = ReadbackState;
     if (!State.IsValid() || !State->Readback.IsValid())
     {
         Complete(false, TArray<bool>());
@@ -2561,8 +2811,12 @@ void FUERayTracingAudioAsyncRayQuery::PollHardwareReadback_RenderThread(FRHIComm
     {
         for (FReadbackState::FQuerySegment& Segment : State->Segments)
         {
-            Segment.Query->ReadbackState.Reset();
-            Segment.Query->Complete(false, TArray<bool>());
+            if (const TSharedPtr<
+                    FUERayTracingAudioAsyncRayQuery,
+                    ESPMode::ThreadSafe> Query = Segment.Query.Pin())
+            {
+                Query->Complete(false, TArray<bool>());
+            }
         }
         State->Segments.Reset();
         return;
@@ -2576,8 +2830,12 @@ void FUERayTracingAudioAsyncRayQuery::PollHardwareReadback_RenderThread(FRHIComm
         {
             OutHits[Index] = Results[Segment.RayOffset + Index] != 0;
         }
-        Segment.Query->ReadbackState.Reset();
-        Segment.Query->Complete(true, MoveTemp(OutHits));
+        if (const TSharedPtr<
+                FUERayTracingAudioAsyncRayQuery,
+                ESPMode::ThreadSafe> Query = Segment.Query.Pin())
+        {
+            Query->Complete(true, MoveTemp(OutHits));
+        }
     }
     State->Readback->Unlock();
     State->Readback.Reset();
@@ -2608,8 +2866,13 @@ bool FUERayTracingAudioRayTracingDevice::TraceDirectPath(const FUERayTracingAudi
 bool FUERayTracingAudioRayTracingDevice::TraceRays(
     const FUERayTracingAudioTraceRequest& Request,
     const TArray<FUERayTracingAudioRay>& Rays,
-    TArray<bool>& OutHits) const
+    TArray<bool>& OutHits,
+    bool* bOutUsedHardwareRayTracing) const
 {
+    if (bOutUsedHardwareRayTracing)
+    {
+        *bOutUsedHardwareRayTracing = false;
+    }
     if (Rays.IsEmpty())
     {
         OutHits.Reset();
@@ -2621,6 +2884,10 @@ bool FUERayTracingAudioRayTracingDevice::TraceRays(
     {
         if (TraceRaysWithHardwareRayTracing(Request, Rays, OutHits))
         {
+            if (bOutUsedHardwareRayTracing)
+            {
+                *bOutUsedHardwareRayTracing = true;
+            }
             if (!GHasLoggedHardwareRayTracingPath)
             {
                 UE_LOG(LogUERayTracingAudioSDK, Display, TEXT("UERayTracingAudioSDK uses hardware ray tracing for direct sound visibility queries."));

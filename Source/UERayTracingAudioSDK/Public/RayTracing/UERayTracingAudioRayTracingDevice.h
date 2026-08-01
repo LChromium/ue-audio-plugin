@@ -49,14 +49,24 @@ class UERAYTRACINGAUDIOSDK_API FUERayTracingAudioAsyncRayQuery
     : public TSharedFromThis<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>
 {
 public:
+    ~FUERayTracingAudioAsyncRayQuery();
     bool IsComplete() const;
     bool ConsumeResult(bool& bOutSucceeded, TArray<bool>& OutHits);
+    void Cancel();
+    bool WasHardwareRayTracingUsed() const;
 
 private:
     friend class FUERayTracingAudioRayTracingDevice;
 
     struct FReadbackState;
 
+    bool IsCancelled() const;
+    bool PublishReadbackState_RenderThread(
+        const TSharedPtr<FReadbackState, ESPMode::ThreadSafe>& State);
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe>
+        GetPublishedReadbackState() const;
+    void RetireReadbackState();
+    void MarkHardwareRayTracingUsed();
     void Complete(bool bInSucceeded, TArray<bool>&& InHits);
     void BeginHardwareBatchReadback_RenderThread(
         FRHICommandListImmediate& RHICmdList,
@@ -65,11 +75,16 @@ private:
         TArray<TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>>&& Queries,
         TArray<int32>&& RayCounts,
         uint64 SceneCacheKey);
-    void PollHardwareReadback_RenderThread(FRHICommandListImmediate& RHICmdList);
+    void PollHardwareReadback_RenderThread(
+        FRHICommandListImmediate& RHICmdList,
+        const TSharedPtr<FReadbackState, ESPMode::ThreadSafe>& State);
 
     FCriticalSection ResultMutex;
+    mutable FCriticalSection ReadbackStateMutex;
     TAtomic<bool> bComplete = false;
     TAtomic<bool> bReadbackSubmitted = false;
+    TAtomic<bool> bCancelled = false;
+    TAtomic<bool> bUsedHardwareRayTracing = false;
     bool bSucceeded = false;
     bool bConsumed = false;
     TArray<bool> Hits;
@@ -108,14 +123,24 @@ class UERAYTRACINGAUDIOSDK_API FUERayTracingAudioAsyncEnergyFieldQuery
     : public TSharedFromThis<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>
 {
 public:
+    ~FUERayTracingAudioAsyncEnergyFieldQuery();
     bool IsComplete() const;
     bool ConsumeResult(bool& bOutSucceeded, FUERayTracingAudioEnergyFieldTraceResult& OutResult);
+    void Cancel();
+    bool WasHardwareRayTracingUsed() const;
 
 private:
     friend class FUERayTracingAudioRayTracingDevice;
 
     struct FReadbackState;
 
+    bool IsCancelled() const;
+    bool PublishReadbackState_RenderThread(
+        const TSharedPtr<FReadbackState, ESPMode::ThreadSafe>& State);
+    TSharedPtr<FReadbackState, ESPMode::ThreadSafe>
+        GetPublishedReadbackState() const;
+    void RetireReadbackState();
+    void MarkHardwareRayTracingUsed();
     void Complete(bool bInSucceeded, FUERayTracingAudioEnergyFieldTraceResult&& InResult);
     void BeginHardwareBatchReadback_RenderThread(
         FRHICommandListImmediate& RHICmdList,
@@ -123,11 +148,16 @@ private:
         TArray<FUERayTracingAudioEnergyFieldTraceRequest>&& Requests,
         TArray<TSharedPtr<FUERayTracingAudioAsyncEnergyFieldQuery, ESPMode::ThreadSafe>>&& Queries,
         uint64 SceneCacheKey);
-    void PollHardwareReadback_RenderThread(FRHICommandListImmediate& RHICmdList);
+    void PollHardwareReadback_RenderThread(
+        FRHICommandListImmediate& RHICmdList,
+        const TSharedPtr<FReadbackState, ESPMode::ThreadSafe>& State);
 
     FCriticalSection ResultMutex;
+    mutable FCriticalSection ReadbackStateMutex;
     TAtomic<bool> bComplete = false;
     TAtomic<bool> bReadbackSubmitted = false;
+    TAtomic<bool> bCancelled = false;
+    TAtomic<bool> bUsedHardwareRayTracing = false;
     bool bSucceeded = false;
     bool bConsumed = false;
     FUERayTracingAudioEnergyFieldTraceResult Result;
@@ -139,7 +169,11 @@ class UERAYTRACINGAUDIOSDK_API FUERayTracingAudioRayTracingDevice
 public:
     bool IsRayTracingAvailable() const;
     bool TraceDirectPath(const FUERayTracingAudioTraceRequest& Request, FUERayTracingAudioTraceHit& OutHit) const;
-    bool TraceRays(const FUERayTracingAudioTraceRequest& Request, const TArray<FUERayTracingAudioRay>& Rays, TArray<bool>& OutHits) const;
+    bool TraceRays(
+        const FUERayTracingAudioTraceRequest& Request,
+        const TArray<FUERayTracingAudioRay>& Rays,
+        TArray<bool>& OutHits,
+        bool* bOutUsedHardwareRayTracing = nullptr) const;
     bool TraceDetailedRays(
         const FUERayTracingAudioTraceRequest& Request,
         const TArray<FUERayTracingAudioRay>& Rays,

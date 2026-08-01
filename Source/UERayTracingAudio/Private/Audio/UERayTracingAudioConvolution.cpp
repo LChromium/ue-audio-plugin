@@ -201,7 +201,9 @@ float FUERayTracingAudioPartitionedConvolver::ProcessSample(float InputSample)
     }
 
     const float Output = OutputReadIndex < OutputBlock.Num() ? OutputBlock[OutputReadIndex++] : 0.0f;
-    InputBlock[InputFill++] = InputSample;
+    InputBlock[InputFill++] = FMath::IsFinite(InputSample)
+        ? InputSample
+        : 0.0f;
     if (InputFill == InputBlock.Num())
     {
         ProcessBlock();
@@ -411,6 +413,7 @@ bool FUERayTracingAudioPreparedCrossfadingConvolver::StartTransition(
     CrossfadeSamplesRemaining = CrossfadeSamples;
     WarmupSamplesRemaining =
         Current ? Current->GetBlockSize() : 0;
+    bOutputSuppressed = false;
     return true;
 }
 
@@ -441,6 +444,11 @@ bool FUERayTracingAudioPreparedCrossfadingConvolver::AdoptSilence(
 float FUERayTracingAudioPreparedCrossfadingConvolver::ProcessSample(
     const float InputSample)
 {
+    if (bOutputSuppressed)
+    {
+        return 0.0f;
+    }
+
     const float CurrentOutput =
         Current ? Current->ProcessSample(InputSample) : 0.0f;
     const float PreviousOutput =
@@ -536,12 +544,25 @@ int32 FUERayTracingAudioPreparedCrossfadingConvolver::DetachAllStates(
     CrossfadeSamples = 0;
     CrossfadeSamplesRemaining = 0;
     WarmupSamplesRemaining = 0;
+    bOutputSuppressed = false;
     return NumUniqueStates;
+}
+
+void FUERayTracingAudioPreparedCrossfadingConvolver::SuppressOutput()
+{
+    bOutputSuppressed = true;
+}
+
+bool FUERayTracingAudioPreparedCrossfadingConvolver::
+    IsOutputSuppressed() const
+{
+    return bOutputSuppressed;
 }
 
 bool FUERayTracingAudioPreparedCrossfadingConvolver::HasOutput() const
 {
-    return Current != nullptr || Previous != nullptr;
+    return !bOutputSuppressed
+        && (Current != nullptr || Previous != nullptr);
 }
 
 uint64 FUERayTracingAudioPreparedCrossfadingConvolver::

@@ -591,6 +591,16 @@ void FUERayTracingAudioRuntimeValidation::Stop()
                 State.ActorDestroyedHandle);
             State.ActorDestroyedHandle.Reset();
         }
+        if (State.BakeJob.IsValid())
+        {
+            State.BakeJob->Cancel();
+            State.BakeJob.Reset();
+        }
+        if (State.DataSourceBakeJob.IsValid())
+        {
+            State.DataSourceBakeJob->Cancel();
+            State.DataSourceBakeJob.Reset();
+        }
     }
 
     FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(0);
@@ -599,6 +609,17 @@ void FUERayTracingAudioRuntimeValidation::Stop()
     Scenarios.Reset();
     bValidationOwnerAssigned = false;
     bValidationEnabled = false;
+}
+
+bool FUERayTracingAudioRuntimeValidation::
+    ClaimValidationOwnership()
+{
+    if (bValidationOwnerAssigned)
+    {
+        return false;
+    }
+    bValidationOwnerAssigned = true;
+    return true;
 }
 
 void FUERayTracingAudioRuntimeValidation::CreateScenario(UWorld* World)
@@ -922,11 +943,7 @@ void FUERayTracingAudioRuntimeValidation::CreateScenario(UWorld* World)
     }
 
     FScenarioState& State = Scenarios.AddDefaulted_GetRef();
-    State.bValidationOwner = !bValidationOwnerAssigned;
-    if (State.bValidationOwner)
-    {
-        bValidationOwnerAssigned = true;
-    }
+    State.bValidationOwner = ClaimValidationOwnership();
     State.World = World;
     State.CameraActor = CameraActor;
     State.ListenerMarker = ListenerMarker;
@@ -1377,15 +1394,57 @@ void FUERayTracingAudioRuntimeValidation::
 void FUERayTracingAudioRuntimeValidation::
     HandleWorldBeginTearDown(UWorld* World)
 {
-    for (FScenarioState& State : Scenarios)
+    if (!World)
     {
-        if (State.World.Get() == World
-            && IsDirectSweepActive(State))
+        return;
+    }
+
+    for (int32 ScenarioIndex = Scenarios.Num() - 1;
+        ScenarioIndex >= 0;
+        --ScenarioIndex)
+    {
+        FScenarioState& State = Scenarios[ScenarioIndex];
+        if (State.World.Get() != World)
+        {
+            continue;
+        }
+        if (IsDirectSweepActive(State))
         {
             AbortDirectSweepImmediately(
                 State,
                 TEXT("world began teardown"));
         }
+        if (State.BakeJob.IsValid())
+        {
+            State.BakeJob->Cancel();
+            State.BakeJob.Reset();
+        }
+        if (State.DataSourceBakeJob.IsValid())
+        {
+            State.DataSourceBakeJob->Cancel();
+            State.DataSourceBakeJob.Reset();
+        }
+        if (State.ActorDestroyedHandle.IsValid())
+        {
+            World->RemoveOnActorDestroyedHandler(
+                State.ActorDestroyedHandle);
+            State.ActorDestroyedHandle.Reset();
+        }
+        if (State.bValidationOwner)
+        {
+            FUERayTracingAudioAudioDiagnostics::
+                SetTargetAudioComponentId(0);
+            bValidationOwnerAssigned = false;
+        }
+        Scenarios.RemoveAt(
+            ScenarioIndex,
+            1,
+            EAllowShrinking::No);
+    }
+    InitializedWorlds.Remove(World);
+    if (ActiveDirectSweepWorld.Get() == World)
+    {
+        ActiveDirectSweepWorld.Reset();
     }
 }
 
@@ -1612,7 +1671,7 @@ void FUERayTracingAudioRuntimeValidation::TickDirectSweep(
         {
             const bool bGenerationUsedHardware =
                 LatestResult->DirectResult.
-                    bRayTracingAvailable;
+                    bUsedHardwareRayTracing;
             State.bDirectSweepHardwareObserved |=
                 bGenerationUsedHardware;
             State.bDirectSweepHardwareOnly &=
@@ -1913,7 +1972,7 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
                         : 0,
                     bHasLatestResult
                         && LatestResult.DirectResult.
-                            bRayTracingAvailable))
+                            bUsedHardwareRayTracing))
         {
             if (!StartDirectSweep(
                     State,
@@ -1962,7 +2021,11 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
 
         if (bHasLatestResult
             && LatestResult.bHasDirectResult
-            && LatestResult.bHasIndirectResult)
+            && LatestResult.bHasIndirectResult
+            && LatestResult.DirectResult.
+                bUsedHardwareRayTracing
+            && LatestResult.IndirectResult.
+                bUsedHardwareRayTracing)
         {
             const FUERayTracingAudioSourceSimulationResult&
                 Result = LatestResult;
@@ -2584,7 +2647,7 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveControls(FScenarioState
                 && LatestResult.bHasDirectResult
                 && LatestResult.DirectGeneration != 0
                 && LatestResult.DirectResult.
-                    bRayTracingAvailable;
+                    bUsedHardwareRayTracing;
             if (!IsValid(Pawn)
                 || !bSweepDependenciesReady
                 || !bHardwareDirectReady)

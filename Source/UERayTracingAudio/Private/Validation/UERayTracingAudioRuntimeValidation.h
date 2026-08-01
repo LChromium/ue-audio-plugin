@@ -30,6 +30,11 @@ public:
     void Stop();
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class
+        FUERayTracingAudioRuntimeValidationWorldLifecycleTest;
+#endif
+
     struct FScenarioState
     {
         TWeakObjectPtr<UWorld> World;
@@ -141,6 +146,7 @@ private:
     };
 
     void CreateScenario(UWorld* World);
+    bool ClaimValidationOwnership();
     bool Tick(float DeltaTime);
     bool StartDirectSweep(
         FScenarioState& State,

@@ -38,6 +38,16 @@ class AudioRealtimeSafetyAuditTests(unittest.TestCase):
         self.assertGreaterEqual(report.audited_bodies, report.audited_functions)
         self.assertGreater(report.audited_lines, 500)
 
+    def test_async_rhi_readback_uses_one_way_weak_publication(self) -> None:
+        report = validate_audio_realtime_safety.audit_repo(REPO_ROOT)
+        rhi_violations = tuple(
+            violation
+            for violation in report.violations
+            if "UERayTracingAudioRayTracingDevice.cpp"
+            in violation.relative_path
+        )
+        self.assertEqual(rhi_violations, ())
+
     def test_detects_lock_heap_shared_ownership_blocking_and_uobject_access(
         self,
     ) -> None:

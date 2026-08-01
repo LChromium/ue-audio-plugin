@@ -382,6 +382,9 @@ void FUERayTracingAudioOcclusionPlugin::ProcessAudio(const FAudioPluginSourceInp
             }
         }
         MonoInput /= static_cast<float>(NumChannels);
+        MonoInput = FMath::IsFinite(MonoInput)
+            ? MonoInput
+            : 0.0f;
 
         const FVector2f IndirectWet = SourceState.IndirectRenderer.ProcessSample(MonoInput);
         if (!FMath::IsFinite(IndirectWet.X))

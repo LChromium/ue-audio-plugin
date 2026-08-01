@@ -80,4 +80,6 @@ private:
     bool bCaptureCpuReference = false;
     bool bDirectCompleted = false;
     bool bIndirectCompleted = false;
+    bool bDirectUsedHardwareRayTracing = false;
+    bool bIndirectUsedHardwareRayTracing = false;
 };

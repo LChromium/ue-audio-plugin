@@ -34,6 +34,9 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioDirectSimulationResult
     bool bHasListener = false;
     bool bIsOccluded = false;
     bool bRayTracingAvailable = false;
+    // True only when the accepted generation was actually dispatched through
+    // the hardware ray-tracing path. Capability alone is not provenance.
+    bool bUsedHardwareRayTracing = false;
     float DistanceCm = 0.0f;
     // Linear sound-pressure/amplitude gain. Acoustic intensity follows its
     // square, so doubling distance halves amplitude rather than quartering it.
@@ -93,6 +96,7 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioIndirectSimulationResult
     bool bUsedHybrid = false;
     bool bUsedParametricTail = false;
     bool bUsedTemporalSmoothing = false;
+    bool bUsedHardwareRayTracing = false;
     int32 NumValidPaths = 0;
     float IndirectGain = 0.0f;
     float EarlyReflectionGain = 0.0f;

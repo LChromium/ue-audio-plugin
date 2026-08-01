@@ -1529,6 +1529,85 @@ bool FUERayTracingAudioLateReverbPreparedCapacityTest::RunTest(
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioWetNonFiniteStateRecoveryTest,
+    "UERayTracingAudio.Audio.WetNonFiniteStateRecovery",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioWetNonFiniteStateRecoveryTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    constexpr int32 TestSampleRate = 8000;
+    constexpr int32 BlockSize = 8;
+
+    FUERayTracingAudioPartitionedConvolver Convolver;
+    Convolver.SetKernel(
+        FUERayTracingAudioConvolutionKernel::Build(
+            TArray<float>{ 1.0f, 0.5f },
+            TestSampleRate,
+            BlockSize));
+    Convolver.ProcessSample(
+        std::numeric_limits<float>::quiet_NaN());
+    bool bConvolutionRecovered = false;
+    bool bConvolutionStayedFinite = true;
+    for (int32 SampleIndex = 0; SampleIndex < 64; ++SampleIndex)
+    {
+        const float Output = Convolver.ProcessSample(
+            SampleIndex == 16 ? 1.0f : 0.0f);
+        bConvolutionStayedFinite &= FMath::IsFinite(Output);
+        bConvolutionRecovered |= FMath::Abs(Output) > UE_SMALL_NUMBER;
+    }
+    TestTrue(
+        TEXT("A non-finite convolution input never enters persistent FFT history"),
+        bConvolutionStayedFinite);
+    TestTrue(
+        TEXT("Partitioned convolution recovers for later finite input"),
+        bConvolutionRecovered);
+
+    FUERayTracingAudioIndirectSimulationResult TailParameters;
+    TailParameters.bHasValidPaths = true;
+    TailParameters.bUsedParametricTail = true;
+    TailParameters.LateReverbGain = 0.5f;
+    TailParameters.ParametricDelaySeconds = 0.0f;
+    TailParameters.ReverbTimes = FVector(0.2f, 0.25f, 0.3f);
+    TailParameters.ParametricEq = FVector::OneVector;
+    FUERayTracingAudioLateReverbRenderer LateRenderer;
+    FUERayTracingAudioLateReverbRenderer CleanLateRenderer;
+    LateRenderer.Initialize(TestSampleRate, 0.5f);
+    CleanLateRenderer.Initialize(TestSampleRate, 0.5f);
+    LateRenderer.Configure(&TailParameters, 0.5f);
+    CleanLateRenderer.Configure(&TailParameters, 0.5f);
+    LateRenderer.ProcessSample(
+        std::numeric_limits<float>::infinity());
+    CleanLateRenderer.ProcessSample(0.0f);
+    bool bLateStayedFinite = true;
+    bool bLateRecovered = false;
+    bool bLateMatchesCleanState = true;
+    for (int32 SampleIndex = 0; SampleIndex < TestSampleRate; ++SampleIndex)
+    {
+        const float Input = SampleIndex == 1 ? 1.0f : 0.0f;
+        const float Output = LateRenderer.ProcessSample(Input);
+        const float CleanOutput = CleanLateRenderer.ProcessSample(Input);
+        bLateStayedFinite &= FMath::IsFinite(Output);
+        bLateRecovered |= FMath::Abs(CleanOutput) > UE_SMALL_NUMBER;
+        bLateMatchesCleanState &= FMath::IsNearlyEqual(
+            Output,
+            CleanOutput,
+            1.0e-6f);
+    }
+    TestTrue(
+        TEXT("A non-finite pre-delay input cannot poison comb feedback"),
+        bLateStayedFinite);
+    TestTrue(
+        TEXT("Late reverb recovers for later finite input"),
+        bLateRecovered);
+    TestTrue(
+        TEXT("Replacing non-finite input with silence preserves clean late-reverb state"),
+        bLateMatchesCleanState);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUERayTracingAudioIndirectDataSourceModesTest,
     "UERayTracingAudio.Audio.IndirectDataSourceModes",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

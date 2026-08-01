@@ -72,6 +72,7 @@ public:
     FSnapshotPtr Read(uint64 AudioComponentId) const;
     void Remove(uint64 AudioComponentId);
     void Reset();
+    void ReclaimRetiredSnapshots();
     uint64 GetDroppedPublishCount() const;
     uint64 GetReadRetryCount() const;
 
@@ -84,6 +85,7 @@ private:
 
     int32 FindEntry(uint64 AudioComponentId) const;
     int32 FindOrReserveEntry(uint64 AudioComponentId);
+    void ReclaimRetiredSnapshotsLocked();
 
     static constexpr int32 EntryCapacity = 1024;
     static constexpr int32 SnapshotSlotsPerEntry = 3;

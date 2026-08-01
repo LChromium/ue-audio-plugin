@@ -220,3 +220,19 @@ Next:
 1. The user enters PIE, waits for hardware/data-source gates, presses F8, then uses F3/F6 and records target-device Human Pass/Fail for recovery, restart, click/pop, silence/timing, moving occlusion, and audible distance/air differences.
 2. Run true multi-PIE hardware isolation and the OpenSpace/NearWall/Enclosed R3 matrix; neither automated R2 evidence nor fixture telemetry closes them.
 3. Triage the enumerated Task 1-4 and Task 7 deferred technical items. Do not declare the overall plugin complete while these manual/R3 gates remain open.
+
+### Task 8 Final Fix Wave: whole-branch review closure
+
+Completed:
+
+1. Fixed the P1 RHI publication race and all twelve required P2 findings in one wave: query lifetime/cancellation, Direct distance/provenance, Listener invalidation, Wet finite-state recovery, snapshot and convolver reclamation, artifact contract, side-effect-free Bake admission, sequential-PIE ownership, deterministic Editor fixture normalization, and strict hardware/terminal launcher evidence.
+2. Added focused RED/GREEN regressions for each deterministic seam. A full-suite snapshot failure exposed an initial retired-slot accounting bug; bounded current-entry reclamation fixed it. An artifact run exposed a partial-write read race and `auto_checks=0`; complete-line readiness plus fixture-only `IndirectMix=0.8` fixed both without lowering thresholds.
+3. Passed final static gates, prescribed Development build, focused Automation `15/15 + 40/40 + 9/9`, full Automation `62/62`, prescribed Shipping build/isolation, exact artifact flow, and exact default launcher.
+4. A 2026-08-01 self-review then found and closed same-actor duplicate acoustic Geometry export: RED observed expected `1`, actual `2`; deterministic transactional normalization plus final exact-one validation turned it GREEN.
+5. Repassed Development build, audit `39/40/1775`, Python `70/70`, Automation `15/15 + 40/40 + 9/9 + 62/62`, artifact `1/1/1/4/1/1`, and the default hardware launcher. Final Editor PID `36896` is responding on the default scene.
+
+Next:
+
+1. The user records the target-device Human Pass for Original/Rendered, Direct recovery, Wet/Full difference, restart/timing, click/pop, moving player/occlusion, and audible distance/air behavior.
+2. Run true multi-PIE hardware isolation and the OpenSpace/NearWall/Enclosed R3 matrix.
+3. Retain the oversized-callback P3 and prior Task 1-4 minors; do not declare the overall plugin complete until the remaining acceptance work is closed.

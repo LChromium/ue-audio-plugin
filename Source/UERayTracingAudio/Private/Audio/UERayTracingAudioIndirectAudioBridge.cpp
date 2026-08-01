@@ -981,6 +981,17 @@ FUERayTracingAudioIndirectAudioBridge::ConfigureConvolver(
                 InvalidSource;
     }
 
+    // A blocked owner transition must remain silent until all leases from the
+    // old owner can be returned. Retrying here keeps the audio path bounded
+    // while preventing SourceId reuse from replaying stale Wet history.
+    if (Convolver.IsOutputSuppressed()
+        && !ReleaseConvolver(SourceId, Lane, Convolver))
+    {
+        return
+            EUERayTracingAudioConvolverConfigureResult::
+                ReturnQueueFull;
+    }
+
     if (FUERayTracingAudioPreparedConvolverState*
         Retired = Convolver.PeekRetiredState())
     {
@@ -992,6 +1003,11 @@ FUERayTracingAudioIndirectAudioBridge::ConfigureConvolver(
         {
             ConvolutionRuntime->
                 RecordReturnOverflowAudio();
+            if (Convolver.GetCurrentOwnerKey()
+                != AudioComponentId)
+            {
+                Convolver.SuppressOutput();
+            }
             return
                 EUERayTracingAudioConvolverConfigureResult::
                     ReturnQueueFull;
@@ -1112,6 +1128,7 @@ bool FUERayTracingAudioIndirectAudioBridge::ReleaseConvolver(
             SourceId,
             LaneIndex) < 3)
     {
+        Convolver.SuppressOutput();
         ConvolutionRuntime->
             RecordReturnOverflowAudio();
         return false;
@@ -1133,6 +1150,7 @@ bool FUERayTracingAudioIndirectAudioBridge::ReleaseConvolver(
                 Detached[Index],
                 true))
         {
+            Convolver.SuppressOutput();
             ConvolutionRuntime->
                 RecordReturnOverflowAudio();
             return false;

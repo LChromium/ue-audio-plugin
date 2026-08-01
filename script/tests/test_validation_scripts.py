@@ -126,6 +126,51 @@ def make_interactive_smoke_summary(
     )
 
 
+def make_editor_ab_artifact_marker(
+    *,
+    direct_preset: str = "clear",
+    reflection_environment: str = "enclosed",
+) -> str:
+    return (
+        "UERayTracingAudioEditor A/B artifacts ready: "
+        "hardware=1 auto_checks=1 distinct=1 "
+        'input="/Game/FirstPerson/Audio/MarchingBand.MarchingBand" '
+        f'direct_preset="{direct_preset}" '
+        f'reflection_environment="{reflection_environment}" '
+        "distance_cm=200.000 visibility=1.000000 occlusion=1.000000 "
+        "distance_attenuation=0.500000 "
+        'ir_asset="/Game/UERayTracingAudio/Validation/IR.IR" '
+        "imported_assets=4 "
+        'reference="C:/Artifacts/reference.wav" '
+        'direct="C:/Artifacts/direct.wav" '
+        'wet="C:/Artifacts/wet.wav" '
+        'full="C:/Artifacts/full.wav" '
+        'manifest="C:/Artifacts/manifest.json" '
+        "reflection_rays=4096 reflection_bounces=8 hw_paths=12 "
+        "hw_gain=0.2 direct_level=0.5 wet_level=0.2 full_level=0.6 "
+        "direct_wet_difference=0.4 wet_stereo_difference=0.2 "
+        "directional_wet=1 common_scale=1.000000."
+    )
+
+
+def make_acoustic_validation_summary(
+    direct_path_marker: str,
+    indirect_path_marker: str,
+) -> str:
+    return "\n".join(
+        (
+            direct_path_marker,
+            indirect_path_marker,
+            "UERayTracingAudio validation result: sources=4 "
+            "direct_batch_sources=4 indirect_batch_sources=4 "
+            "visibility=0.0000 valid_paths=12 indirect_gain=0.250000",
+            "UERayTracingAudio validation CPU reference: hardware_paths=12 "
+            "cpu_paths=12 path_relative_delta=0.0000 hardware_gain=0.250000 "
+            "cpu_gain=0.250000 gain_relative_delta=0.0000.",
+        )
+    )
+
+
 class FakeRunningProcess:
     def poll(self) -> None:
         return None
@@ -395,6 +440,78 @@ class RuntimeValidationTests(unittest.TestCase):
                 expected_reflection_environment="open_space",
                 expected_distance_cm=400,
                 expected_air_absorption_profile="stress",
+            )
+
+    def test_editor_ab_artifact_marker_matches_producer_order_and_environment(
+        self,
+    ) -> None:
+        marker = make_editor_ab_artifact_marker(
+            reflection_environment="near_wall",
+        )
+        values = launch_runtime_validation.validate_editor_ab_artifacts_marker(
+            marker,
+            expected_direct_preset="clear",
+            expected_reflection_environment="near_wall",
+        )
+        self.assertEqual(values["direct_preset"], "clear")
+        self.assertEqual(values["reflection_environment"], "near_wall")
+        self.assertEqual(values["distance_cm"], 200.0)
+        self.assertEqual(values["common_scale"], 1.0)
+
+    def test_editor_ready_waits_for_complete_ab_artifact_marker(
+        self,
+    ) -> None:
+        complete_marker = make_editor_ab_artifact_marker()
+        partial_marker = complete_marker.rsplit(" common_scale=", 1)[0]
+        partial_log = (
+            launch_runtime_validation.EDITOR_READY_PATTERN
+            + "\n"
+            + partial_marker
+        )
+        complete_log = (
+            launch_runtime_validation.EDITOR_READY_PATTERN
+            + "\n"
+            + complete_marker
+        )
+        with patch.object(
+            launch_runtime_validation,
+            "read_text",
+            side_effect=(partial_log, complete_log),
+        ) as read_text_mock, patch.object(
+            launch_runtime_validation.time,
+            "sleep",
+        ):
+            launch_runtime_validation.wait_for_editor_ready(
+                FakeRunningProcess(),
+                Path("Editor.log"),
+                timeout_seconds=1.0,
+                required_markers=(
+                    launch_runtime_validation.
+                    EDITOR_AB_ARTIFACTS_MARKER,
+                ),
+            )
+        self.assertEqual(read_text_mock.call_count, 2)
+
+    def test_editor_ab_artifact_marker_rejects_duplicate_malformed_and_wrong_environment(
+        self,
+    ) -> None:
+        marker = make_editor_ab_artifact_marker()
+        for rejected, reason in (
+            (marker + "\n" + marker, "exactly one strict"),
+            (marker.replace("distance_cm=200.000", "distance_cm=bad"), "strict"),
+        ):
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(RuntimeError, reason):
+                    launch_runtime_validation.validate_editor_ab_artifacts_marker(
+                        rejected,
+                        expected_direct_preset="clear",
+                        expected_reflection_environment="enclosed",
+                    )
+        with self.assertRaisesRegex(RuntimeError, "reflection environment"):
+            launch_runtime_validation.validate_editor_ab_artifacts_marker(
+                marker,
+                expected_direct_preset="clear",
+                expected_reflection_environment="open_space",
             )
 
     def test_direct_sweep_gate_accepts_one_strict_hardware_marker(self) -> None:
@@ -746,6 +863,34 @@ class RuntimeValidationTests(unittest.TestCase):
                 require_validation=True,
             )
 
+    def test_acoustic_summary_requires_actual_hardware_submission_markers(
+        self,
+    ) -> None:
+        fallback_only = make_acoustic_validation_summary(
+            "falls back to physics line traces for direct sound visibility queries",
+            "falls back to CPU acoustic scene queries for indirect sound path tracing",
+        )
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "hardware submission"):
+                launch_runtime_validation.print_audio_path_summary(
+                    fallback_only,
+                    "Game",
+                    require_validation=True,
+                )
+
+        hardware_with_reference_fallback = make_acoustic_validation_summary(
+            "submits direct sound visibility queries asynchronously to the render thread\n"
+            "falls back to physics line traces for direct sound visibility queries",
+            "submits indirect sound energy-field queries asynchronously to the render thread\n"
+            "falls back to CPU acoustic scene queries for indirect sound path tracing",
+        )
+        with redirect_stdout(io.StringIO()):
+            launch_runtime_validation.print_audio_path_summary(
+                hardware_with_reference_fallback,
+                "Game",
+                require_validation=True,
+            )
+
     def test_runtime_data_source_summary_requires_audible_three_mode_evidence(self) -> None:
         log_text = "\n".join(
             (
@@ -765,6 +910,41 @@ class RuntimeValidationTests(unittest.TestCase):
                 require_validation=True,
                 require_data_sources=True,
             )
+
+    def test_runtime_data_source_summary_requires_unique_strict_terminal_markers(
+        self,
+    ) -> None:
+        base = make_data_source_summary()
+        hard_line = next(
+            line
+            for line in base.splitlines()
+            if launch_runtime_validation.HARD_REALTIME_MARKER in line
+        )
+        data_line = next(
+            line
+            for line in base.splitlines()
+            if launch_runtime_validation.DATA_SOURCE_VALIDATION_MARKER in line
+        )
+        for rejected, reason in (
+            (base + "\n" + hard_line, "exactly one strict hard-real-time"),
+            (base + "\n" + data_line, "exactly one strict data-source"),
+            (
+                base.replace("callbacks=300", "callbacks=malformed"),
+                "strict hard-real-time",
+            ),
+            (
+                base.replace("baked_buffers=30", "baked_buffers=malformed"),
+                "strict data-source",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                with redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(RuntimeError, reason):
+                        launch_runtime_validation.print_audio_path_summary(
+                            rejected,
+                            "Game",
+                            require_data_sources=True,
+                        )
 
     def test_runtime_data_source_summary_rejects_silent_hybrid(self) -> None:
         log_text = make_data_source_summary(hybrid_non_silent=0)
