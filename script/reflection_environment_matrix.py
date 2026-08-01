@@ -145,7 +145,7 @@ def _finite_number(
         return 0.0
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         failures.append(f"finite numeric {field}")
         return 0.0
     if not math.isfinite(number):
@@ -169,13 +169,22 @@ def _normalized_direction_dot(
     first: tuple[float, float, float],
     second: tuple[float, float, float],
 ) -> float | None:
-    first_length = math.sqrt(sum(component * component for component in first))
-    second_length = math.sqrt(sum(component * component for component in second))
-    if first_length <= ZERO_TOLERANCE or second_length <= ZERO_TOLERANCE:
+    first_scale = max(abs(component) for component in first)
+    second_scale = max(abs(component) for component in second)
+    if first_scale <= ZERO_TOLERANCE or second_scale <= ZERO_TOLERANCE:
         return None
+
+    first_scaled = tuple(component / first_scale for component in first)
+    second_scaled = tuple(component / second_scale for component in second)
+    first_length = math.sqrt(
+        sum(component * component for component in first_scaled)
+    )
+    second_length = math.sqrt(
+        sum(component * component for component in second_scaled)
+    )
     return sum(
         first_component * second_component
-        for first_component, second_component in zip(first, second)
+        for first_component, second_component in zip(first_scaled, second_scaled)
     ) / (first_length * second_length)
 
 
@@ -271,7 +280,12 @@ def validate_case_manifest(case: CaseManifest) -> dict[str, float | int | str]:
             failures.append(f"{environment} positive hardware/CPU dominant direction")
         else:
             direction_dot = direction_result
-            if direction_dot < MIN_DIRECTION_DOT:
+            if not math.isfinite(direction_dot):
+                failures.append(
+                    f"{environment} hardware/CPU dominant direction agreement "
+                    "(non-finite)"
+                )
+            elif direction_dot < MIN_DIRECTION_DOT:
                 failures.append(
                     f"{environment} hardware/CPU dominant direction agreement "
                     f"({direction_dot:.6f})"
@@ -296,6 +310,17 @@ def validate_case_manifest(case: CaseManifest) -> dict[str, float | int | str]:
             "cpu_reference_early_reflection_gain",
             "cpu_reference_late_reverb_gain",
             "cpu_reference_impulse_response_energy",
+            "hardware_earliest_arrival_seconds",
+            "hardware_average_delay_seconds",
+            "hardware_reverb_time_low_seconds",
+            "hardware_reverb_time_mid_seconds",
+            "hardware_reverb_time_high_seconds",
+            "hardware_dominant_arrival_direction_x",
+            "hardware_dominant_arrival_direction_y",
+            "hardware_dominant_arrival_direction_z",
+            "cpu_reference_dominant_arrival_direction_x",
+            "cpu_reference_dominant_arrival_direction_y",
+            "cpu_reference_dominant_arrival_direction_z",
         ):
             if abs(numbers[field]) > ZERO_TOLERANCE:
                 failures.append(f"open_space zero {field}")

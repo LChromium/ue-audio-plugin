@@ -177,15 +177,10 @@ def make_payload(environment: str) -> dict[str, object]:
         "hardware_directional_bin_count": values["directional_bins"],
         "cpu_reference_directional_bin_count": values["directional_bins"],
         "hardware_earliest_arrival_seconds": values["earliest_arrival"],
-        "cpu_reference_earliest_arrival_seconds": values["earliest_arrival"],
         "hardware_average_delay_seconds": values["average_delay"],
-        "cpu_reference_average_delay_seconds": values["average_delay"],
         "hardware_reverb_time_low_seconds": reverb_low,
-        "cpu_reference_reverb_time_low_seconds": reverb_low,
         "hardware_reverb_time_mid_seconds": reverb_mid,
-        "cpu_reference_reverb_time_mid_seconds": reverb_mid,
         "hardware_reverb_time_high_seconds": reverb_high,
-        "cpu_reference_reverb_time_high_seconds": reverb_high,
     }
     for prefix in ("hardware", "cpu_reference"):
         payload[f"{prefix}_dominant_arrival_direction_x"] = direction[0]
@@ -370,6 +365,14 @@ class ReflectionEnvironmentCaseTests(unittest.TestCase):
                             make_case("near_wall", payload)
                         )
 
+    def test_rejects_oversized_integer_as_non_finite_numeric_data(self) -> None:
+        self.assert_rejected(
+            "near_wall",
+            "frames",
+            10**400,
+            "finite numeric frames",
+        )
+
     def test_rejects_clipping(self) -> None:
         self.assert_rejected(
             "near_wall", "clipped_sample_count", 1, "zero clipped samples"
@@ -438,6 +441,25 @@ class ReflectionEnvironmentCaseTests(unittest.TestCase):
             "cpu_reference_early_reflection_gain",
             "cpu_reference_late_reverb_gain",
             "cpu_reference_impulse_response_energy",
+        ):
+            with self.subTest(field=field):
+                self.assert_rejected(
+                    "open_space", field, 1.0e-8, f"open_space zero {field}"
+                )
+
+    def test_rejects_open_space_nonzero_tail_or_direction_metadata(self) -> None:
+        for field in (
+            "hardware_earliest_arrival_seconds",
+            "hardware_average_delay_seconds",
+            "hardware_reverb_time_low_seconds",
+            "hardware_reverb_time_mid_seconds",
+            "hardware_reverb_time_high_seconds",
+            "hardware_dominant_arrival_direction_x",
+            "hardware_dominant_arrival_direction_y",
+            "hardware_dominant_arrival_direction_z",
+            "cpu_reference_dominant_arrival_direction_x",
+            "cpu_reference_dominant_arrival_direction_y",
+            "cpu_reference_dominant_arrival_direction_z",
         ):
             with self.subTest(field=field):
                 self.assert_rejected(
@@ -519,6 +541,37 @@ class ReflectionEnvironmentCaseTests(unittest.TestCase):
             1.0,
             "hardware/CPU dominant direction agreement",
         )
+
+    def test_accepts_huge_finite_matching_dominant_directions(self) -> None:
+        payload = make_payload("near_wall")
+        for prefix in ("hardware", "cpu_reference"):
+            payload[f"{prefix}_dominant_arrival_direction_x"] = 1.0e308
+            payload[f"{prefix}_dominant_arrival_direction_y"] = 1.0e308
+            payload[f"{prefix}_dominant_arrival_direction_z"] = 0.0
+
+        metrics = reflection_environment_matrix.validate_case_manifest(
+            make_case("near_wall", payload)
+        )
+
+        direction_dot = float(metrics["hardware_cpu_direction_dot"])
+        self.assertTrue(math.isfinite(direction_dot))
+        self.assertAlmostEqual(direction_dot, 1.0)
+
+    def test_rejects_huge_finite_divergent_dominant_directions(self) -> None:
+        payload = make_payload("near_wall")
+        payload["hardware_dominant_arrival_direction_x"] = 1.0e308
+        payload["hardware_dominant_arrival_direction_y"] = 1.0e308
+        payload["hardware_dominant_arrival_direction_z"] = 0.0
+        payload["cpu_reference_dominant_arrival_direction_x"] = 1.0e308
+        payload["cpu_reference_dominant_arrival_direction_y"] = -1.0e308
+        payload["cpu_reference_dominant_arrival_direction_z"] = 0.0
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "hardware/CPU dominant direction agreement",
+        ):
+            reflection_environment_matrix.validate_case_manifest(
+                make_case("near_wall", payload)
+            )
 
     def test_rejects_zero_dominant_direction_for_nonzero_environment(self) -> None:
         self.assert_rejected(
