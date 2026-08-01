@@ -860,6 +860,19 @@ class RuntimeValidationTests(unittest.TestCase):
             ) in enumerate(cases):
                 with self.subTest(label=label):
                     case_root = root / str(index)
+                    case_root.mkdir(parents=True, exist_ok=True)
+                    stale_result_path = case_root / "result.json"
+                    stale_temporary_path = stale_result_path.with_suffix(
+                        stale_result_path.suffix + ".tmp"
+                    )
+                    stale_result_path.write_text(
+                        '{"passed": true}\n',
+                        encoding="utf-8",
+                    )
+                    stale_temporary_path.write_text(
+                        '{"passed": true}\n',
+                        encoding="utf-8",
+                    )
                     status, error, result_path, _, _ = run_visible_editor_helper(
                         case_root,
                         log_text=log_text,
@@ -873,6 +886,7 @@ class RuntimeValidationTests(unittest.TestCase):
                         self.assertIsInstance(error, RuntimeError)
                         self.assertRegex(str(error), expected_error)
                     self.assertFalse(result_path.exists())
+                    self.assertFalse(stale_temporary_path.exists())
 
     def test_direct_sweep_gate_accepts_one_strict_hardware_marker(self) -> None:
         values = self.validate_direct_sweep(

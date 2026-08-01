@@ -53,6 +53,14 @@ def read_log(log_path: Path) -> str:
 def main() -> int:
     args = parse_args()
     repo_root = Path(__file__).resolve().parent.parent
+    result_json_path = args.result_json
+    if result_json_path is not None and not result_json_path.is_absolute():
+        result_json_path = repo_root / result_json_path
+    if result_json_path is not None:
+        result_json_path.unlink(missing_ok=True)
+        result_json_path.with_suffix(
+            result_json_path.suffix + ".tmp"
+        ).unlink(missing_ok=True)
     plugin_files = sorted(repo_root.glob("*.uplugin"))
     if len(plugin_files) != 1:
         raise RuntimeError(f"Expected exactly one .uplugin file in {repo_root}.")
@@ -225,9 +233,6 @@ def main() -> int:
             )
             return 1
 
-        result_json_path = args.result_json
-        if result_json_path is not None and not result_json_path.is_absolute():
-            result_json_path = repo_root / result_json_path
         payload = {
             "schema_version": 1,
             "passed": True,
