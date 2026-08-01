@@ -860,15 +860,10 @@ TSharedPtr<FUERayTracingAudioBakeJob> FUERayTracingAudioManager::StartImpulseRes
 
     if (!RebuildSceneForBake(World))
     {
-        Job->SetFailed(TEXT("No UERayTracingAudio geometry components were exported for the bake."));
+        Job->SetFailed(TEXT("Could not rebuild the acoustic scene for the bake."));
         return Job;
     }
     FWorldAcousticState& WorldState = GetOrCreateWorldAcousticState(World);
-    if (WorldState.Scene.IsEmpty())
-    {
-        Job->SetFailed(TEXT("No UERayTracingAudio geometry components were exported for the bake."));
-        return Job;
-    }
 
     FUERayTracingAudioBakeSettings ClampedSettings = Settings;
     ClampedSettings.NumRays = FMath::Clamp(ClampedSettings.NumRays, 1, 1048576);
@@ -1170,7 +1165,7 @@ bool FUERayTracingAudioManager::RebuildSceneForBake(UWorld* World)
     WorldState.Scene.SetStaticGeometry(MoveTemp(GeometryExports));
     WorldState.SceneSignature = BuildSceneSignature(WorldState.Scene);
     WorldState.bSceneDirty = false;
-    return !WorldState.Scene.IsEmpty();
+    return true;
 }
 
 FString FUERayTracingAudioManager::BuildSceneSignature(

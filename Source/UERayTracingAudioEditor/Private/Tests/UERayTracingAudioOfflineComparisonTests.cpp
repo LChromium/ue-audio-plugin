@@ -1,6 +1,8 @@
 #include "Bake/UERayTracingAudioOfflineRenderer.h"
 #include "Bake/UERayTracingAudioEditorBakeAdmission.h"
+#include "Bake/UERayTracingAudioBakeJob.h"
 
+#include "Algo/AllOf.h"
 #include "Components/AudioComponent.h"
 #include "Components/SceneComponent.h"
 #include "Components/UERayTracingAudioGeometryComponent.h"
@@ -13,6 +15,7 @@
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
+#include "Managers/UERayTracingAudioManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Paths.h"
 #include "Sound/SoundWave.h"
@@ -204,6 +207,117 @@ bool FUERayTracingAudioEditorBakeAdmissionNoSideEffectTest::RunTest(
         TEXT("Successful admission also leaves ordinary Audio.Sound unchanged"),
         Audio->GetSound(),
         static_cast<USoundBase*>(ExistingSound));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioEditorEmptySceneBakeAdmissionTest,
+    "UERayTracingAudio.Editor.EmptySceneBakeAdmission",
+    EAutomationTestFlags::EditorContext
+        | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioEditorEmptySceneBakeAdmissionTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    FManagedEditorTestWorld ManagedWorld(
+        TEXT("UERayTracingAudioEditorEmptySceneBakeAdmission"));
+    UWorld* World = ManagedWorld.Get();
+    TestNotNull(TEXT("Empty-scene bake test world exists"), World);
+    if (!World)
+    {
+        return false;
+    }
+
+    AActor* SourceActor = World->SpawnActor<AActor>();
+    AActor* ListenerActor = World->SpawnActor<AActor>();
+    TestNotNull(TEXT("Empty-scene bake Source actor exists"), SourceActor);
+    TestNotNull(TEXT("Empty-scene bake Listener actor exists"), ListenerActor);
+    if (!SourceActor || !ListenerActor)
+    {
+        return false;
+    }
+
+    SourceActor->SetActorLocation(FVector::ZeroVector);
+    ListenerActor->SetActorLocation(FVector(200.0, 0.0, 0.0));
+    UUERayTracingAudioSourceComponent* Source =
+        NewObject<UUERayTracingAudioSourceComponent>(SourceActor);
+    UUERayTracingAudioListenerComponent* Listener =
+        NewObject<UUERayTracingAudioListenerComponent>(ListenerActor);
+    SourceActor->AddInstanceComponent(Source);
+    ListenerActor->AddInstanceComponent(Listener);
+    Source->RegisterComponent();
+    Listener->RegisterComponent();
+
+    FUERayTracingAudioManager Manager;
+    FUERayTracingAudioBakeSettings Settings;
+    Settings.NumRays = 4096;
+    Settings.MaxBounces = 32;
+    Settings.bRequireHardwareRayTracing = false;
+    const TSharedPtr<FUERayTracingAudioBakeJob> Job =
+        Manager.StartImpulseResponseBake(Source, Listener, Settings, true);
+
+    TestNotNull(TEXT("Empty-scene bake returns a job"), Job.Get());
+    if (!Job.IsValid())
+    {
+        return false;
+    }
+    TestEqual(
+        TEXT("A valid zero-geometry acoustic scene is admitted for tracing"),
+        Job->GetState(),
+        EUERayTracingAudioBakeJobState::Running);
+    TestEqual(
+        TEXT("The admitted empty acoustic scene retains the zero signature"),
+        Manager.GetCurrentSceneSignature(World),
+        FString(TEXT("00000000")));
+    Job->Cancel();
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioEditorZeroEnergyIndirectMetadataTest,
+    "UERayTracingAudio.Editor.ZeroEnergyIndirectMetadata",
+    EAutomationTestFlags::EditorContext
+        | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioEditorZeroEnergyIndirectMetadataTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    FUERayTracingAudioContext Context;
+    FUERayTracingAudioSimulator Simulator(Context);
+    FUERayTracingAudioIndirectSimulationInput Input;
+    Input.NumDelayBins = 4;
+    Input.DurationSeconds = 0.1f;
+    Input.EffectType = EUERayTracingAudioIndirectEffectType::Convolution;
+
+    FUERayTracingAudioEnergyFieldTraceResult TraceResult;
+    TraceResult.DelayBinEnergy.Init(FVector::ZeroVector, Input.NumDelayBins);
+    TraceResult.DelayBinDirection.Init(FVector::ZeroVector, Input.NumDelayBins);
+    const FUERayTracingAudioIndirectSimulationResult Result =
+        Simulator.FinalizeIndirectSound(Input, MoveTemp(TraceResult));
+
+    TestFalse(
+        TEXT("A zero-energy field has no valid indirect paths"),
+        Result.bHasValidPaths);
+    TestEqual(TEXT("Zero energy has zero indirect gain"), Result.IndirectGain, 0.0f);
+    TestEqual(TEXT("Zero energy has zero early gain"), Result.EarlyReflectionGain, 0.0f);
+    TestEqual(TEXT("Zero energy has zero late gain"), Result.LateReverbGain, 0.0f);
+    TestEqual(TEXT("Zero energy has zero low-band RT60"), Result.ReverbTimes.X, 0.0);
+    TestEqual(TEXT("Zero energy has zero mid-band RT60"), Result.ReverbTimes.Y, 0.0);
+    TestEqual(TEXT("Zero energy has zero high-band RT60"), Result.ReverbTimes.Z, 0.0);
+    TestEqual(
+        TEXT("Zero energy retains the requested impulse-response resolution"),
+        Result.ReconstructedImpulseResponse.Num(),
+        Input.NumDelayBins);
+    TestTrue(
+        TEXT("Zero energy reconstructs only physical-zero samples"),
+        Algo::AllOf(
+            Result.ReconstructedImpulseResponse,
+            [](const float Sample)
+            {
+                return Sample == 0.0f;
+            }));
     return true;
 }
 

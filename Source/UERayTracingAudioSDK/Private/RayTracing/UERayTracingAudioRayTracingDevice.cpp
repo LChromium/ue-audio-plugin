@@ -1140,9 +1140,47 @@ namespace
 
         if (Instances.IsEmpty())
         {
-            OutSceneView = nullptr;
-            OutNumGeometrySegments = 0;
-            return true;
+            // DXR needs a TLAS to execute a ray dispatch even when the logical
+            // acoustic scene is empty. Keep this sentinel out of Geometry and
+            // give it an all-zero instance mask so no plugin ray can intersect
+            // it. This preserves an exact zero-energy scene while proving the
+            // Direct and Indirect results came through a real RHI dispatch.
+            Vertices = {
+                FVector3f(0.0f, 0.0f, 0.0f),
+                FVector3f(1.0f, 0.0f, 0.0f),
+                FVector3f(0.0f, 1.0f, 0.0f),
+            };
+            Indices = { 0u, 1u, 2u };
+
+            FBufferRHIRef SentinelVertexBuffer;
+            FBufferRHIRef SentinelIndexBuffer;
+            FRayTracingGeometryRHIRef SentinelRayTracingGeometry;
+            if (!CreateRayTracingGeometryFromArrays(
+                RHICmdList,
+                TEXT("UERayTracingAudioEmptySceneSentinelBLAS"),
+                Vertices,
+                Indices,
+                SentinelVertexBuffer,
+                SentinelIndexBuffer,
+                SentinelRayTracingGeometry))
+            {
+                return false;
+            }
+
+            OutVertexBuffers.Add(SentinelVertexBuffer);
+            OutIndexBuffers.Add(SentinelIndexBuffer);
+            OutRayTracingGeometries.Add(SentinelRayTracingGeometry);
+            const int32 TransformIndex = InstanceTransforms.Add(FMatrix::Identity);
+            FRayTracingGeometryInstance& SentinelInstance =
+                Instances.AddDefaulted_GetRef();
+            SentinelInstance.GeometryRHI = SentinelRayTracingGeometry;
+            SentinelInstance.NumTransforms = 1;
+            SentinelInstance.Transforms =
+                MakeArrayView(&InstanceTransforms[TransformIndex], 1);
+            SentinelInstance.InstanceContributionToHitGroupIndex = 0;
+            SentinelInstance.DefaultUserData = 0u;
+            SentinelInstance.Mask = 0x00;
+            OutInstanceToGeometryIndex.Add(INDEX_NONE);
         }
 
         FRayTracingInstanceBufferBuilder InstanceBufferBuilder;
@@ -2217,8 +2255,7 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::BeginHardwareBatchReadback_RenderT
         Item.Result.DelayBinEnergy.Init(FVector::ZeroVector, FMath::Max(Item.Request.NumDelayBins, 1));
         Item.Result.DelayBinDirection.Init(FVector::ZeroVector, Item.Result.DelayBinEnergy.Num());
 
-        if (State->Geometry.IsEmpty()
-            || Item.Request.NumReflectionRays <= 0
+        if (Item.Request.NumReflectionRays <= 0
             || Item.Request.MaxReflectionBounces <= 0
             || Item.Request.DurationSeconds <= 0.0f)
         {
@@ -2988,7 +3025,7 @@ FUERayTracingAudioRayTracingDevice::SubmitRaysBatch(
     }
 
 #if RHI_RAYTRACING
-    if (IsRayTracingAvailable() && Request.Scene && !Request.Scene->IsEmpty())
+    if (IsRayTracingAvailable() && Request.Scene)
     {
         TArray<FUERayTracingAudioGeometryExport> Geometry = Request.Scene->GetStaticGeometry();
         const uint64 SceneCacheKey = Request.SceneCacheKey != 0
@@ -3079,7 +3116,7 @@ FUERayTracingAudioRayTracingDevice::SubmitIndirectEnergyFieldBatch(
         for (int32 RequestIndex = 0; RequestIndex < Requests.Num(); ++RequestIndex)
         {
             const FUERayTracingAudioEnergyFieldTraceRequest& Request = Requests[RequestIndex];
-            if (!Request.Scene || Request.Scene->IsEmpty())
+            if (!Request.Scene)
             {
                 Queries[RequestIndex]->Complete(false, FUERayTracingAudioEnergyFieldTraceResult());
                 continue;

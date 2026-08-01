@@ -652,7 +652,8 @@ namespace
             OutResult.ReverbTimes.Y = EstimateBandReverbTime(OutResult.EnergyField, LateStartBinIndex, 1);
             OutResult.ReverbTimes.Z = EstimateBandReverbTime(OutResult.EnergyField, LateStartBinIndex, 2);
 
-            if (OutResult.ReverbTimes.IsNearlyZero())
+            if (TotalMonoEnergy > MinimumIndirectEnergy
+                && OutResult.ReverbTimes.IsNearlyZero())
             {
                 const float EnergyScaleX = FMath::Clamp(TotalBandEnergy.X * 12.0f, 0.0f, 1.0f);
                 const float EnergyScaleY = FMath::Clamp(TotalBandEnergy.Y * 12.0f, 0.0f, 1.0f);

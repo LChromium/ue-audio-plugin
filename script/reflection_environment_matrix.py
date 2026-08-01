@@ -44,6 +44,7 @@ FAILURE_PATTERNS = (
     "Fatal error",
     "Unhandled Exception",
     "Assertion failed",
+    "Ensure condition failed",
     "LogWindows: Error",
 )
 
