@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import re
 import struct
 import subprocess
@@ -1666,6 +1667,37 @@ class ReflectionEnvironmentMatrixCliTests(unittest.TestCase):
             stderr=stderr,
         )
 
+    @staticmethod
+    def summary_temporary_path(output_path: Path) -> Path:
+        return output_path.with_suffix(output_path.suffix + ".tmp")
+
+    def seed_stale_summary(self, output_path: Path) -> tuple[bytes, bytes]:
+        output_payload = b'{"passed": true, "end_to_end": true}\n'
+        temporary_payload = b"stale temporary summary\n"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(output_payload)
+        self.summary_temporary_path(output_path).write_bytes(temporary_payload)
+        return output_payload, temporary_payload
+
+    @staticmethod
+    def manifest_only_arguments(
+        cases: dict[str, CaseManifest],
+        project_path: Path,
+        output_path: Path,
+    ) -> list[str]:
+        return [
+            "--project",
+            str(project_path),
+            "--output",
+            str(output_path),
+            "--open-space-manifest",
+            str(cases["open_space"].path),
+            "--near-wall-manifest",
+            str(cases["near_wall"].path),
+            "--enclosed-manifest",
+            str(cases["enclosed"].path),
+        ]
+
     def test_build_case_command_uses_exact_list_arguments(self) -> None:
         repo_root = self.temporary_root / "repo"
         engine_root = self.temporary_root / "UE_5.7"
@@ -1911,11 +1943,14 @@ class ReflectionEnvironmentMatrixCliTests(unittest.TestCase):
             output_path.with_suffix(output_path.suffix + ".tmp").exists()
         )
 
-    def test_full_mode_stops_after_first_nonzero_case(self) -> None:
+    def test_full_mode_invalidates_stale_summary_and_stops_after_first_nonzero_case(
+        self,
+    ) -> None:
         _, evidence, project_path, engine_root = self.make_cli_fixture(
             "first-failure"
         )
         output_path = self.temporary_root / "failure" / "summary.json"
+        self.seed_stale_summary(output_path)
         stdout = io.StringIO()
         stderr = io.StringIO()
 
@@ -1964,6 +1999,7 @@ class ReflectionEnvironmentMatrixCliTests(unittest.TestCase):
         self.assertIn("near_wall helper failed", stderr.getvalue())
         self.assertNotIn("R3_REFLECTION_MATRIX_PASS", stdout.getvalue())
         self.assertFalse(output_path.exists())
+        self.assertFalse(self.summary_temporary_path(output_path).exists())
 
     def test_run_editor_case_rejects_success_without_result_json(self) -> None:
         output_root = self.temporary_root / "missing-result"
@@ -2003,6 +2039,8 @@ class ReflectionEnvironmentMatrixCliTests(unittest.TestCase):
     def test_timeout_is_reported_as_fail_and_never_writes_summary(self) -> None:
         _, _, project_path, engine_root = self.make_cli_fixture("timeout")
         output_path = self.temporary_root / "timeout" / "summary.json"
+        self.seed_stale_summary(output_path)
+        stdout = io.StringIO()
         stderr = io.StringIO()
         arguments = [
             "--engine-root",
@@ -2019,15 +2057,273 @@ class ReflectionEnvironmentMatrixCliTests(unittest.TestCase):
             with mock.patch.object(
                 validate_reflection_environment_matrix.subprocess,
                 "run",
-                side_effect=subprocess.TimeoutExpired(["helper"], 65.5),
+                side_effect=subprocess.TimeoutExpired(
+                    ["helper"],
+                    65.5,
+                    output=b"partial helper stdout\n",
+                    stderr="partial helper stderr\n",
+                ),
             ) as run_mock:
+                with contextlib.redirect_stdout(stdout):
+                    with contextlib.redirect_stderr(stderr):
+                        result = validate_reflection_environment_matrix.entrypoint()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(run_mock.call_args.kwargs["timeout"], 65.5)
+        self.assertEqual(stdout.getvalue(), "partial helper stdout\n")
+        self.assertEqual(
+            stderr.getvalue().splitlines()[0],
+            "partial helper stderr",
+        )
+        self.assertTrue(
+            stderr.getvalue().splitlines()[1].startswith(
+                "R3_REFLECTION_MATRIX_FAIL "
+            )
+        )
+        self.assertFalse(output_path.exists())
+        self.assertFalse(self.summary_temporary_path(output_path).exists())
+
+    def test_manifest_only_load_failure_removes_stale_summary_and_temp(
+        self,
+    ) -> None:
+        cases, _, project_path, engine_root = self.make_cli_fixture(
+            "manifest-load-failure"
+        )
+        cases["enclosed"].path.unlink()
+        output_path = self.temporary_root / "load-failure" / "summary.json"
+        self.seed_stale_summary(output_path)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with self.cli_patches(
+            self.manifest_only_arguments(cases, project_path, output_path),
+            engine_root,
+            project_path,
+        ):
+            with contextlib.redirect_stdout(stdout):
                 with contextlib.redirect_stderr(stderr):
                     result = validate_reflection_environment_matrix.entrypoint()
 
         self.assertEqual(result, 1)
-        self.assertEqual(run_mock.call_args.kwargs["timeout"], 65.5)
-        self.assertTrue(stderr.getvalue().startswith("R3_REFLECTION_MATRIX_FAIL "))
+        self.assertIn("R3_REFLECTION_MATRIX_FAIL", stderr.getvalue())
+        self.assertNotIn("R3_REFLECTION_MATRIX_PASS", stdout.getvalue())
         self.assertFalse(output_path.exists())
+        self.assertFalse(self.summary_temporary_path(output_path).exists())
+
+    def test_manifest_only_validation_failure_removes_stale_summary_and_temp(
+        self,
+    ) -> None:
+        cases, _, project_path, engine_root = self.make_cli_fixture(
+            "manifest-validation-failure"
+        )
+        enclosed_payload = json.loads(
+            cases["enclosed"].path.read_text(encoding="utf-8")
+        )
+        enclosed_payload["reflection_bounce_count"] = 31
+        cases["enclosed"].path.write_text(
+            json.dumps(enclosed_payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        output_path = self.temporary_root / "validation-failure" / "summary.json"
+        self.seed_stale_summary(output_path)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with self.cli_patches(
+            self.manifest_only_arguments(cases, project_path, output_path),
+            engine_root,
+            project_path,
+        ):
+            with contextlib.redirect_stdout(stdout):
+                with contextlib.redirect_stderr(stderr):
+                    result = validate_reflection_environment_matrix.entrypoint()
+
+        self.assertEqual(result, 1)
+        self.assertIn("R3_REFLECTION_MATRIX_FAIL", stderr.getvalue())
+        self.assertNotIn("R3_REFLECTION_MATRIX_PASS", stdout.getvalue())
+        self.assertFalse(output_path.exists())
+        self.assertFalse(self.summary_temporary_path(output_path).exists())
+
+    def test_serialization_failure_removes_stale_summary_and_temp(self) -> None:
+        cases, _, project_path, engine_root = self.make_cli_fixture(
+            "serialization-failure"
+        )
+        output_path = self.temporary_root / "serialization" / "summary.json"
+        self.seed_stale_summary(output_path)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with self.cli_patches(
+            self.manifest_only_arguments(cases, project_path, output_path),
+            engine_root,
+            project_path,
+        ):
+            with mock.patch.object(
+                validate_reflection_environment_matrix.json,
+                "dumps",
+                side_effect=TypeError("not JSON serializable"),
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    with contextlib.redirect_stderr(stderr):
+                        result = validate_reflection_environment_matrix.entrypoint()
+
+        self.assertEqual(result, 1)
+        self.assertIn("R3_REFLECTION_MATRIX_FAIL", stderr.getvalue())
+        self.assertNotIn("R3_REFLECTION_MATRIX_PASS", stdout.getvalue())
+        self.assertFalse(output_path.exists())
+        self.assertFalse(self.summary_temporary_path(output_path).exists())
+
+    def test_manifest_only_rejects_output_equal_to_input_manifest_unchanged(
+        self,
+    ) -> None:
+        cases, _, project_path, engine_root = self.make_cli_fixture(
+            "manifest-output-collision"
+        )
+        output_path = cases["near_wall"].path.resolve()
+        manifest_bytes = output_path.read_bytes()
+        temporary_path = self.summary_temporary_path(output_path)
+        temporary_bytes = b"pre-existing unrelated temporary data\n"
+        temporary_path.write_bytes(temporary_bytes)
+        stdout = io.StringIO()
+
+        with self.cli_patches(
+            self.manifest_only_arguments(cases, project_path, output_path),
+            engine_root,
+            project_path,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "summary output.*collides.*NearWall manifest",
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    validate_reflection_environment_matrix.main()
+
+        self.assertEqual(output_path.read_bytes(), manifest_bytes)
+        self.assertEqual(temporary_path.read_bytes(), temporary_bytes)
+        self.assertNotIn("R3_REFLECTION_MATRIX_PASS", stdout.getvalue())
+
+    def test_full_mode_rejects_output_or_temp_aliasing_reserved_case_artifacts(
+        self,
+    ) -> None:
+        collisions = (
+            ("output", "OpenSpace_Result.json", "OpenSpace result"),
+            ("output", "NearWall.png", "NearWall screenshot"),
+            ("temporary", "OpenSpace_Result.json", "OpenSpace result"),
+            ("temporary", "NearWall.png", "NearWall screenshot"),
+        )
+        for summary_kind, reserved_name, evidence_label in collisions:
+            with self.subTest(
+                summary_kind=summary_kind,
+                reserved_name=reserved_name,
+            ):
+                _, _, project_path, engine_root = self.make_cli_fixture(
+                    f"reserved-{summary_kind}-{reserved_name}"
+                )
+                output_root = (
+                    self.temporary_root
+                    / f"reserved-output-{summary_kind}-{reserved_name}"
+                )
+                output_root.mkdir(parents=True)
+                protected_bytes = b"protected collision evidence\n"
+                if summary_kind == "output":
+                    output_path = output_root / reserved_name
+                    output_path.write_bytes(protected_bytes)
+                    protected_path = output_path
+                else:
+                    output_path = output_root / "summary.json"
+                    output_path.write_bytes(b"protected prior summary\n")
+                    protected_path = self.summary_temporary_path(output_path)
+                    protected_path.write_bytes(protected_bytes)
+                    os.link(protected_path, output_root / reserved_name)
+
+                arguments = [
+                    "--engine-root",
+                    str(engine_root),
+                    "--project",
+                    str(project_path),
+                    "--output",
+                    str(output_path),
+                ]
+                stdout = io.StringIO()
+                completed = subprocess.CompletedProcess(
+                    ["helper"],
+                    17,
+                    stdout="",
+                    stderr="",
+                )
+                with self.cli_patches(arguments, engine_root, project_path):
+                    with mock.patch.object(
+                        validate_reflection_environment_matrix.subprocess,
+                        "run",
+                        return_value=completed,
+                    ) as run_mock:
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            f"summary {summary_kind}.*collides.*{evidence_label}",
+                        ):
+                            with contextlib.redirect_stdout(stdout):
+                                validate_reflection_environment_matrix.main()
+
+                run_mock.assert_not_called()
+                self.assertEqual(protected_path.read_bytes(), protected_bytes)
+                self.assertNotIn("R3_REFLECTION_MATRIX_PASS", stdout.getvalue())
+
+    def test_full_mode_rejects_later_loaded_manifest_or_wav_output_collision(
+        self,
+    ) -> None:
+        for artifact, evidence_label in (
+            ("manifest", "OpenSpace manifest"),
+            ("reference_wav", "OpenSpace reference_wav"),
+        ):
+            with self.subTest(artifact=artifact):
+                cases, evidence, project_path, engine_root = self.make_cli_fixture(
+                    f"loaded-{artifact}-collision"
+                )
+                output_path = (
+                    cases["open_space"].path.resolve()
+                    if artifact == "manifest"
+                    else Path(
+                        str(cases["open_space"].payload[artifact])
+                    ).resolve()
+                )
+                evidence_bytes = output_path.read_bytes()
+                arguments = [
+                    "--engine-root",
+                    str(engine_root),
+                    "--project",
+                    str(project_path),
+                    "--output",
+                    str(output_path),
+                ]
+                stdout = io.StringIO()
+
+                def run_success(
+                    command: list[str],
+                    **_: object,
+                ) -> subprocess.CompletedProcess[str]:
+                    if self.environment_from_command(command) == "open_space":
+                        output_path.write_bytes(evidence_bytes)
+                    return self.successful_case_result(command, evidence)
+
+                with self.cli_patches(arguments, engine_root, project_path):
+                    with mock.patch.object(
+                        validate_reflection_environment_matrix.subprocess,
+                        "run",
+                        side_effect=run_success,
+                    ) as run_mock:
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            f"summary output.*collides.*{evidence_label}",
+                        ):
+                            with contextlib.redirect_stdout(stdout):
+                                validate_reflection_environment_matrix.main()
+
+                self.assertEqual(run_mock.call_count, 1)
+                self.assertEqual(output_path.read_bytes(), evidence_bytes)
+                self.assertFalse(
+                    self.summary_temporary_path(output_path).exists()
+                )
+                self.assertNotIn("R3_REFLECTION_MATRIX_PASS", stdout.getvalue())
 
     def test_manifest_only_rechecks_semantics_without_end_to_end_pass_marker(
         self,

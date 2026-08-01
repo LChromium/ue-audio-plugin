@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
+from typing import TextIO
 
 import validation_environment
 from reflection_environment_matrix import (
     ENVIRONMENTS,
+    WAV_FIELDS,
     CaseEvidence,
+    CaseManifest,
     load_case_evidence,
     load_case_manifest,
     validate_end_to_end_evidence,
@@ -101,18 +106,21 @@ def run_editor_case(
         screenshot_path,
         result_path,
     )
-    completed = subprocess.run(
-        command,
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout_seconds + 60.0,
-    )
-    if completed.stdout:
-        print(completed.stdout, end="")
-    if completed.stderr:
-        print(completed.stderr, end="", file=sys.stderr)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds + 60.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _forward_captured_output(exc.stdout, sys.stdout)
+        _forward_captured_output(exc.stderr, sys.stderr)
+        raise
+    _forward_captured_output(completed.stdout, sys.stdout)
+    _forward_captured_output(completed.stderr, sys.stderr)
     if completed.returncode != 0:
         raise RuntimeError(
             f"{display_name} Editor validation exited with code "
@@ -123,6 +131,17 @@ def run_editor_case(
             f"{display_name} result JSON does not exist: {result_path}"
         )
     return load_case_evidence(environment, result_path)
+
+
+def _forward_captured_output(
+    output: str | bytes | None,
+    stream: TextIO,
+) -> None:
+    if not output:
+        return
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    print(output, end="", file=stream)
 
 
 def _manifest_paths(args: argparse.Namespace) -> dict[str, Path] | None:
@@ -166,9 +185,98 @@ def _output_path(
     return repo_root / requested_output
 
 
+def _summary_temporary_path(output_path: Path) -> Path:
+    return output_path.with_suffix(output_path.suffix + ".tmp")
+
+
+def _paths_alias(first: Path, second: Path) -> bool:
+    if os.path.normcase(str(first.resolve())) == os.path.normcase(
+        str(second.resolve())
+    ):
+        return True
+    try:
+        return first.samefile(second)
+    except OSError:
+        return False
+
+
+def _reject_summary_collisions(
+    output_path: Path,
+    authoritative_paths: Iterable[tuple[str, Path]],
+) -> None:
+    evidence_paths = tuple(authoritative_paths)
+    summary_paths = (
+        ("summary output", output_path),
+        ("summary temporary output", _summary_temporary_path(output_path)),
+    )
+    for summary_label, summary_path in summary_paths:
+        for evidence_label, evidence_path in evidence_paths:
+            if _paths_alias(summary_path, evidence_path):
+                raise RuntimeError(
+                    f"{summary_label} collides with {evidence_label}: "
+                    f"{summary_path}"
+                )
+
+
+def _reserved_case_paths(output_root: Path) -> tuple[tuple[str, Path], ...]:
+    paths: list[tuple[str, Path]] = []
+    for environment in ENVIRONMENTS:
+        display_name = _display_name(environment)
+        paths.extend(
+            (
+                (
+                    f"{display_name} result",
+                    output_root / f"{display_name}_Result.json",
+                ),
+                (
+                    f"{display_name} screenshot",
+                    output_root / f"{display_name}.png",
+                ),
+            )
+        )
+    return tuple(paths)
+
+
+def _manifest_authoritative_paths(
+    environment: str,
+    case: CaseManifest,
+) -> tuple[tuple[str, Path], ...]:
+    display_name = _display_name(environment)
+    paths: list[tuple[str, Path]] = [
+        (f"{display_name} manifest", case.path.resolve())
+    ]
+    for field in WAV_FIELDS:
+        value = case.payload.get(field)
+        if not isinstance(value, (str, os.PathLike)) or not str(value):
+            continue
+        path = Path(value)
+        if not path.is_absolute():
+            path = case.path.parent / path
+        paths.append((f"{display_name} {field}", path.resolve()))
+    return tuple(paths)
+
+
+def _evidence_authoritative_paths(
+    environment: str,
+    evidence: CaseEvidence,
+) -> tuple[tuple[str, Path], ...]:
+    display_name = _display_name(environment)
+    return (
+        *_manifest_authoritative_paths(environment, evidence.case),
+        (f"{display_name} result", evidence.result_path.resolve()),
+        (f"{display_name} screenshot", evidence.screenshot_path.resolve()),
+        (f"{display_name} log", evidence.log_path.resolve()),
+    )
+
+
+def _invalidate_summary(output_path: Path) -> None:
+    output_path.unlink(missing_ok=True)
+    _summary_temporary_path(output_path).unlink(missing_ok=True)
+
+
 def _write_summary_atomic(output_path: Path, summary: dict[str, object]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    temporary_path = _summary_temporary_path(output_path)
     temporary_path.unlink(missing_ok=True)
     try:
         temporary_path.write_text(
@@ -200,8 +308,21 @@ def main() -> int:
         repo_root,
         plugin_files[0].stem,
     )
-    output_path = _output_path(args.output, repo_root, project_path)
+    output_path = _output_path(args.output, repo_root, project_path).resolve()
     output_root = output_path.parent
+
+    if manifest_paths is None:
+        early_authoritative_paths = _reserved_case_paths(output_root)
+    else:
+        early_authoritative_paths = tuple(
+            (
+                f"{_display_name(environment)} manifest",
+                manifest_paths[environment],
+            )
+            for environment in ENVIRONMENTS
+        )
+    _reject_summary_collisions(output_path, early_authoritative_paths)
+    _invalidate_summary(output_path)
 
     case_evidence: dict[str, CaseEvidence] = {}
     if manifest_paths is None:
@@ -215,6 +336,13 @@ def main() -> int:
                 args.timeout,
                 output_root,
             )
+            _reject_summary_collisions(
+                output_path,
+                _evidence_authoritative_paths(
+                    environment,
+                    case_evidence[environment],
+                ),
+            )
         case_manifests = {
             environment: evidence.case
             for environment, evidence in case_evidence.items()
@@ -225,6 +353,14 @@ def main() -> int:
             environment: load_case_manifest(environment, manifest_paths[environment])
             for environment in ENVIRONMENTS
         }
+        for environment in ENVIRONMENTS:
+            _reject_summary_collisions(
+                output_path,
+                _manifest_authoritative_paths(
+                    environment,
+                    case_manifests[environment],
+                ),
+            )
         end_to_end = False
 
     matrix_validation = validate_matrix_manifests(case_manifests)
