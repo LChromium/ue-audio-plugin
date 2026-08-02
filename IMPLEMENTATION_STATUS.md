@@ -7,6 +7,7 @@
 插件已经形成 `UERayTracingAudioSDK`、`UERayTracingAudio`、`UERayTracingAudioEditor` 三模块闭环，并已接通 UE 5.7 的硬件 Ray Tracing RHI、Direct/Occlusion、方向性多 bounce 间接声、Realtime/Baked/Hybrid IR、离线卷积和 Editor A/B 验收界面。
 
 蓝/橙密闭空间已拆分为固定相机自动门禁和可交互 PIE 验收：交互模式把 Listener 跟随 First Person 相机，提供 F1/F2/F5 数据源切换、F3 同步 Rendered/Original A/B、F4 烘焙原点复位、F8 视角切换，并在主屏显示实际当前模式、A/B 播放状态和 Baked 资产状态。自动交互 smoke 已证明 Pawn、Listener、快捷键和两条播放链路工作；实际听感仍需人工确认。
+F3 的 A/B 辅助逻辑只改变 Original/Rendered 播放链路，不改变 Source 的 `IndirectDataSource`；从 F2 Baked 或 F5 Hybrid 进入 F3 后仍保持原数据源。交互 smoke 现在额外要求 `f3_source_preserved=1`，防止把静默回退到 Realtime 误报为通过。
 
 自动化证据证明的是实现链路、数值语义、音频完整性和硬件路径；最终“听起来正确”仍必须由目标耳机或扬声器上的 Human Pass 证明。未取得该记录前，不宣称最终声质验收完成。
 
@@ -416,3 +417,10 @@ Deferred pre-existing limitations remain open:
 - Geometry excluded from direct visibility cannot yet act as indirect-only geometry in the shared TLAS builder.
 
 The overall goal remains open for target-device Human A/B, click/pop and audible-quality judgment, moving-player/moving-occlusion listening, true multi-PIE hardware isolation, and every other unchecked ledger item. Automation does not record Human Pass.
+
+## 2026-08-02 - F3 source-preservation fix
+
+- F3 now only toggles synchronized Original/Rendered A/B playback. It no longer calls the Realtime data-source setter when entering Rendered from F2 Baked or F5 Hybrid.
+- The interactive-smoke contract and parser require `f3_source_preserved=1`; the RED regression rejects `0`.
+- Prescribed build passed after clearing stale generated plugin intermediates (`49/49` actions). Interactive smoke passed with movement `50.900 cm`, zero listener/camera/origin error, Realtime/Baked/Hybrid `1/1/1`, A/B `1/1`, `f3_source_preserved=1`, and no foreign audio. The exact default launcher also exited `0` with paths/gain `171/171`, `0.001625/0.001625`, Direct `170` generations, hard realtime `1605/0/0`, and all three data sources passing.
+- Human PIE listening, click/pop/audible-quality judgment, moving-player/moving-occlusion listening, true multi-PIE hardware isolation, and target-device R3 listening remain open.

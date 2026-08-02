@@ -113,6 +113,7 @@ def make_interactive_smoke_summary(
     foreign_audio_playing: int = 0,
     muted_foreign_audio: int = 1,
     ab_restart_count: int = 0,
+    f3_source_preserved: int = 1,
 ) -> str:
     return (
         f"UERayTracingAudio interactive smoke: passed={passed} "
@@ -122,6 +123,7 @@ def make_interactive_smoke_summary(
         "fixed_view=1 interactive_view=1 audio_playing=1 reference_playing=1 "
         "ab_base_levels_matched=1 "
         f"ab_restart_count={ab_restart_count} "
+        f"f3_source_preserved={f3_source_preserved} "
         f"foreign_audio_playing={foreign_audio_playing} "
         f"muted_foreign_audio={muted_foreign_audio}."
     )
@@ -1504,6 +1506,16 @@ class RuntimeValidationTests(unittest.TestCase):
         log_text = make_interactive_smoke_summary(ab_restart_count=1)
         with redirect_stdout(io.StringIO()):
             with self.assertRaisesRegex(RuntimeError, "A/B playback restarts"):
+                launch_runtime_validation.print_audio_path_summary(
+                    log_text,
+                    "Game",
+                    require_interactive_smoke=True,
+                )
+
+    def test_interactive_smoke_summary_rejects_f3_source_reset(self) -> None:
+        log_text = make_interactive_smoke_summary(f3_source_preserved=0)
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "F3 data source preservation"):
                 launch_runtime_validation.print_audio_path_summary(
                     log_text,
                     "Game",

@@ -150,6 +150,7 @@ INTERACTIVE_SMOKE_PATTERN = re.compile(
     r"audio_playing=(?P<audio_playing>[01]).*?"
     r"reference_playing=(?P<reference_playing>[01]).*?"
     r"ab_base_levels_matched=(?P<ab_base_levels_matched>[01]).*?"
+    r"f3_source_preserved=(?P<f3_source_preserved>[01]).*?"
     r"foreign_audio_playing=(?P<foreign_audio_playing>[0-9]+).*?"
     r"muted_foreign_audio=(?P<muted_foreign_audio>[0-9]+)"
 )
@@ -998,6 +999,8 @@ def print_audio_path_summary(
                 f"{interactive_smoke_match.group('ab_base_levels_matched')} "
                 f"ab_restart_count="
                 f"{interactive_smoke_match.group('ab_restart_count')} "
+                f"f3_source_preserved="
+                f"{interactive_smoke_match.group('f3_source_preserved')} "
                 f"foreign_audio_playing="
                 f"{interactive_smoke_match.group('foreign_audio_playing')} "
                 f"muted_foreign_audio="
@@ -1303,6 +1306,7 @@ def print_audio_path_summary(
                     "audio_playing",
                     "reference_playing",
                     "ab_base_levels_matched",
+                    "f3_source_preserved",
                 )
             }
             foreign_audio_playing = int(
@@ -1352,6 +1356,8 @@ def print_audio_path_summary(
                     "zero A/B playback restarts "
                     f"(observed {ab_restart_count})"
                 )
+            if values["f3_source_preserved"] != 1:
+                smoke_failures.append("F3 data source preservation")
         if smoke_failures:
             raise RuntimeError(
                 f"{phase} interactive runtime smoke missing: "

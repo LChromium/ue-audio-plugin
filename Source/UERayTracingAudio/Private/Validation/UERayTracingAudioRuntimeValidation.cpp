@@ -2348,6 +2348,32 @@ void FUERayTracingAudioRuntimeValidation::SetRenderedABMode(
         bBaseLevelsMatched ? 1 : 0);
 }
 
+bool FUERayTracingAudioRuntimeValidation::ToggleInteractiveRenderedAB(
+    FScenarioState& State)
+{
+    UUERayTracingAudioSourceComponent* Source = State.Source.Get();
+    if (!State.bABPlaybackStarted || !IsValid(Source))
+    {
+        return false;
+    }
+
+    const bool bEnableRendered = !State.bRenderedABEnabled;
+    if (bEnableRendered && !State.bRenderedPlaybackReady)
+    {
+        UE_LOG(
+            LogUERayTracingAudio,
+            Warning,
+            TEXT("UERayTracingAudio F3 rendered playback is waiting for a valid Direct/Indirect stereo-IR audio snapshot; Original remains audible."));
+        return false;
+    }
+
+    const EUERayTracingAudioIndirectDataSource DataSourceBeforeToggle =
+        Source->IndirectDataSource;
+    SetRenderedABMode(State, bEnableRendered);
+    return State.bRenderedABEnabled == bEnableRendered
+        && Source->IndirectDataSource == DataSourceBeforeToggle;
+}
+
 int32 FUERayTracingAudioRuntimeValidation::MuteForeignWorldAudio(
     FScenarioState& State)
 {
@@ -2551,35 +2577,12 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveControls(FScenarioState
     // gate is running or after it reports a failure.
     if (PlayerController->WasInputKeyJustPressed(EKeys::F3))
     {
-        if (State.bABPlaybackStarted)
-        {
-            const bool bEnableRendered = !State.bRenderedABEnabled;
-            if (bEnableRendered && !State.bRenderedPlaybackReady)
-            {
-                UE_LOG(
-                    LogUERayTracingAudio,
-                    Warning,
-                    TEXT("UERayTracingAudio F3 rendered playback is waiting for a valid Direct/Indirect stereo-IR audio snapshot; Original remains audible."));
-            }
-            else
-            {
-                if (bEnableRendered && State.bDataSourceValidationLogged)
-                {
-                    // After the gate, F3 is the stable
-                    // Original/Realtime-rendered comparison.
-                    SetInteractiveDataSource(
-                        State,
-                        EUERayTracingAudioIndirectDataSource::Realtime);
-                }
-                SetRenderedABMode(State, bEnableRendered);
-            }
-        }
-        else
+        if (!ToggleInteractiveRenderedAB(State))
         {
             UE_LOG(
                 LogUERayTracingAudio,
                 Warning,
-            TEXT("UERayTracingAudio F3 A/B is waiting for synchronized audio playback to start."));
+                TEXT("UERayTracingAudio F3 A/B is waiting for synchronized audio playback to start."));
         }
     }
 
@@ -2830,6 +2833,7 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
         State.bInteractiveSmokeSawHybrid =
             PrimarySource->IndirectDataSource
             == EUERayTracingAudioIndirectDataSource::Hybrid;
+        SetRenderedABMode(State, true);
         State.InteractiveSmokePhase = 3;
         State.InteractiveSmokePhaseStartTimeSeconds = NowSeconds;
         return;
@@ -2837,8 +2841,13 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
 
     if (State.InteractiveSmokePhase == 3 && PhaseElapsedSeconds >= 0.25)
     {
-        SetRenderedABMode(State, false);
-        State.bInteractiveSmokeSawReferenceAB = !State.bRenderedABEnabled;
+        const EUERayTracingAudioIndirectDataSource DataSourceBeforeF3 =
+            PrimarySource->IndirectDataSource;
+        const bool bToggled = ToggleInteractiveRenderedAB(State);
+        State.bInteractiveSmokeSawReferenceAB =
+            bToggled
+            && !State.bRenderedABEnabled
+            && PrimarySource->IndirectDataSource == DataSourceBeforeF3;
         State.InteractiveSmokePhase = 4;
         State.InteractiveSmokePhaseStartTimeSeconds = NowSeconds;
         return;
@@ -2846,13 +2855,17 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
 
     if (State.InteractiveSmokePhase == 4 && PhaseElapsedSeconds >= 0.25)
     {
-        if (State.bRenderedPlaybackReady)
-        {
-            SetRenderedABMode(State, true);
-        }
+        const EUERayTracingAudioIndirectDataSource DataSourceBeforeF3 =
+            PrimarySource->IndirectDataSource;
+        const bool bToggled = ToggleInteractiveRenderedAB(State);
         State.bInteractiveSmokeSawRenderedAB =
-            State.bRenderedPlaybackReady
+            bToggled
+            && State.bRenderedPlaybackReady
             && State.bRenderedABEnabled;
+        State.bInteractiveSmokeF3SourcePreserved =
+            State.bInteractiveSmokeSawReferenceAB
+            && State.bInteractiveSmokeSawRenderedAB
+            && PrimarySource->IndirectDataSource == DataSourceBeforeF3;
         PlaceInteractiveViewAtBakedOrigin(
             State,
             *PlayerController,
@@ -2906,6 +2919,7 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
         && State.bInteractiveSmokeSawHybrid
         && State.bInteractiveSmokeSawRenderedAB
         && State.bInteractiveSmokeSawReferenceAB
+        && State.bInteractiveSmokeF3SourcePreserved
         && bFixedView
         && bInteractiveView
         && bAudioPlaying
@@ -2917,7 +2931,7 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
     UE_LOG(
         LogUERayTracingAudio,
         Display,
-        TEXT("UERayTracingAudio interactive smoke: passed=%d moved_cm=%.3f listener_camera_error_cm=%.3f origin_error_cm=%.3f realtime=%d baked=%d hybrid=%d rendered_ab=%d reference_ab=%d fixed_view=%d interactive_view=%d audio_playing=%d reference_playing=%d ab_base_levels_matched=%d ab_restart_count=%d foreign_audio_playing=%d muted_foreign_audio=%d."),
+        TEXT("UERayTracingAudio interactive smoke: passed=%d moved_cm=%.3f listener_camera_error_cm=%.3f origin_error_cm=%.3f realtime=%d baked=%d hybrid=%d rendered_ab=%d reference_ab=%d fixed_view=%d interactive_view=%d audio_playing=%d reference_playing=%d ab_base_levels_matched=%d ab_restart_count=%d f3_source_preserved=%d foreign_audio_playing=%d muted_foreign_audio=%d."),
         bPassed ? 1 : 0,
         State.InteractiveSmokeMovementDistanceCm,
         State.InteractiveSmokeMaxListenerCameraErrorCm,
@@ -2933,6 +2947,7 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
         bReferencePlaying ? 1 : 0,
         bABBaseLevelsMatched ? 1 : 0,
         State.ABPlaybackRestartCount,
+        State.bInteractiveSmokeF3SourcePreserved ? 1 : 0,
         ForeignAudioPlayingCount,
         State.MutedForeignAudioComponentCount);
 }

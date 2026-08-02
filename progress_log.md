@@ -188,3 +188,12 @@
 - Final gates passed: Python `158/158`, realtime audit `39/40/1775`, prescribed project/plugin build, and Automation `1/1, 1/1, 12/12, 66/66` with clean prohibited-marker scans.
 - Authoritative matrix `20260802-074606` passed with 27 non-empty artifacts, 12/12 matching WAV hashes, 12 imported SoundWaves, 3 IR assets, and strict 16 kHz/stereo/16000-frame/1-second/Wet-0.8 provenance.
 - Fixed launcher passed paths/gain `171/171` and `0.001625/0.001625`, Direct `221` generations, hard realtime `1579/0/0`, and all data sources; responding Editor PID `500` is intentionally left open. Human listening, click/pop judgment, moving listening, and true multi-PIE remain open.
+
+## 2026-08-02 - F3 data-source preservation
+
+- Fixed the F3 branch so it only toggles synchronized Original/Rendered A/B playback; F2 Baked and F5 Hybrid selections are no longer silently reset to Realtime.
+- Added a RED parser regression for `f3_source_preserved=0`; the interactive smoke gate now requires `f3_source_preserved=1`.
+- Cleared stale generated plugin intermediates and reran the prescribed build: project/plugin build exited `0`, `49/49` actions succeeded.
+- Interactive smoke launcher exited `0`: `passed=1`, movement `50.900 cm`, Listener/camera/origin errors `0 cm`, Realtime/Baked/Hybrid `1/1/1`, A/B `1/1`, `f3_source_preserved=1`, foreign audio `0`, muted foreign audio `1`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785658912589354300.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785659093247713500.log`.
+- Exact default launcher exited `0`: paths/gain `171/171` and `0.001625/0.001625`, Direct `170` generations with zero dropout and restored/hardware `1/1`, hard realtime `1605/0/0`, all three data sources passed. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785659135823809400.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785659316441313300.log`.
+- Human target-device PIE listening, click/pop/audible-quality judgment, moving-player/moving-occlusion listening, true multi-PIE hardware isolation, and target-device R3 listening remain open.

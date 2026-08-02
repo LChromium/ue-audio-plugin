@@ -120,6 +120,7 @@ private:
         bool bInteractiveSmokeSawHybrid = false;
         bool bInteractiveSmokeSawRenderedAB = false;
         bool bInteractiveSmokeSawReferenceAB = false;
+        bool bInteractiveSmokeF3SourcePreserved = false;
         bool bResultLogged = false;
         bool bDataSourceDiagnosticsArmed = false;
         bool bDataSourceValidationLogged = false;
@@ -190,6 +191,7 @@ private:
         const TCHAR* Reason,
         bool bForceRestart);
     void SetRenderedABMode(FScenarioState& State, bool bRenderedEnabled);
+    bool ToggleInteractiveRenderedAB(FScenarioState& State);
     int32 MuteForeignWorldAudio(FScenarioState& State);
     int32 CountPlayingForeignWorldAudio(const FScenarioState& State) const;
 

@@ -252,6 +252,15 @@ v1 必须同时满足：
 - [x] Editor PID `13228` responded for that historical 2026-07-31 run and is superseded by PID `500`.
 - [ ] Retain the oversized-callback bridge-capacity P3, prior Task 1-4 minors, target-device Human Pass/click-pop/audible-quality checks, true multi-PIE hardware isolation, and target-device OpenSpace/NearWall/Enclosed R3 listening.
 
+## F3 data-source preservation closure (2026-08-02)
+
+- [x] F3 now toggles only synchronized Original/Rendered A/B playback. It preserves the selected Realtime/Baked/Hybrid `IndirectDataSource` instead of silently forcing Realtime when F2 or F5 is active.
+- [x] Added a RED parser regression for `f3_source_preserved=0`; the strict interactive-smoke parser now rejects a reset and requires `f3_source_preserved=1`.
+- [x] Prescribed `uv run script\\build_and_validate.py` exited `0` after clearing stale generated plugin intermediates; project and standalone plugin builds completed (`49/49` actions).
+- [x] `uv run script\\launch_runtime_validation.py --interactive-smoke --interactive-runtime` exited `0`: smoke `passed=1`, Pawn movement `50.900 cm`, Listener/camera/origin errors `0 cm`, Realtime/Baked/Hybrid `1/1/1`, A/B `1/1`, `f3_source_preserved=1`, foreign audio `0`, muted foreign audio `1`. Game log: `D:\\Labs\\2602-unreal\\ue-audio-plugin\\TestProject\\UeVersion1\\Saved\\Logs\\UERayTracingAudioValidation-Game-1785658912589354300.log`; Editor log: `D:\\Labs\\2602-unreal\\ue-audio-plugin\\TestProject\\UeVersion1\\Saved\\Logs\\UERayTracingAudioValidation-Editor-1785659093247713500.log`.
+- [x] Exact default `uv run script\\launch_runtime_validation.py` also exited `0`: hardware/CPU paths `171/171`, gain `0.001625/0.001625`, Direct `170` generations with zero dropout and restored/hardware `1/1`, Baked/Realtime/Hybrid passed, and hard realtime `1605/0/0`. Game log: `D:\\Labs\\2602-unreal\\ue-audio-plugin\\TestProject\\UeVersion1\\Saved\\Logs\\UERayTracingAudioValidation-Game-1785659135823809400.log`; Editor log: `D:\\Labs\\2602-unreal\\ue-audio-plugin\\TestProject\\UeVersion1\\Saved\\Logs\\UERayTracingAudioValidation-Editor-1785659316441313300.log`.
+- [ ] Human PIE listening, click/pop and audible-quality judgment, moving-player/moving-occlusion listening, true multi-PIE hardware isolation, target-device R3 listening, and the pre-existing deferred ledger remain open; automation is not Human Pass.
+
 ## Final self-review addendum (2026-08-01)
 
 - [x] RED reproduced two acoustic Geometry components on the retained Floor actor: readiness still succeeded and the final component assertion reported expected `1`, actual `2`.
