@@ -198,3 +198,12 @@
 - Exact default launcher exited `0`: paths/gain `171/171` and `0.001625/0.001625`, Direct `170` generations with zero dropout and restored/hardware `1/1`, hard realtime `1605/0/0`, all three data sources passed. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785659135823809400.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785659316441313300.log`.
 - Human target-device PIE listening, click/pop/audible-quality judgment, moving-player/moving-occlusion listening, true multi-PIE hardware isolation, and target-device R3 listening remain open.
 - Final post-change checks passed: Python validation scripts `61/61`, realtime safety `39 functions / 40 bodies / 1775 lines` with all forbidden-operation counters `0`, and `git diff --check` clean.
+
+## 2026-08-02 - Rendered Direct/Early/Late runtime gate
+
+- Added HUD reporting for the selected Rendered Source's actual Direct, Early Reflection, and Late Reverb gains; renamed the rendered path to `DIRECT+EARLY+LATE`.
+- Added a RED parser regression for `rendered_components=missing`; the interactive smoke gate now requires finite/non-zero Direct/Indirect/Early/Late state and `HybridReverb` after F3.
+- Full Python validation passed `62/62`; realtime safety passed `39 functions / 40 bodies / 1775 lines` with lock/heap/shared-ownership/blocking/UObject counts all `0`; `git diff --check` passed.
+- Prescribed `uv run script\\build_and_validate.py` exited `0` with `49/49` build actions. Interactive launcher exited `0` with marker `passed=1 moved_cm=50.998 ... f3_source_preserved=1 rendered_components=direct_early_late foreign_audio_playing=0 muted_foreign_audio=1`. Game log: `UERayTracingAudioValidation-Game-1785660205992184900.log`.
+- Exact default launcher exited `0`: paths/gain `171/171` and `0.001625/0.001625`, Direct `206` generations, zero dropout, restored/hardware `1/1`, all data sources passed, hard realtime `1584/0/0`. Game log: `UERayTracingAudioValidation-Game-1785660431487845600.log`; Editor log: `UERayTracingAudioValidation-Editor-1785660612831773000.log`.
+- Human PIE listening, click/pop/audible quality, moving-player/occlusion, true multi-PIE, target-device R3, and deferred technical ledger remain open; the new marker is runtime-path evidence, not Human Pass.

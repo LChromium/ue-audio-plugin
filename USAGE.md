@@ -74,12 +74,12 @@ uv run script\launch_runtime_validation.py `
 - `WASD + 鼠标`：移动玩家；Listener 每帧跟随玩家相机。
 - `F1`：Realtime IR。
 - `F2`：Baked IR。
-- `F3`：在 **RENDERED DIRECT+WET** 与 **ORIGINAL UNRENDERED** 之间 A/B 切换。
+- `F3`：在 **RENDERED DIRECT+EARLY+LATE** 与 **ORIGINAL UNRENDERED** 之间 A/B 切换。
 - `F4`：返回本次 Baked IR 的 Listener 烘焙原点。
 - `F5`：Hybrid IR。
 - `F8`：在固定自动测试相机和交互视角之间切换。
 
-`F3` 比较的是同一个 SoundWave、同一启动时刻的两条同步链路：Rendered 链路经过硬件光追 Direct/Wet，Original 链路关闭空间化、遮挡和间接声插件；切换使用 50 ms 交叉淡变。F3 只改变 A/B 播放状态，不改变 F1/F2/F5 已选的 Realtime、Baked 或 Hybrid 数据源；进入交互模式后其余验证音会静音，避免干扰主声源判断。
+`F3` 比较的是同一个 SoundWave、同一启动时刻的两条同步链路：Rendered 链路经过硬件光追 Direct、early reflections 和 late reverb，Original 链路关闭空间化、遮挡和间接声插件；切换使用 50 ms 交叉淡变。HUD 会显示当前 Rendered Source 的 `Direct / Early / Late` 实际增益，便于确认不是只有一次性 Direct 脉冲。F3 只改变 A/B 播放状态，不改变 F1/F2/F5 已选的 Realtime、Baked 或 Hybrid 数据源；进入交互模式后其余验证音会静音，避免干扰主声源判断。
 
 主屏的 `CURRENT MODE` 是实际 Source 数据源，`A/B PLAYBACK` 显示当前听到 Rendered 还是 Original；`Baked asset` 显示位置/场景是否仍匹配。移动后 Baked/Hybrid 可能显示 `STALE PLACEMENT`，这是位置相关 IR 的正确警告，不应通过 `bAllowStaleBakedAsset` 掩盖。回到 F4 原点或重新 Bake 后再比较 Baked/Hybrid。
 
@@ -462,10 +462,14 @@ R3 固定参数为 200 cm、默认空气吸收、4096 条反射射线、最多 3
 
 只有实际完成这组目标耳机/扬声器试听的用户可以记录 Human Pass；自动化结果不能代替该结论。
 
-`uv run script\launch_runtime_validation.py` 是另一条固定交互流程，使用既定默认 `8` bounces，不是上述 32-bounce 离线矩阵。它最终留下的当前 Editor PID 为 `500`，正在响应、运行精确测试项目/验证场景和 DX12 光追，并有意保持打开；Game 日志为 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785628395987303100.log`，Editor 日志为 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785628576602470800.log`。该运行通过 paths `171/171`、gain `0.001625/0.001625`、Direct `221` generations、零 dropout、restored/hardware `1/1`、hard realtime `1579/0/0`，以及 Baked/Realtime/Hybrid kernels `2/2/4`、`nonfinite=0`。在该 Editor 中，F1/F2/F5 分别选择 Realtime/Baked/Hybrid，F3 比较 Original Unrendered 与 Rendered Direct+Wet；这些快捷键用于交互试听，不应被描述成正在运行 32-bounce 矩阵。
+`uv run script\launch_runtime_validation.py` 是另一条固定交互流程，使用既定默认 `8` bounces，不是上述 32-bounce 离线矩阵。最新运行的 Game 日志为 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785660431487845600.log`，Editor 日志为 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785660612831773000.log`；Editor 已按脚本保持打开。该运行通过 paths `171/171`、gain `0.001625/0.001625`、Direct `206` generations、零 dropout、restored/hardware `1/1`、hard realtime `1584/0/0`，以及 Baked/Realtime/Hybrid kernels `2/2/4`、`nonfinite=0`。在该 Editor 中，F1/F2/F5 分别选择 Realtime/Baked/Hybrid，F3 比较 Original Unrendered 与 Rendered Direct+Early+Late；这些快捷键用于交互试听，不应被描述成正在运行 32-bounce 矩阵。
 
 ## 2026-08-02 F3 数据源保持验证
 
 F3 的实现不会在 Rendered 分支强制调用 Realtime setter。若先按 F2 选择 Baked 或按 F5 选择 Hybrid，再按 F3，HUD 与运行时 Source 仍保持该数据源；严格 smoke marker `f3_source_preserved=1` 专门验证这一点。若 marker 为 `0`，`launch_runtime_validation.py --interactive-smoke` 会失败。
 
 最新验证：`uv run script\launch_runtime_validation.py --interactive-smoke --interactive-runtime` 退出 `0`，smoke `passed=1`，移动 `50.900 cm`，Listener/相机/原点误差 `0 cm`，Realtime/Baked/Hybrid `1/1/1`，A/B `1/1`，`f3_source_preserved=1`，外部音频 `0`。随后不带参数的 `uv run script\launch_runtime_validation.py` 也退出 `0`，硬件/CPU paths `171/171`、gain `0.001625/0.001625`、Direct `170` generations、hard realtime `1605/0/0`，三种数据源均通过。上述自动结果不能替代目标设备 PIE 人工听感、click/pop、移动遮挡与多 PIE 验收。
+
+## 2026-08-02 Rendered Direct/Early/Late 门禁
+
+交互 smoke 的 F3 阶段现在还会检查所选 Source 的实际运行时状态：`OverallGain`、`IndirectGain`、`EarlyReflectionGain`、`LateReverbGain` 必须为有限且非零，且间接模式必须为 `HybridReverb`。通过后会写入 `rendered_components=direct_early_late`；若只响过一次、Late Reverb 消失或任一路径未发布，marker 会是 `missing`，严格启动脚本会失败。最新 smoke 已通过该门禁。

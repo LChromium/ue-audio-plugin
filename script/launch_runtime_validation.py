@@ -151,6 +151,7 @@ INTERACTIVE_SMOKE_PATTERN = re.compile(
     r"reference_playing=(?P<reference_playing>[01]).*?"
     r"ab_base_levels_matched=(?P<ab_base_levels_matched>[01]).*?"
     r"f3_source_preserved=(?P<f3_source_preserved>[01]).*?"
+    r"rendered_components=(?P<rendered_components>direct_early_late|missing).*?"
     r"foreign_audio_playing=(?P<foreign_audio_playing>[0-9]+).*?"
     r"muted_foreign_audio=(?P<muted_foreign_audio>[0-9]+)"
 )
@@ -1001,6 +1002,8 @@ def print_audio_path_summary(
                 f"{interactive_smoke_match.group('ab_restart_count')} "
                 f"f3_source_preserved="
                 f"{interactive_smoke_match.group('f3_source_preserved')} "
+                f"rendered_components="
+                f"{interactive_smoke_match.group('rendered_components')} "
                 f"foreign_audio_playing="
                 f"{interactive_smoke_match.group('foreign_audio_playing')} "
                 f"muted_foreign_audio="
@@ -1358,6 +1361,8 @@ def print_audio_path_summary(
                 )
             if values["f3_source_preserved"] != 1:
                 smoke_failures.append("F3 data source preservation")
+            if interactive_smoke_match.group("rendered_components") != "direct_early_late":
+                smoke_failures.append("Rendered Direct/early/late path")
         if smoke_failures:
             raise RuntimeError(
                 f"{phase} interactive runtime smoke missing: "

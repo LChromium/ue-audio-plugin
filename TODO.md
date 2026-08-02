@@ -277,3 +277,10 @@ v1 必须同时满足：
 - [x] Fresh gates passed: Python `158/158`, realtime audit `39/40/1775`, prescribed build, Automation `1/1 + 1/1 + 12/12 + 66/66`, and authoritative 32-bounce matrix `20260802-074606`.
 - [x] Fixed runtime passed paths/gain `171/171` and `0.001625/0.001625`, Direct `221` generations with zero dropout, hard realtime `1579/0/0`, and all three data sources; responding Editor PID `500` is the only current validation process target.
 - [ ] Target-device Human A/B, click/pop/audible-quality judgment, moving-player/moving-occlusion listening, and true multi-PIE hardware isolation remain open. Automation does not record Human Pass.
+
+## Rendered Direct/Early/Late runtime gate (2026-08-02)
+
+- [x] HUD exposes actual Rendered Source `Direct / Early Reflection / Late Reverb` gains and labels the path `DIRECT+EARLY+LATE`.
+- [x] F3 interactive smoke requires finite, non-zero Direct/Indirect/Early/Late state with `HybridReverb`; parser rejects `rendered_components=missing`.
+- [x] Full Python suite `62/62`, realtime audit `39/40/1775` with zero forbidden operations, prescribed build `49/49`, interactive smoke and exact default launcher all passed. Latest smoke marker contains `f3_source_preserved=1 rendered_components=direct_early_late`.
+- [ ] Human PIE listening and click/pop/audible-quality judgment, moving-player/moving-occlusion listening, true multi-PIE hardware isolation, target-device R3 listening, and deferred technical ledger remain open.

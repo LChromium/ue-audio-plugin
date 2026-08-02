@@ -114,6 +114,7 @@ def make_interactive_smoke_summary(
     muted_foreign_audio: int = 1,
     ab_restart_count: int = 0,
     f3_source_preserved: int = 1,
+    rendered_components: str = "direct_early_late",
 ) -> str:
     return (
         f"UERayTracingAudio interactive smoke: passed={passed} "
@@ -124,6 +125,7 @@ def make_interactive_smoke_summary(
         "ab_base_levels_matched=1 "
         f"ab_restart_count={ab_restart_count} "
         f"f3_source_preserved={f3_source_preserved} "
+        f"rendered_components={rendered_components} "
         f"foreign_audio_playing={foreign_audio_playing} "
         f"muted_foreign_audio={muted_foreign_audio}."
     )
@@ -1516,6 +1518,16 @@ class RuntimeValidationTests(unittest.TestCase):
         log_text = make_interactive_smoke_summary(f3_source_preserved=0)
         with redirect_stdout(io.StringIO()):
             with self.assertRaisesRegex(RuntimeError, "F3 data source preservation"):
+                launch_runtime_validation.print_audio_path_summary(
+                    log_text,
+                    "Game",
+                    require_interactive_smoke=True,
+                )
+
+    def test_interactive_smoke_summary_rejects_missing_rendered_components(self) -> None:
+        log_text = make_interactive_smoke_summary(rendered_components="missing")
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "Rendered Direct/early/late path"):
                 launch_runtime_validation.print_audio_path_summary(
                     log_text,
                     "Game",

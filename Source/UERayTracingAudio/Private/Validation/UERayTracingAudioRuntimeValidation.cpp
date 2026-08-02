@@ -1865,7 +1865,7 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
                 0.25f,
                 State.bDataSourceValidationPassed ? FColor::Green : FColor::Cyan,
                 FString::Printf(
-                    TEXT("UE RAY TRACING AUDIO - HARDWARE VALIDATION\nVisible acoustic room | Blue: Listener | Orange: Primary Source | Direct preset: %s\nSources: %d | Geometry: %d | Direct/Indirect RHI: %s | IR Modes: %s\nDIRECT SWEEP: %s | Distance: %.3f cm | Visibility: %.6f | Direct gain: %.6f | Air bands: %.6f / %.6f / %.6f\nCURRENT MODE: %s | A/B PLAYBACK: %s | Baked asset: %s | View: %s\nF3: Original/Rendered A/B | F6: Direct Sweep | F1: Realtime | F2: Baked | F5: Hybrid | F4: Bake origin | F8: View"),
+                    TEXT("UE RAY TRACING AUDIO - HARDWARE VALIDATION\nVisible acoustic room | Blue: Listener | Orange: Primary Source | Direct preset: %s\nSources: %d | Geometry: %d | Direct/Indirect RHI: %s | IR Modes: %s\nDIRECT SWEEP: %s | Distance: %.3f cm | Visibility: %.6f | Direct gain: %.6f | Air bands: %.6f / %.6f / %.6f\nCURRENT MODE: %s | A/B PLAYBACK: %s | RENDERED PATH Direct/Early/Late: %.6f / %.6f / %.6f | Baked asset: %s | View: %s\nF3: Original/Rendered A/B | F6: Direct Sweep | F1: Realtime | F2: Baked | F5: Hybrid | F4: Bake origin | F8: View"),
                     *State.DirectPreset,
                     State.SourceCount,
                     State.GeometryCount,
@@ -1885,8 +1885,11 @@ bool FUERayTracingAudioRuntimeValidation::Tick(const float)
                         AirAbsorption.Z,
                     GetDataSourceName(Source->IndirectDataSource),
                     State.bRenderedABEnabled
-                        ? TEXT("RENDERED DIRECT+WET")
+                        ? TEXT("RENDERED DIRECT+EARLY+LATE")
                         : TEXT("ORIGINAL UNRENDERED"),
+                    Source->OverallGain,
+                    Source->EarlyReflectionGain,
+                    Source->LateReverbGain,
                     GetBakedAssetStatusName(Source->BakedAssetStatus),
                     State.bInteractiveMode
                         ? TEXT("INTERACTIVE - WASD + MOUSE")
@@ -2337,7 +2340,7 @@ void FUERayTracingAudioRuntimeValidation::SetRenderedABMode(
         Display,
         TEXT("UERayTracingAudio interactive audio A/B changed: playback=%s rendered_playing=%d reference_playing=%d crossfade_ms=50 rendered_base=%.3f reference_base=%.3f rendered_fade_target=%.6f reference_fade_target=%.6f base_levels_matched=%d."),
         bRenderedEnabled
-            ? TEXT("RENDERED DIRECT+WET")
+            ? TEXT("RENDERED DIRECT+EARLY+LATE")
             : TEXT("ORIGINAL UNRENDERED"),
         RenderedAudio->IsPlaying() ? 1 : 0,
         ReferenceAudio->IsPlaying() ? 1 : 0,
@@ -2862,6 +2865,19 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
             bToggled
             && State.bRenderedPlaybackReady
             && State.bRenderedABEnabled;
+        State.bInteractiveSmokeRenderedComponents =
+            State.bInteractiveSmokeSawRenderedAB
+            && FMath::IsFinite(PrimarySource->OverallGain)
+            && FMath::IsFinite(PrimarySource->IndirectGain)
+            && FMath::IsFinite(PrimarySource->EarlyReflectionGain)
+            && FMath::IsFinite(PrimarySource->LateReverbGain)
+            && PrimarySource->OverallGain > 1.0e-4f
+            && PrimarySource->bHasIndirectPath
+            && PrimarySource->IndirectGain > 1.0e-6f
+            && PrimarySource->EarlyReflectionGain > 1.0e-6f
+            && PrimarySource->LateReverbGain > 1.0e-6f
+            && PrimarySource->IndirectMode
+                == EUERayTracingAudioIndirectMode::HybridReverb;
         State.bInteractiveSmokeF3SourcePreserved =
             State.bInteractiveSmokeSawReferenceAB
             && State.bInteractiveSmokeSawRenderedAB
@@ -2920,6 +2936,7 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
         && State.bInteractiveSmokeSawRenderedAB
         && State.bInteractiveSmokeSawReferenceAB
         && State.bInteractiveSmokeF3SourcePreserved
+        && State.bInteractiveSmokeRenderedComponents
         && bFixedView
         && bInteractiveView
         && bAudioPlaying
@@ -2931,7 +2948,7 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
     UE_LOG(
         LogUERayTracingAudio,
         Display,
-        TEXT("UERayTracingAudio interactive smoke: passed=%d moved_cm=%.3f listener_camera_error_cm=%.3f origin_error_cm=%.3f realtime=%d baked=%d hybrid=%d rendered_ab=%d reference_ab=%d fixed_view=%d interactive_view=%d audio_playing=%d reference_playing=%d ab_base_levels_matched=%d ab_restart_count=%d f3_source_preserved=%d foreign_audio_playing=%d muted_foreign_audio=%d."),
+        TEXT("UERayTracingAudio interactive smoke: passed=%d moved_cm=%.3f listener_camera_error_cm=%.3f origin_error_cm=%.3f realtime=%d baked=%d hybrid=%d rendered_ab=%d reference_ab=%d fixed_view=%d interactive_view=%d audio_playing=%d reference_playing=%d ab_base_levels_matched=%d ab_restart_count=%d f3_source_preserved=%d rendered_components=%s foreign_audio_playing=%d muted_foreign_audio=%d."),
         bPassed ? 1 : 0,
         State.InteractiveSmokeMovementDistanceCm,
         State.InteractiveSmokeMaxListenerCameraErrorCm,
@@ -2948,6 +2965,9 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
         bABBaseLevelsMatched ? 1 : 0,
         State.ABPlaybackRestartCount,
         State.bInteractiveSmokeF3SourcePreserved ? 1 : 0,
+        State.bInteractiveSmokeRenderedComponents
+            ? TEXT("direct_early_late")
+            : TEXT("missing"),
         ForeignAudioPlayingCount,
         State.MutedForeignAudioComponentCount);
 }

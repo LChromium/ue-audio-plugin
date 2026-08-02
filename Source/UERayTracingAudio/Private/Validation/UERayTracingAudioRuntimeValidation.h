@@ -121,6 +121,7 @@ private:
         bool bInteractiveSmokeSawRenderedAB = false;
         bool bInteractiveSmokeSawReferenceAB = false;
         bool bInteractiveSmokeF3SourcePreserved = false;
+        bool bInteractiveSmokeRenderedComponents = false;
         bool bResultLogged = false;
         bool bDataSourceDiagnosticsArmed = false;
         bool bDataSourceValidationLogged = false;
