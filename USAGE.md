@@ -216,7 +216,7 @@ Fix Round 2 verification:
 - GREEN: prescribed build `47/47`; ConfigurableDirect `13/13` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix2-FINAL-ConfigurableDirect.log`; full Audio `36/36` at `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task4-Fix2-FINAL-Audio.log`; realtime audit `39/40/1718` with zero violations; Python `51/51`.
 - Runtime: the fixed launcher exited `0`, reported paths `171/171`, data sources passed, and callbacks/misses/drops `190/0/0`. Logs: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785470614600787600.log` and `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785470795487644500.log`.
 
-Editor PID `22952` is left open for manual PIE/listening. The moving Direct sweep, Human Pass/click-pop checks, Task 2 multi-PIE hardware isolation, and ledgered Task 4 Minors remain separate follow-ups.
+Editor PID `22952` was left open for that historical run and is superseded by PID `500`. The moving Direct sweep, Human Pass/click-pop checks, Task 2 multi-PIE hardware isolation, and ledgered Task 4 Minors remain separate follow-ups.
 
 ### Task 5 Direct sweep fixture
 
@@ -258,7 +258,7 @@ Final automatic evidence:
 - Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785475390548759300.log`;
 - Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`.
 
-Editor PID `35468` was left initialized for manual PIE/listening. Use F6 for an interactive repeat, then record target-device recovery and click/pop as Human Pass/Fail. Automated marker success does not replace that Human Pass.
+Editor PID `35468` was left initialized for that historical run and is superseded by PID `500`. Use the current Editor for an interactive repeat, then record target-device recovery and click/pop as Human Pass/Fail. Automated marker success does not replace that Human Pass.
 
 ### Task 6 Fix Round 1: strict domains and sequencing
 
@@ -278,7 +278,7 @@ Fix Round 1 verification:
 - Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785476653651929300.log`.
 - Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785476834237184600.log`.
 
-Editor PID `42300` is left initialized. The automatic proof is stricter, but target-device recovery/click-pop still requires Human Pass.
+Editor PID `42300` was left initialized for that historical run and is superseded by PID `500`. The automatic proof is stricter, but target-device recovery/click-pop still requires Human Pass.
 
 ### Task 7: Editor validation distance and air-absorption controls
 
@@ -317,7 +317,7 @@ UERayTracingAudioEditor validation scene ready: ... source_listener_distance_cm=
 
 It rejects missing, malformed, duplicate, or request-mismatched Direct preset, reflection environment, distance, profile, or vector evidence. This is configuration evidence only: it does not claim an audible distance/air result, an OpenSpace/NearWall/Enclosed R3 comparison, or Human Pass.
 
-Task 7 verification used the exact default launcher and left Editor PID `34840` open with `200 cm / default / (0.0002,0.0006,0.0012)`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785478813724452300.log`. Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785478994289043000.log`.
+Task 7 verification used the exact default launcher and left Editor PID `34840` open for that historical run; PID `34840` is superseded by PID `500`. The parsed fixture was `200 cm / default / (0.0002,0.0006,0.0012)`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785478813724452300.log`. Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785478994289043000.log`.
 
 #### Task 7 Fix Round 1: selecting a Source safely
 
@@ -333,7 +333,7 @@ That explicit action is the only way an untagged Source enters the panel's selec
 
 Persistent fixture component additions are normal Editor transactions: Geometry, Source, Audio, and Listener components can be undone/redone, and the level is marked dirty. The transient Automation fixture creates a World context only after the World exists and fully destroys the World/context before garbage collection.
 
-Fix Round 1 verification used the exact default launcher. It exited `0`, left responding Editor PID `13344` open, and parsed `200 cm / default / (0.0002,0.0006,0.0012)`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785491460999842900.log`. Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785491641704854400.log`. This remains configuration/runtime evidence, not a target-device Human Pass.
+Fix Round 1 verification used the exact default launcher. It exited `0` and left Editor PID `13344` responding for that historical run; PID `13344` is superseded by PID `500`. It parsed `200 cm / default / (0.0002,0.0006,0.0012)`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785491460999842900.log`. Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785491641704854400.log`. This remains configuration/runtime evidence, not a target-device Human Pass.
 
 ## Task 8: Product configuration and final validation workflow
 
@@ -396,7 +396,7 @@ uv run script\launch_runtime_validation.py --editor-ab-artifacts
 
 The command requires actual Direct and Indirect hardware submission, one complete/unique result for each terminal contract, four imported WAV artifacts, a directional Wet result, and the final `common_scale` field. The validation fixture uses `IndirectMix=0.8` only for this comparison so Full retains an audible/detectable dry cue; it is not a product default and the acceptance thresholds are unchanged. A partial marker still being written, any duplicate/malformed marker, fallback-only evidence, or `auto_checks=0` fails the command.
 
-The 2026-08-01 automatic runs passed both artifact and default flows after exact-one Geometry-component normalization. Their Editor PID `36896` and logs are historical and superseded by the R3 final run below. These checks establish technical behavior, not a target-device Human Pass.
+The 2026-08-01 automatic runs passed both artifact and default flows after exact-one Geometry-component normalization. Their Editor PID `36896` and logs are historical and superseded by PID `500` and the final R3 evidence below. These checks establish technical behavior, not a target-device Human Pass.
 
 ## R3：32 次反射环境矩阵
 
@@ -423,30 +423,34 @@ R3 固定参数为 200 cm、默认空气吸收、4096 条反射射线、最多 3
 - NearWall：一面墙产生有方向性的第一/早期反射，`automatic_checks_passed` 必须为 `true`。
 - Enclosed：七个 Geometry 产生更强早期能量和更长、非零的晚期尾声，`automatic_checks_passed` 必须为 `true`。
 
-本次权威汇总是：
+最终 provenance 合同要求原始硬件 manifest 和每个 case 汇总同时报告 `sample_rate=16000`、输出 `channels=2`、`impulse_response_channels=2`、`impulse_response_frames=16000`、`impulse_response_duration_seconds=1.0`。实际 `wet_mix=0.800000011920929`，在汇总声明的 `fixed_float_tolerance=1e-6` 内等于固定配置 `0.8`；`frames / sample_rate` 与 IR 时长的误差必须在 `ir_duration_consistency_tolerance=1e-9` 内，本次误差为 `0`。输出 WAV 的整段 `frames` 与 IR 的 `impulse_response_frames` 是不同字段，不能互相替代。
 
-`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\ReflectionEnvironmentMatrix_Manifest.json`
+完成审计曾因旧 `20260802-063000` 缺少上述实际 IR/Wet provenance，且夹具未在任何事务或修改前拒绝重复角色、多角色和无角色拓扑，而拒绝将其视为最终证据。`84830a3`、`26dcf11`、`94b3537` 关闭这些缺口后，重新运行全部门禁。唯一权威汇总是：
+
+`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\ReflectionEnvironmentMatrix_Manifest.json`
 
 三张可见性截图：
 
-- OpenSpace：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\OpenSpace.png`
-- NearWall：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\NearWall.png`
-- Enclosed：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\Enclosed.png`
+- OpenSpace：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\OpenSpace.png`
+- NearWall：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\NearWall.png`
+- Enclosed：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\Enclosed.png`
+
+三张截图均通过非黑和亮度可见性检查，但它们字节完全相同；因此只能证明 Editor 画面可见，不能作为 0 / 1 / 7 Geometry 的视觉证明。Geometry 数量由严格 scene marker、结果 JSON 和 manifest 证明。
 
 用于人耳验收的 12 条 WAV：
 
-- OpenSpace Reference：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223017\MarchingBand_clear_HardwareIR_clear_20260801-223017_Reference.wav`
-- OpenSpace Direct：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223017\MarchingBand_clear_HardwareIR_clear_20260801-223017_Direct.wav`
-- OpenSpace Wet：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223017\MarchingBand_clear_HardwareIR_clear_20260801-223017_Wet.wav`
-- OpenSpace Full：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223017\MarchingBand_clear_HardwareIR_clear_20260801-223017_Full.wav`
-- NearWall Reference：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223042\MarchingBand_clear_HardwareIR_clear_20260801-223042_Reference.wav`
-- NearWall Direct：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223042\MarchingBand_clear_HardwareIR_clear_20260801-223042_Direct.wav`
-- NearWall Wet：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223042\MarchingBand_clear_HardwareIR_clear_20260801-223042_Wet.wav`
-- NearWall Full：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223042\MarchingBand_clear_HardwareIR_clear_20260801-223042_Full.wav`
-- Enclosed Reference：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223127\MarchingBand_clear_HardwareIR_clear_20260801-223127_Reference.wav`
-- Enclosed Direct：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223127\MarchingBand_clear_HardwareIR_clear_20260801-223127_Direct.wav`
-- Enclosed Wet：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223127\MarchingBand_clear_HardwareIR_clear_20260801-223127_Wet.wav`
-- Enclosed Full：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223127\MarchingBand_clear_HardwareIR_clear_20260801-223127_Full.wav`
+- OpenSpace Reference：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234624\MarchingBand_clear_HardwareIR_clear_20260801-234624_Reference.wav`
+- OpenSpace Direct：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234624\MarchingBand_clear_HardwareIR_clear_20260801-234624_Direct.wav`
+- OpenSpace Wet：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234624\MarchingBand_clear_HardwareIR_clear_20260801-234624_Wet.wav`
+- OpenSpace Full：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234624\MarchingBand_clear_HardwareIR_clear_20260801-234624_Full.wav`
+- NearWall Reference：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234649\MarchingBand_clear_HardwareIR_clear_20260801-234649_Reference.wav`
+- NearWall Direct：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234649\MarchingBand_clear_HardwareIR_clear_20260801-234649_Direct.wav`
+- NearWall Wet：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234649\MarchingBand_clear_HardwareIR_clear_20260801-234649_Wet.wav`
+- NearWall Full：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234649\MarchingBand_clear_HardwareIR_clear_20260801-234649_Full.wav`
+- Enclosed Reference：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234734\MarchingBand_clear_HardwareIR_clear_20260801-234734_Reference.wav`
+- Enclosed Direct：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234734\MarchingBand_clear_HardwareIR_clear_20260801-234734_Direct.wav`
+- Enclosed Wet：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234734\MarchingBand_clear_HardwareIR_clear_20260801-234734_Wet.wav`
+- Enclosed Full：`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234734\MarchingBand_clear_HardwareIR_clear_20260801-234734_Full.wav`
 
 人工试听顺序：
 
@@ -458,4 +462,4 @@ R3 固定参数为 200 cm、默认空气吸收、4096 条反射射线、最多 3
 
 只有实际完成这组目标耳机/扬声器试听的用户可以记录 Human Pass；自动化结果不能代替该结论。
 
-`uv run script\launch_runtime_validation.py` 是另一条固定交互流程，使用既定默认 `8` bounces，不是上述 32-bounce 离线矩阵。它最终留下的当前 Editor PID 为 `42028`；Game 日志为 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785623576684106900.log`，Editor 日志为 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785623757245946900.log`。在该 Editor 中，F1/F2/F5 分别选择 Realtime/Baked/Hybrid，F3 比较 Original Unrendered 与 Rendered Direct+Wet；这些快捷键用于交互试听，不应被描述成正在运行 32-bounce 矩阵。
+`uv run script\launch_runtime_validation.py` 是另一条固定交互流程，使用既定默认 `8` bounces，不是上述 32-bounce 离线矩阵。它最终留下的当前 Editor PID 为 `500`，正在响应、运行精确测试项目/验证场景和 DX12 光追，并有意保持打开；Game 日志为 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785628395987303100.log`，Editor 日志为 `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785628576602470800.log`。该运行通过 paths `171/171`、gain `0.001625/0.001625`、Direct `221` generations/零 dropout/restored/hardware、hard realtime `1579/0/0`，以及 Baked/Realtime/Hybrid kernels `2/2/4`、`nonfinite=0`。在该 Editor 中，F1/F2/F5 分别选择 Realtime/Baked/Hybrid，F3 比较 Original Unrendered 与 Rendered Direct+Wet；这些快捷键用于交互试听，不应被描述成正在运行 32-bounce 矩阵。

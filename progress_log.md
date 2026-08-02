@@ -87,7 +87,7 @@
 - Added scalar broadband history and per-frame fallback interpolation; diagnostics now measure the scalar step actually applied. Zero-frame and first-valid-snapshot behavior have dedicated regressions.
 - Final verification passed: prescribed build `47/47`; ConfigurableDirect `12/12`; Audio `35/35`; callback audit `39 functions / 40 bodies / 1718 lines / 0 violations`; Python `51/51`.
 - Fixed hardware runtime passed: Direct/Indirect batches `4/4`, paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and callbacks/misses/drops `176/0/0`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785468883156707700.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785469063951366500.log`.
-- Editor PID `41028` is left running. Moving Direct sweep, target-device Human Pass/click-pop listening, and Task 2 multi-PIE hardware isolation remain open.
+- Editor PID `41028` was left running for that historical run and is superseded by PID `500`. Moving Direct sweep, target-device Human Pass/click-pop listening, and Task 2 multi-PIE hardware isolation remain open.
 
 ## 2026-07-31 - Configurable Direct Audio Task 4 Fix Round 2
 
@@ -95,7 +95,7 @@
 - `ResetDirect` now brackets its epoch advance with the existing odd/even diagnostic-context generation while keeping the selected component ID unchanged. Same-ID target-set no-op, A/B/A rejection, sequence recovery, and bounded callback behavior are preserved.
 - Final verification passed: prescribed build `47/47`; ConfigurableDirect `13/13`; Audio `36/36`; callback audit `39 functions / 40 bodies / 1718 lines / 0 violations`; Python `51/51`.
 - Fixed hardware runtime passed: Direct/Indirect batches `4/4`, paths `171/171`, gain `0.001625/0.001625`, data sources passed, kernels `2/2/4`, `non_finite=0`, and callbacks/misses/drops `190/0/0`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785470614600787600.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785470795487644500.log`.
-- Editor PID `22952` is left running. Moving Direct sweep, target-device Human Pass/click-pop listening, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open.
+- Editor PID `22952` was left running for that historical run and is superseded by PID `500`. Moving Direct sweep, target-device Human Pass/click-pop listening, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open.
 
 ## 2026-07-31 - Configurable Direct Audio Task 5
 
@@ -114,7 +114,7 @@
 - The first runtime run failed the existing CPU-reference gate without a crash. Crash-workflow evidence found automatic Source motion preceding baseline CPU comparison (`171` hardware paths versus `953` CPU paths).
 - Added a pure baseline-admission regression (RED C2660) and required baseline result logging before sweep movement. Final build passed `48/48`; ConfigurableDirect passed `15/15`.
 - Final fixed runtime passed: baseline `171/171`; Direct sweep `213` generations at `200 cm`, endpoint visibility, nonzero gain, bounded step, no dropout, restored/hardware; data sources passed; callbacks/misses/drops `1583/0/0`.
-- Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785475390548759300.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`; Editor PID `35468` is responding.
+- Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785475390548759300.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`; Editor PID `35468` responded for that historical run and is superseded by PID `500`.
 - Target-device Human Pass/click-pop listening, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open.
 
 ## 2026-07-31 - Configurable Direct Audio Task 6 Fix Round 1
@@ -124,7 +124,7 @@
 - GREEN: focused `47/47`, full Python `62/62`, callback audit `39/40/1718` with zero violations, and the previous real Game log passed the hardened parser.
 - Exact runtime passed: baseline `171/171`; Direct `214` generations at `200 cm`, visibility `0.000038-0.997131`, gain `0.174779-0.498402`, step `0.00005548`, no dropout, restored/hardware; data sources passed; hard realtime `1580/0/0`.
 - Ordered lines: Direct `1118`, Bake `1126`, hard realtime `1130`, final data source `1132`.
-- Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785476653651929300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785476834237184600.log`; Editor PID `42300` is responding.
+- Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785476653651929300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785476834237184600.log`; Editor PID `42300` responded for that historical run and is superseded by PID `500`.
 - Human Pass, multi-PIE hardware isolation, and Task 4 Minors remain open.
 
 ## 2026-07-31 - Configurable Direct Audio Task 7
@@ -134,7 +134,7 @@
 - Added Editor-only CLI parameters and an exactly-one strict scene marker parser with Direct preset, enclosed environment, distance, profile, and vector validation.
 - Final verification passed: build `48/48`; focused Editor `1/1`; full Automation `54/54`; focused/full Python `2/2` and `64/64`; callback audit `39/40/1718` with zero violations.
 - Exact runtime passed: Direct `206` generations; data sources passed; hard realtime `1584/0/0`. Game `UERayTracingAudioValidation-Game-1785478813724452300.log`; Editor `UERayTracingAudioValidation-Editor-1785478994289043000.log`.
-- Editor PID `34840` is open at `200 cm / default / (0.0002,0.0006,0.0012)`. Human Pass, R3 listening, multi-PIE hardware isolation, and Task 4 Minors remain open.
+- Editor PID `34840` was open at `200 cm / default / (0.0002,0.0006,0.0012)` for that historical run and is superseded by PID `500`. Human Pass, R3 listening, multi-PIE hardware isolation, and Task 4 Minors remain open.
 
 ## 2026-07-31 - Configurable Direct Audio Task 7 Fix Round 1
 
@@ -143,7 +143,7 @@
 - Added managed test-World context failure coverage and complete World/context/GC + weak-lifetime assertions. Final focused/full logs have zero `World has no context!` warnings.
 - RED: original owner-order regression; injected failed-World context count `1 -> 2`; targeted Audio mutation. GREEN: build `48/48`, focused `2/2`, full Automation `55/55`, Python `64/64`, audit `39/40/1718` with zero forbidden operations.
 - Exact launcher exit `0`: Direct `231` generations, all data sources passed, hard realtime `1580/0/0`; Game `UERayTracingAudioValidation-Game-1785491460999842900.log`, Editor `UERayTracingAudioValidation-Editor-1785491641704854400.log`.
-- Editor PID `13344` is responding at `200 cm / default / (0.0002,0.0006,0.0012)`. Human Pass, R3 listening, multi-PIE hardware isolation, and Task 4 Minors remain open.
+- Editor PID `13344` responded at `200 cm / default / (0.0002,0.0006,0.0012)` for that historical run and is superseded by PID `500`. Human Pass, R3 listening, multi-PIE hardware isolation, and Task 4 Minors remain open.
 
 ## 2026-07-31 - Configurable Direct Audio Task 8
 
@@ -152,8 +152,8 @@
 - Prescribed Development build exited `0` (`48/48` plugin actions). Fresh NullRHI Automation passed ConfigurableDirect `15/15`, Audio `38/38`, and full plugin `55/55`, with zero failed tests and unique absolute logs.
 - Prescribed Shipping build exited `0`. Shipping macro is `WITH_UERAYTRACINGAUDIO_VALIDATION=0`; executable/receipt string hits for scenario/HUD/F6/strict entry points were all `0`; receipt and Direct/Indirect/SDK artifacts prove the normal runtime remains built.
 - Exact launcher exited `0`: non-fallback Direct/Indirect markers each `1`; strict sweep passed at `200.000 cm`, visibility `0.000038-0.996866`, gain `0.174779-0.498316`, step `0.00005484`, dropout `0`, restored/hardware `1/1`; three data sources had continuous `24/24` Wet and hard realtime was `1600/0/0`.
-- Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785493624391644500.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785493804953148700.log`; responding Editor PID `10276` remains open.
-- Still open: user-performed Human Pass, moving-player/moving-occlusion and audible distance/air/click-pop checks, true multi-PIE hardware isolation, OpenSpace/NearWall/Enclosed R3, the enumerated Task 1-4 minors, and Task 7 duplicate tagged-Source ambiguity.
+- Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785493624391644500.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785493804953148700.log`; Editor PID `10276` responded and remained open for that historical run, and is superseded by PID `500`.
+- At that historical checkpoint, user-performed Human Pass, moving-player/moving-occlusion and audible distance/air/click-pop checks, true multi-PIE hardware isolation, automated OpenSpace/NearWall/Enclosed R3, the enumerated Task 1-4 minors, and Task 7 duplicate tagged-Source ambiguity were open; later entries supersede the automated R3 and ambiguity status.
 
 ## 2026-07-31 - Final Whole-Branch Fix Wave
 
@@ -164,7 +164,7 @@
 - Final Shipping build passed `34/34`; macro `WITH_UERAYTRACINGAUDIO_VALIDATION=0`, strict validation strings absent, plugin receipt present, and seven normal Direct/Indirect/RHI/Simulator/SDK objects non-empty.
 - Exact artifact launcher passed: hardware/automatic/distinct/imported/directional/common-scale `1/1/1/4/1/1`; Wet ratio `0.567596`, Full ratio `0.549702`, Direct/Wet difference `1.615526`.
 - Exact default launcher passed: paths `171/171`, Direct `215` generations with no dropout and restored/hardware `1/1`, all data sources passed, hard realtime `1581/0/0`. Game `UERayTracingAudioValidation-Game-1785502210674966300.log`; Editor `UERayTracingAudioValidation-Editor-1785502391254800900.log`.
-- Editor PID `13228` was responding for the 2026-07-31 run and is superseded by the final self-review run below. Oversized-callback P3, prior Task 1-4 minors, Human/R3 listening, and true multi-PIE hardware isolation remain open; duplicate tagged-Source ambiguity is closed by exact-one normalization.
+- Editor PID `13228` responded for the historical 2026-07-31 run and is superseded by PID `500`. Oversized-callback P3, prior Task 1-4 minors, Human/R3 listening, and true multi-PIE hardware isolation remain open; duplicate tagged-Source ambiguity is closed by exact-one normalization.
 
 ## 2026-08-01 - Final Self-Review Addendum
 
@@ -173,11 +173,18 @@
 - Prescribed Development build passed; realtime audit `39/40/1775` with zero violations; Python `70/70`; Automation passed ConfigurableDirect `15/15`, Audio `40/40`, Editor `9/9`, and full plugin `62/62`.
 - Fresh artifact flow passed hardware/automatic/distinct/imported/directional/common-scale `1/1/1/4/1/1`, with Wet/reference `0.567596`, Full/reference `0.549702`, and Direct/Wet difference `1.615526`.
 - Fresh default launcher passed paths `171/171`, Direct `199` generations with zero dropout and restored/hardware `1/1`, all three data sources, and hard realtime `1596/0/0`. Game `UERayTracingAudioValidation-Game-1785594301982190200.log`; Editor `UERayTracingAudioValidation-Editor-1785594482652644800.log`.
-- Final Editor PID `36896` is responding and left open. Human A/B, click/pop/audible-quality judgment, moving-player/occlusion listening, true multi-PIE hardware isolation, OpenSpace/NearWall/Enclosed R3, oversized-callback P3, and prior minors remain open.
+- Editor PID `36896` responded and was left open for that historical run; it is superseded by PID `500`. Human A/B, click/pop/audible-quality judgment, moving-player/occlusion and target-device R3 listening, true multi-PIE hardware isolation, oversized-callback P3, and prior minors remain open.
 
 ## 2026-08-02 - R3 32-Bounce Reflection Matrix
 
-- Implemented the strict OpenSpace/NearWall/Enclosed 0/1/7-Geometry matrix with one validated 32-bounce setting, same-origin MarchingBand Reference/Direct/Wet/Full artifacts, hardware/CPU evidence, and physical-zero OpenSpace Wet.
+- Implemented the initial strict OpenSpace/NearWall/Enclosed 0/1/7-Geometry matrix with one validated 32-bounce setting, same-origin MarchingBand Reference/Direct/Wet/Full artifacts, hardware/CPU evidence, and physical-zero OpenSpace Wet.
 - Final review repair now rejects enabled geometry export failures atomically and permits the masked DXR sentinel only for a logically empty scene; focused Manager and real-DX12 regressions passed.
-- Final gates passed: Python `156/156`, realtime audit `39/40/1775` with zero violations, prescribed project/plugin build, Automation `1/11/65`, and authoritative matrix `20260802-063000` with 27 non-empty artifacts and 12 matching WAV hashes.
-- Fixed runtime launch passed and left responding Editor PID `42028` open; updated TODO, usage, and implementation status with exact evidence while keeping Human Pass, click/pop judgment, true multi-PIE, and other open work unchecked.
+- The provisional gates passed Python `156/156`, realtime audit `39/40/1775`, prescribed build, Automation `1/1, 11/11, 65/65`, and matrix `20260802-063000`. Completion audit later reopened this claim for missing IR/Wet provenance and ambiguous-role preflight.
+- Fixed runtime launch passed and left Editor PID `42028` responding for that historical run; PID `42028` was later stopped and is superseded by PID `500`. Human Pass, click/pop judgment, true multi-PIE, and other open work remained unchecked.
+
+## 2026-08-02 - Final R3 Audit Closure
+
+- Commits `84830a3`, `26dcf11`, and `94b3537` added actual IR frames/duration/Wet provenance, mutation-free validation-role rejection, and explicit `1e-6` / `1e-9` evidence tolerances.
+- Final gates passed: Python `158/158`, realtime audit `39/40/1775`, prescribed project/plugin build, and Automation `1/1, 1/1, 12/12, 66/66` with clean prohibited-marker scans.
+- Authoritative matrix `20260802-074606` passed with 27 non-empty artifacts, 12/12 matching WAV hashes, 12 imported SoundWaves, 3 IR assets, and strict 16 kHz/stereo/16000-frame/1-second/Wet-0.8 provenance.
+- Fixed launcher passed paths/gain `171/171` and `0.001625/0.001625`, Direct `221` generations, hard realtime `1579/0/0`, and all data sources; responding Editor PID `500` is intentionally left open. Human listening, click/pop judgment, moving listening, and true multi-PIE remain open.

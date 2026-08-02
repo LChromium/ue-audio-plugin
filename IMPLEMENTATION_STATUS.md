@@ -224,7 +224,7 @@ Task 6 evidence:
 - Data sources passed with kernels `2/2/4` and `non_finite=0`; hard realtime callbacks/misses/drops were `1583/0/0`.
 - Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785475390548759300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785475571210643500.log`.
 
-Remaining limitations: Editor PID `35468` is ready for a target-device Human Pass, but audible recovery and click/pop have not been judged by a person. Task 2 multi-PIE hardware isolation, the ledgered Task 4 Minors, and later plan tasks also remain open; the overall plugin is not complete.
+Remaining limitations: Editor PID `35468` was ready for that historical run and is superseded by PID `500`. Audible recovery and click/pop have not been judged by a person. Task 2 multi-PIE hardware isolation, the ledgered Task 4 Minors, and later plan tasks also remain open; the overall plugin is not complete.
 
 ### Task 6 Fix Round 1: parser domain and temporal integrity
 
@@ -241,7 +241,7 @@ Fix Round 1 evidence:
 - Ordered Game lines: Direct `1118`, Bake `1126`, hard realtime `1130`, final data source `1132`.
 - Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785476653651929300.log`; Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785476834237184600.log`.
 
-Editor PID `42300` is responding and left open. Human Pass, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open; the overall plugin is not complete.
+Editor PID `42300` responded and was left open for that historical run; it is superseded by PID `500`. Human Pass, Task 2 multi-PIE hardware isolation, and the ledgered Task 4 Minors remain open; the overall plugin is not complete.
 
 ### Task 7: Editor Direct fixture controls
 
@@ -263,7 +263,7 @@ Task 7 evidence:
 - Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785478813724452300.log`.
 - Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785478994289043000.log`; parsed fixture `200 cm`, `default`, `(0.0002,0.0006,0.0012)`.
 
-Editor PID `34840` is responding and left open. Target-device distance/air/moving-occlusion listening, R3 OpenSpace/NearWall/Enclosed listening, Human Pass, Task 2 multi-PIE hardware isolation, and Task 4 Minors remain open; the overall plugin is not complete.
+Editor PID `34840` responded and was left open for that historical run; it is superseded by PID `500`. Target-device distance/air/moving-occlusion listening, R3 OpenSpace/NearWall/Enclosed listening, Human Pass, Task 2 multi-PIE hardware isolation, and Task 4 Minors remain open; the overall plugin is not complete.
 
 #### Task 7 Fix Round 1: review hardening
 
@@ -282,13 +282,13 @@ Fix Round 1 evidence:
 - GREEN: prescribed build `48/48`; focused Editor `2/2`; full Automation `55/55`; Python `64/64`; callback audit `39/40/1718`, zero forbidden operations; zero World-context warnings. UE still emits two pre-engine-init `LogAutomationTest: Error: Condition failed` lines, but all Automation tests pass and there is no Fatal/Assertion.
 - Exact launcher exit `0`: baseline paths `171/171`; Direct `231` generations, visibility `0.000027-0.997022`, gain `0.174776-0.498368`, step `0.00004127`, dropout `0`, restored/hardware `1/1`; data sources passed; hard realtime `1580/0/0`.
 - Game: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785491460999842900.log`.
-- Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785491641704854400.log`; strict fixture `200 cm / default / (0.0002,0.0006,0.0012)`; PID `13344` is responding and left open.
+- Editor: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785491641704854400.log`; strict fixture `200 cm / default / (0.0002,0.0006,0.0012)`; PID `13344` responded and was left open for that historical run, and is superseded by PID `500`.
 
 Human Pass, R3 listening, Task 2 multi-PIE hardware isolation, and Task 4 Minors remain open; the overall plugin is not complete.
 
 ### Task 8: final technical verification and Shipping isolation
 
-Implementation status: automatic/technical R2 verification complete on 2026-07-31. Human listening, true multi-PIE hardware isolation, and R3 remain unverified.
+Historical 2026-07-31 checkpoint: automatic/technical R2 verification was complete; Human listening, true multi-PIE hardware isolation, and R3 were still unverified. The current R3 result is recorded in the final 2026-08-02 section below.
 
 The normal product surface now has a single documented configuration contract: Project Settings cache `ReferenceDistanceCm=100` (`>=1`), `MaxDistanceCm=5000` (`>= ReferenceDistanceCm`), `SpeedOfSoundCmPerSecond=34300` (`>0`), `AirAbsorptionLowMidCrossoverHz=500` (`20..Nyquist`), and `AirAbsorptionMidHighCrossoverHz=4000` (`LowMid..Nyquist`); changes require Editor restart or audio-device reinitialization. Per-Source `AirAbsorptionPerMeter` / **Apply Air Absorption**, Blueprint-callable `SetIndirectDataSource` / `SetBakedImpulseResponseAsset`, first-valid Listener ownership per World, complementary three-band unity reconstruction, frequency-dependent Direct, and Wet bypass are documented independently of the opt-in validation fixture.
 
@@ -313,9 +313,9 @@ Final fixed-runtime evidence:
 - The exact non-fallback SDK branches `submits direct sound visibility queries asynchronously to the render thread` and `submits indirect sound energy-field queries asynchronously to the render thread` each occur once. Baseline hardware/CPU paths are `171/171`, gain `0.001625/0.001625`, both relative deltas `0`.
 - The unique strict marker is `passed=1`: `200` generations, distance `200.000 / 200.000 cm`, visibility `0.000038 / 0.996866`, Direct gain `0.174779 / 0.498316`, maximum band-gain step `0.00005484`, dropouts `0`, restored `1`, hardware `1`.
 - Baked/Realtime/Hybrid each recorded `24/24` non-silent buffers, `24/24` Wet-present buffers, and maximum silent run `0`; data sources passed with kernels `2/2/4` and `non_finite=0`. Hard realtime passed at callbacks/capacity misses/prepare drops `1600/0/0`.
-- Editor scene/UI readiness is `source=1 listener=1 geometry=7 lighting=1 bake_ui=1`, `200 cm / default / (0.0002,0.0006,0.0012)`. PID `10276` is responding and remains open for the user.
+- Editor scene/UI readiness was `source=1 listener=1 geometry=7 lighting=1 bake_ui=1`, `200 cm / default / (0.0002,0.0006,0.0012)`. PID `10276` responded for that historical run and is superseded by PID `500`.
 
-Open ledger (not marked complete): Task 1's effective-crossover startup log hard-codes 48 kHz; Task 2 lacks focused ignored-listener-removal identity, scene-address-stability, and pending-request World-cleanup coverage; Task 3 needs invalid/out-of-order crossover, non-finite band-gain, and finite-input-overflow hardening; Task 4 needs transitive callback-safety/logging audit coverage, remaining Editor mode/bake/artifact/validation assignments routed through public Source setters, and saturating Direct diagnostic counters; Task 7 duplicate tagged Source roles select the first iteration result rather than rejecting ambiguity. Human Pass, moving-player/moving-occlusion listening, audible distance/air comparison, click/pop judgment, true multi-PIE hardware isolation, and the OpenSpace/NearWall/Enclosed R3 matrix also remain open. The overall plugin goal is not complete.
+Historical open ledger at this checkpoint: Task 1's effective-crossover startup log hard-coded 48 kHz; Task 2 lacked focused ignored-listener-removal identity, scene-address-stability, and pending-request World-cleanup coverage; Task 3 needed invalid/out-of-order crossover, non-finite band-gain, and finite-input-overflow hardening; Task 4 needed transitive callback-safety/logging audit coverage, remaining Editor mode/bake/artifact/validation assignments routed through public Source setters, and saturating Direct diagnostic counters. Validation-role ambiguity and automated R3 are closed in the final 2026-08-02 section below. Human Pass, moving-player/moving-occlusion listening, audible distance/air comparison, click/pop judgment, and true multi-PIE hardware isolation remain open; the overall plugin goal is not complete.
 
 ### Task 8 Final Fix Wave: whole-branch hardening
 
@@ -335,9 +335,9 @@ Final-fix verification on 2026-07-31:
 - Prescribed Shipping build: exit `0`, `34/34` plugin actions. `WITH_UERAYTRACINGAUDIO_VALIDATION` is `0`; exact scenario/HUD/Direct-sweep/F6 entry strings are absent from executable and receipt, while the plugin receipt and seven non-empty Direct/Indirect/RHI/Simulator/SDK objects retain the product runtime.
 - Exact `--editor-ab-artifacts` flow: exit `0`; `hardware=1`, `auto_checks=1`, `distinct=1`, `imported=4`, `directional_wet=1`, `common_scale=1`. The fixture-only Wet send is `0.8`, preserving a recognizable Full dry cue without weakening acceptance thresholds; Wet/reference ratio is `0.567596`, Full/input ratio `0.549702`, and Direct/Wet difference `1.615526`.
 - Exact default launcher: exit `0`. Game log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785502210674966300.log`; Editor log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785502391254800900.log`. Actual Direct/Indirect hardware markers were present; paths/gain matched CPU `171/171` and `0.001625/0.001625`; Direct passed with `215` generations, zero dropout, restored/hardware `1/1`; all three data sources passed; hard realtime was `1581/0/0` callbacks/misses/drops.
-- The 2026-07-31 Editor PID `13228` was responding for that run and has been superseded by the 2026-08-01 final self-review run below.
+- Editor PID `13228` responded for that historical 2026-07-31 run and is superseded by PID `500`.
 
-Still open: the callback-capacity P3 can temporarily treat a Wet-containing oversized buffer as Direct when prepared bridge capacity is exceeded; the prior Task 1-4 minor ledger remains; target-device Human Pass, click/pop and audible-quality judgment, true multi-PIE hardware isolation, and the OpenSpace/NearWall/Enclosed R3 matrix are not automated completions. The rejected Bake UObject-UAF candidate remains unchanged because the reviewed path does not retain the suspected UObject access.
+At this historical checkpoint, the callback-capacity P3, prior Task 1-4 minor ledger, target-device Human Pass, click/pop and audible-quality judgment, true multi-PIE hardware isolation, and the OpenSpace/NearWall/Enclosed R3 matrix were still open. Automated R3 is closed in the final 2026-08-02 section below; the human and other technical items remain open. The rejected Bake UObject-UAF candidate remains unchanged because the reviewed path does not retain the suspected UObject access.
 
 #### 2026-08-01 final self-review addendum
 
@@ -347,7 +347,7 @@ A final Unreal C++ self-review found that duplicate tagged actors were normalize
 - Fresh Automation: ConfigurableDirect `15/15`, Audio `40/40`, Editor `9/9`, full plugin `62/62`; all four logs contain one `TEST COMPLETE. EXIT CODE: 0`, zero failed tests, and zero Fatal/Assertion markers. Logs are `FinalFix2-ConfigurableDirect.log`, `FinalFix2-Audio.log`, `FinalFix2-Editor.log`, and `FinalFix2-Full.log` under the project `Saved/Logs` directory.
 - Fresh `--editor-ab-artifacts`: exit `0`; hardware/automatic/distinct/imported/directional/common-scale `1/1/1/4/1/1`, Wet/reference `0.567596`, Full/reference `0.549702`, Direct/Wet difference `1.615526`.
 - Fresh default launcher: exit `0`. Game log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785594301982190200.log`; Editor log `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785594482652644800.log`. Hardware/CPU paths and gain match at `171/171` and `0.001625/0.001625`; Direct passed with `199` generations, zero dropout, restored/hardware `1/1`; all data sources passed; hard realtime was `1596/0/0`.
-- Editor PID `36896` was responding for the 2026-08-01 run; Game and Editor logs contained zero Fatal, Unhandled Exception, or Assertion markers. That PID is superseded by the final R3 run below.
+- Editor PID `36896` responded for the historical 2026-08-01 run; Game and Editor logs contained zero Fatal, Unhandled Exception, or Assertion markers. That PID is superseded by PID `500`.
 
 At that historical checkpoint, the R3 matrix was still open. The automated R3 status is superseded by the 2026-08-02 section below; target-device Human A/B, click/pop and audible-quality judgment, moving-player/occlusion listening, and true multi-PIE hardware isolation remain open.
 
@@ -355,55 +355,60 @@ At that historical checkpoint, the R3 matrix was still open. The automated R3 st
 
 Implementation status: the automated OpenSpace/NearWall/Enclosed R3 matrix is complete. Target-device listening and Human Pass remain open.
 
+Chronology: the completion audit reopened the earlier Task 7 claim and rejected `20260802-063000` as final because it did not prove actual IR frame/duration/Wet-mix provenance and did not reject ambiguous validation-role topology before mutation. Commit `84830a3` added actual `impulse_response_frames` / `impulse_response_duration_seconds` provenance and strict 16 kHz/stereo/16000-frame/1.0-second/Wet-0.8 validation; `26dcf11` added a mutation-free preflight that rejects duplicate, multi-role, and no-role validation topology; `94b3537` exposed the actually enforced `fixed_float_tolerance=1e-6` and `ir_duration_consistency_tolerance=1e-9`. Only the post-fix rerun below closes the audit.
+
 Authoritative summary:
 
-`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\ReflectionEnvironmentMatrix_Manifest.json`
+`D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\ReflectionEnvironmentMatrix_Manifest.json`
 
-This `passed=true`, `end_to_end=true` run used only `/Game/FirstPerson/Audio/MarchingBand.MarchingBand`, clear Direct, 200 cm, default air absorption, 4096 reflection rays, 32 reflected segments/max bounces, stereo 16 kHz, 1 s IR, and Wet mix `0.8`. The Direct segment is not counted as a bounce. Every case has actual hardware-tracing and CPU-reference provenance.
+This `passed=true`, `end_to_end=true` run used only `/Game/FirstPerson/Audio/MarchingBand.MarchingBand`, clear Direct, 200 cm, default air absorption, 4096 reflection rays, 32 reflected segments/max bounces, and fixed validation Wet mix `0.8`. The Direct segment is not counted as a bounce. Every raw manifest and retained case summary records actual output `sample_rate=16000` / `channels=2`, `impulse_response_channels=2`, `impulse_response_frames=16000`, `impulse_response_duration_seconds=1.0`, and `wet_mix=0.800000011920929`. The Wet-mix absolute error is about `1.19e-8` under tolerance `1e-6`; frame/rate/duration consistency error is `0` under tolerance `1e-9`. Every case has actual hardware-tracing and CPU-reference provenance.
 
 | Case | Geometry | HW/CPU paths | Gain / early / late | Direction ratio / bins | IR energy | Wet/reference |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | OpenSpace | 0 | 0 / 0 | 0 / 0 / 0 | 0 / 0 | 0 | 0 |
-| NearWall | 1 | 618 / 618 | 0.0067706820555 / 0.0067706820555 / 0 | 0.9340865 / 218 | 0.006770680 | 0.2198273 |
-| Enclosed | 7 | 20351 / 20351 | 0.0460692495 / 0.0460459143 / 0.0000232990715 | 0.6602507 / 1634 | 0.046069240 | 0.567596 |
+| NearWall | 1 | 618 / 618 | 0.00677068205550313 / 0.00677068205550313 / 0 | 0.9340865 / 218 | 0.0067706802382897354 | 0.2198273241519928 |
+| Enclosed | 7 | 20351 / 20351 | 0.046069249510765076 / 0.04604591429233551 / 0.000023299071472138166 | 0.6602507 / 1634 | 0.046069239603751005 | 0.5675959587097168 |
 
-OpenSpace is the required physical-zero case: all hardware/CPU indirect, IR, and Wet values are exactly zero, and Direct/Full hashes match. Its generic `automatic_checks_passed=false` is therefore correct; NearWall and Enclosed are `true`. NearWall has directional early energy. Enclosed adds nonzero late energy and grows over NearWall by paths `32.9304`, directional bins `7.4954`, IR energy `6.8042`, Wet/reference `2.5820`, and late reverb `23299.0715`.
+OpenSpace is the required physical-zero case: all hardware/CPU indirect, early, late, IR, and Wet values are exactly zero, and Direct/Full hashes match. Its generic `automatic_checks_passed=false` is therefore correct; NearWall and Enclosed are `true`. NearWall has directional early energy. Enclosed adds nonzero late energy and grows over NearWall by paths `32.93042071197411`, directional bins `7.495412844036697`, IR energy `6.804226160795334`, Wet/reference `2.582008223496685`, and late reverb `23299.071472138166`.
 
-Hardware/CPU numerical agreement is effectively exact. OpenSpace relative deltas are all zero. NearWall paths/gain/early/late/bins deltas are zero, IR-energy delta is `1.0712405567e-8`, directional-ratio delta is `1.2762125279e-7`, and direction dot is effectively `1.0`. Enclosed paths/gain/early/directional-ratio/bins deltas are zero, late-gain delta is `7.8071319868e-8`, IR-energy delta is `1.6779471292e-9`, and direction dot is effectively `1.0`.
+Hardware/CPU numerical agreement is effectively exact. OpenSpace relative deltas are all zero. NearWall paths/gain/early/late/bins deltas are zero, IR-energy delta is `1.07124056e-8`, directional-ratio delta is `1.27621253e-7`, and direction dot is approximately `1.0`. Enclosed paths/gain/early/directional-ratio/bins deltas are zero, late-gain delta is `7.80713199e-8`, IR-energy delta is `1.67794713e-9`, and direction dot is approximately `1.0`.
 
 Exact per-case evidence:
 
-- OpenSpace result: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\OpenSpace_Result.json`
-- OpenSpace screenshot: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\OpenSpace.png`
-- OpenSpace retained log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioEditorVisible-1785623400640989800.log`
-- OpenSpace hardware manifest: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223017\MarchingBand_clear_HardwareIR_clear_20260801-223017_Manifest.json`
-- OpenSpace IR: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Content\UERayTracingAudio\Validation\HardwareIR_clear_20260801-223017.uasset`
-- NearWall result: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\NearWall_Result.json`
-- NearWall screenshot: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\NearWall.png`
-- NearWall retained log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioEditorVisible-1785623427111428300.log`
-- NearWall hardware manifest: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223042\MarchingBand_clear_HardwareIR_clear_20260801-223042_Manifest.json`
-- NearWall IR: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Content\UERayTracingAudio\Validation\HardwareIR_clear_20260801-223042.uasset`
-- Enclosed result: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\Enclosed_Result.json`
-- Enclosed screenshot: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-063000\Enclosed.png`
-- Enclosed retained log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioEditorVisible-1785623451273584300.log`
-- Enclosed hardware manifest: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-223127\MarchingBand_clear_HardwareIR_clear_20260801-223127_Manifest.json`
-- Enclosed IR: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Content\UERayTracingAudio\Validation\HardwareIR_clear_20260801-223127.uasset`
+- OpenSpace result: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\OpenSpace_Result.json`
+- OpenSpace screenshot: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\OpenSpace.png`
+- OpenSpace retained log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioEditorVisible-1785627966963000800.log`
+- OpenSpace hardware manifest: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234624\MarchingBand_clear_HardwareIR_clear_20260801-234624_Manifest.json`
+- OpenSpace IR: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Content\UERayTracingAudio\Validation\HardwareIR_clear_20260801-234624.uasset`
+- NearWall result: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\NearWall_Result.json`
+- NearWall screenshot: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\NearWall.png`
+- NearWall retained log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioEditorVisible-1785627993652716000.log`
+- NearWall hardware manifest: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234649\MarchingBand_clear_HardwareIR_clear_20260801-234649_Manifest.json`
+- NearWall IR: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Content\UERayTracingAudio\Validation\HardwareIR_clear_20260801-234649.uasset`
+- Enclosed result: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\Enclosed_Result.json`
+- Enclosed screenshot: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\ReflectionEnvironmentMatrix\20260802-074606\Enclosed.png`
+- Enclosed retained log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioEditorVisible-1785628018462952000.log`
+- Enclosed hardware manifest: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\UERayTracingAudio\ListeningAcceptance\HardwareValidation\20260801-234734\MarchingBand_clear_HardwareIR_clear_20260801-234734_Manifest.json`
+- Enclosed IR: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Content\UERayTracingAudio\Validation\HardwareIR_clear_20260801-234734.uasset`
 
-All 27 required case artifacts exist and are non-empty; all 12 WAV SHA-256 hashes match. The exact WAV paths and listening order are recorded in `USAGE.md`.
+All 27 required case artifacts exist and are non-empty; all 12 WAV SHA-256 hashes match; all 12 imported SoundWave assets and all 3 IR assets exist. The exact WAV paths and listening order are recorded in `USAGE.md`. The three screenshots passed nonblack/luma visibility checks but are byte-identical, so they prove visible Editor output only; strict markers/results/manifests, not screenshots, prove Geometry `0/1/7`.
 
 Final gates:
 
-- Python `156/156` passed in `7.411s`.
+- Python `158/158` passed. Log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FinalValidation-Python-20260802-074109.log`
 - Realtime safety passed: `passed=1 functions=39 bodies=40 lines=1775`; lock, heap, shared-ownership, blocking, and UObject counts are all zero.
-- Prescribed `uv run script\build_and_validate.py` exited `0`; project and standalone plugin builds passed.
-- Focused fixture Automation `1/1`: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task6-Round2-Final-EditorFixture-20260802-062900009.log`
-- Editor Automation `11/11`: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task6-Round2-Final-EditorFull-20260802-062900009.log`
-- Full plugin Automation `65/65`: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task6-Round2-Final-PluginFull-20260802-062900009.log`
+- Realtime safety log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FinalValidation-Safety-20260802-074109.log`
+- Prescribed `uv run script\build_and_validate.py` exited `0`; project and standalone plugin builds passed. Log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FinalValidation-Build-20260802-074109.log`
+- Role-ambiguity Automation `1/1`: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FinalValidation-Automation-RoleAmbiguity-20260802-074109.log`
+- Offline-manifest-contract Automation `1/1`: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FinalValidation-Automation-OfflineContract-20260802-074109.log`
+- Editor Automation `12/12`: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FinalValidation-Automation-EditorFull-20260802-074109.log`
+- Full plugin Automation `66/66`: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FinalValidation-Automation-PluginFull-20260802-074109.log`
 - All Automation runs exited `0` and all prohibited failure-marker scans were clean.
+- Matrix driver: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\Task8-FinalValidation-Matrix-Driver-20260802-074109.log`; exactly one PASS points to `20260802-074606`.
 
-The fixed `uv run script\launch_runtime_validation.py` flow also exited `0`. Its Game log is `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785623576684106900.log`; its Editor log is `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785623757245946900.log`. Editor PID `42028` is responding on the exact validation project/scenario and was intentionally left open. This interactive launcher uses its established default eight bounces; only the separate matrix above is the authoritative 32-bounce gate.
+The fixed `uv run script\launch_runtime_validation.py` flow also exited `0`. Its Game log is `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785628395987303100.log`; its Editor log is `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785628576602470800.log`. Game evidence passed paths `171/171`, gain `0.001625/0.001625`, Direct `221` generations with zero dropout/restored/hardware, hard realtime `1579` callbacks / `0` misses / `0` drops, and all Baked/Realtime/Hybrid data sources with kernels `2/2/4` and `nonfinite=0`. Editor PID `500` is the sole relevant Unreal process, responding on the exact validation project/scenario with DX12 ray tracing, and was intentionally left open. This interactive launcher uses its established default eight bounces; only the separate `074606` matrix is the authoritative 32-bounce gate.
 
-The rejected `20260802-052854` handled-ensure manifest, the previously accepted `20260802-054250` manifest, PID `16804`, and every earlier “final/open” Editor PID stated above are superseded historical evidence. Only matrix `20260802-063000` and Editor PID `42028` are current.
+The rejected `20260802-052854` handled-ensure manifest, previously accepted `20260802-054250` and `20260802-063000` manifests, PID `16804`, PID `42028`, and every earlier “final/open” Editor PID stated above are superseded historical evidence. Only matrix `20260802-074606` and Editor PID `500` are current.
 
 Deferred pre-existing limitations remain open:
 
