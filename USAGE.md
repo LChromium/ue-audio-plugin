@@ -414,8 +414,8 @@ uv run script\validate_reflection_environment_matrix.py
 
 - **Reference**：未经插件处理的原音。
 - **Direct**：清晰无遮挡的 Direct 渲染。
-- **Wet**：只包含反射和混响；不含 Direct。
-- **Full**：`Direct + 0.8 × Wet`。
+- **Wet**：只包含反射和混响，不含 Direct；导出的 Wet 已经是“Reference 与 IR 卷积后再乘验证 Wet mix `0.8`”的结果。
+- **Full**：`Direct + Wet`。这里的 Wet 已包含 `0.8`，不要对导出的 Wet 再乘一次。
 
 R3 固定参数为 200 cm、默认空气吸收、4096 条反射射线、最多 32 个反射段、双声道 16 kHz、1 秒 IR。Direct 段不计入 bounce，所以“32 bounces”表示最多 32 个反射段。三个夹具分别包含 0 / 1 / 7 个声学 Geometry：
 
