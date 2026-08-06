@@ -64,6 +64,17 @@ FUERayTracingAudioOcclusionPlugin::FUERayTracingAudioOcclusionPlugin(
 void FUERayTracingAudioOcclusionPlugin::Initialize(const FAudioPluginInitializationParams InitializationParams)
 {
     SampleRate = FMath::Max(static_cast<int32>(InitializationParams.SampleRate), 8000);
+    const float RuntimeNyquist = FMath::Max(
+        static_cast<float>(SampleRate) * 0.5f,
+        40.0f);
+    CrossoversHz.X = FMath::Clamp(
+        FMath::IsFinite(CrossoversHz.X) ? CrossoversHz.X : 500.0f,
+        20.0f,
+        RuntimeNyquist);
+    CrossoversHz.Y = FMath::Clamp(
+        FMath::IsFinite(CrossoversHz.Y) ? CrossoversHz.Y : 4000.0f,
+        CrossoversHz.X,
+        RuntimeNyquist);
     Sources.Reset();
     Sources.SetNum(InitializationParams.NumSources);
     for (FUERayTracingAudioOcclusionSource& Source : Sources)

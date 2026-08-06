@@ -78,6 +78,30 @@ public:
     void SetBakedImpulseResponseAsset(
         UUERayTracingAudioImpulseResponseAsset* NewAsset);
 
+    UFUNCTION(BlueprintCallable, Category = "UE Ray Tracing Audio|Direct")
+    void SetDirectOcclusionSettings(
+        float NewOccludedGain,
+        float NewSourceRadiusCm,
+        int32 NewNumOcclusionSamples,
+        bool bNewUseVolumetricOcclusion,
+        bool bNewHardOcclusion,
+        FVector NewAirAbsorptionPerMeter);
+
+    UFUNCTION(BlueprintCallable, Category = "UE Ray Tracing Audio|Indirect")
+    void SetIndirectMode(
+        EUERayTracingAudioIndirectMode NewMode);
+
+    UFUNCTION(BlueprintCallable, Category = "UE Ray Tracing Audio|Indirect")
+    void SetReflectionSimulationSettings(
+        int32 NewNumReflectionRays,
+        int32 NewMaxReflectionBounces,
+        float NewIndirectDurationSeconds,
+        int32 NewMaxEarlyReflectionTaps,
+        float NewHybridTransitionRatio);
+
+    UFUNCTION(BlueprintCallable, Category = "UE Ray Tracing Audio|Indirect")
+    void SetIndirectMix(float NewIndirectMix);
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = DirectSound)
     bool bEnableDirectSound;
 

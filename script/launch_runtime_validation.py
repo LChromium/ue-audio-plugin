@@ -139,7 +139,8 @@ INTERACTIVE_SMOKE_PATTERN = re.compile(
     r"passed=(?P<passed>[01]).*?"
     r"moved_cm=(?P<moved_cm>[0-9.eE+-]+).*?"
     r"listener_camera_error_cm=(?P<listener_camera_error_cm>[0-9.eE+-]+).*?"
-    r"origin_error_cm=(?P<origin_error_cm>[0-9.eE+-]+).*?"
+    r"origin_return_error_cm=(?P<origin_return_error_cm>[0-9.eE+-]+).*?"
+    r"post_return_moved_cm=(?P<post_return_moved_cm>[0-9.eE+-]+).*?"
     r"realtime=(?P<realtime>[01]).*?"
     r"baked=(?P<baked>[01]).*?"
     r"hybrid=(?P<hybrid>[01]).*?"
@@ -161,6 +162,15 @@ EDITOR_VALIDATION_MARKERS = EDITOR_MODULE_MARKERS + (EDITOR_VISIBLE_SCENE_MARKER
 EDITOR_AB_ARTIFACTS_MARKER = "UERayTracingAudioEditor A/B artifacts ready:"
 EDITOR_AB_ARTIFACTS_FAILURE_MARKER = "UERayTracingAudioEditor A/B artifacts failed:"
 EDITOR_LISTENING_UI_MARKER = "UERayTracingAudioEditor listening acceptance ready:"
+EDITOR_LISTENING_UI_PATTERN = re.compile(
+    r"UERayTracingAudioEditor listening acceptance ready: "
+    r"controls=1 imported_assets=4 waveforms=(?P<waveforms>ready) "
+    r"manifest=\"(?P<manifest>[^\"]+)\" human_verdict=enabled "
+    r"human_record_schema=(?P<human_record_schema>3) "
+    r"device_required=(?P<device_required>1) "
+    r"pass_requires_all_modes=(?P<pass_requires_all_modes>1) "
+    r"pass_requires_confirmations=(?P<pass_requires_confirmations>5)\."
+)
 EDITOR_DIRECT_PRESETS = ("clear", "soft_occluded", "hard_occluded")
 EDITOR_REFLECTION_ENVIRONMENTS = ("enclosed", "open_space", "near_wall")
 EDITOR_EXPECTED_GEOMETRY = {
@@ -466,7 +476,19 @@ def validate_editor_ab_artifacts_marker(
         pattern=EDITOR_AB_ARTIFACTS_PATTERN,
         label="Editor A/B artifact",
     )
+    listening_ui_match = _extract_exactly_one_strict_marker(
+        log_text,
+        marker=EDITOR_LISTENING_UI_MARKER,
+        pattern=EDITOR_LISTENING_UI_PATTERN,
+        label="Editor listening waveform",
+    )
     failures: list[str] = []
+    if listening_ui_match.group("manifest") != match.group("manifest"):
+        failures.append(
+            "listening waveform manifest "
+            f"({listening_ui_match.group('manifest')} != "
+            f"{match.group('manifest')})"
+        )
     if match.group("direct_preset") != expected_direct_preset:
         failures.append(
             "direct preset "
@@ -516,6 +538,14 @@ def validate_editor_ab_artifacts_marker(
         "directional_wet",
     ):
         values[name] = int(match.group(name))
+    values["waveforms"] = listening_ui_match.group("waveforms")
+    for name in (
+        "human_record_schema",
+        "device_required",
+        "pass_requires_all_modes",
+        "pass_requires_confirmations",
+    ):
+        values[name] = int(listening_ui_match.group(name))
     return values
 
 
@@ -988,7 +1018,10 @@ def print_audio_path_summary(
                 f"passed={interactive_smoke_match.group('passed')} "
                 f"moved_cm={interactive_smoke_match.group('moved_cm')} "
                 f"listener_camera_error_cm={interactive_smoke_match.group('listener_camera_error_cm')} "
-                f"origin_error_cm={interactive_smoke_match.group('origin_error_cm')} "
+                f"origin_return_error_cm="
+                f"{interactive_smoke_match.group('origin_return_error_cm')} "
+                f"post_return_moved_cm="
+                f"{interactive_smoke_match.group('post_return_moved_cm')} "
                 f"modes={interactive_smoke_match.group('realtime')}/"
                 f"{interactive_smoke_match.group('baked')}/"
                 f"{interactive_smoke_match.group('hybrid')} "
@@ -1322,7 +1355,9 @@ def print_audio_path_summary(
             listener_error_cm = float(
                 interactive_smoke_match.group("listener_camera_error_cm")
             )
-            origin_error_cm = float(interactive_smoke_match.group("origin_error_cm"))
+            origin_return_error_cm = float(
+                interactive_smoke_match.group("origin_return_error_cm")
+            )
             if values["passed"] != 1:
                 smoke_failures.append("successful interactive smoke")
             if moved_cm < 25.0:
@@ -1331,9 +1366,10 @@ def print_audio_path_summary(
                 smoke_failures.append(
                     f"Listener/camera error <=1 cm (observed {listener_error_cm:.3f})"
                 )
-            if origin_error_cm > 1.0:
+            if origin_return_error_cm > 1.0:
                 smoke_failures.append(
-                    f"baked-origin return error <=1 cm (observed {origin_error_cm:.3f})"
+                    "baked-origin immediate return error <=1 cm "
+                    f"(observed {origin_return_error_cm:.3f})"
                 )
             for name in (
                 "realtime",

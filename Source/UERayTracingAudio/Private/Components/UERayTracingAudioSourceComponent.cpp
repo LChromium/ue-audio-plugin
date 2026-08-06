@@ -113,6 +113,30 @@ namespace
             * FMath::Clamp(Source.GetHybridTransitionRatio(), 0.05f, 0.95f);
     }
 
+    float ClampFinite(
+        const float Value,
+        const float Minimum,
+        const float Maximum,
+        const float Fallback)
+    {
+        return FMath::IsFinite(Value)
+            ? FMath::Clamp(Value, Minimum, Maximum)
+            : FMath::Clamp(Fallback, Minimum, Maximum);
+    }
+
+    float NonNegativeFiniteOrZero(const float Value)
+    {
+        return FMath::IsFinite(Value) ? FMath::Max(Value, 0.0f) : 0.0f;
+    }
+
+    FVector NonNegativeFiniteOrZero(const FVector& Value)
+    {
+        return FVector(
+            NonNegativeFiniteOrZero(Value.X),
+            NonNegativeFiniteOrZero(Value.Y),
+            NonNegativeFiniteOrZero(Value.Z));
+    }
+
     void ApplyHybridImpulseWindow(
         TArray<float>& Samples,
         const int32 SampleRate,
@@ -320,6 +344,55 @@ void UUERayTracingAudioSourceComponent::
     // Published kernel identities and lane revisions intentionally remain
     // monotonic. The next TickComponent refresh and snapshot publication
     // observes old-to-new (or old-to-null) identities and advances revisions.
+}
+
+void UUERayTracingAudioSourceComponent::SetDirectOcclusionSettings(
+    const float NewOccludedGain,
+    const float NewSourceRadiusCm,
+    const int32 NewNumOcclusionSamples,
+    const bool bNewUseVolumetricOcclusion,
+    const bool bNewHardOcclusion,
+    const FVector NewAirAbsorptionPerMeter)
+{
+    OccludedGain = ClampFinite(NewOccludedGain, 0.0f, 1.0f, 0.0f);
+    SourceRadiusCm = NonNegativeFiniteOrZero(NewSourceRadiusCm);
+    NumOcclusionSamples = FMath::Clamp(NewNumOcclusionSamples, 1, 128);
+    bUseVolumetricOcclusion = bNewUseVolumetricOcclusion;
+    bHardOcclusion = bNewHardOcclusion;
+    AirAbsorptionPerMeter =
+        NonNegativeFiniteOrZero(NewAirAbsorptionPerMeter);
+}
+
+void UUERayTracingAudioSourceComponent::SetIndirectMode(
+    const EUERayTracingAudioIndirectMode NewMode)
+{
+    IndirectMode = NewMode;
+}
+
+void UUERayTracingAudioSourceComponent::SetReflectionSimulationSettings(
+    const int32 NewNumReflectionRays,
+    const int32 NewMaxReflectionBounces,
+    const float NewIndirectDurationSeconds,
+    const int32 NewMaxEarlyReflectionTaps,
+    const float NewHybridTransitionRatio)
+{
+    NumReflectionRays = FMath::Clamp(NewNumReflectionRays, 1, 4096);
+    MaxReflectionBounces =
+        FMath::Clamp(NewMaxReflectionBounces, 1, 64);
+    IndirectDurationSeconds =
+        ClampFinite(NewIndirectDurationSeconds, 0.05f, 4.0f, 1.0f);
+    MaxEarlyReflectionTaps =
+        FMath::Clamp(NewMaxEarlyReflectionTaps, 1, 64);
+    HybridTransitionRatio =
+        ClampFinite(NewHybridTransitionRatio, 0.05f, 0.95f, 0.35f);
+}
+
+void UUERayTracingAudioSourceComponent::SetIndirectMix(
+    const float NewIndirectMix)
+{
+    IndirectMix = FMath::IsFinite(NewIndirectMix)
+        ? FMath::Clamp(NewIndirectMix, 0.0f, 4.0f)
+        : 0.0f;
 }
 
 void UUERayTracingAudioSourceComponent::BeginPlay()

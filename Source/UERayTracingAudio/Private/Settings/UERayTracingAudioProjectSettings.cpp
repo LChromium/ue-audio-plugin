@@ -23,8 +23,16 @@ FVector2f UUERayTracingAudioProjectSettings::GetValidatedAirAbsorptionCrossovers
     const float SampleRate) const
 {
     const float Nyquist = FMath::Max(SampleRate * 0.5f, 40.0f);
-    const float LowMid = FMath::Clamp(AirAbsorptionLowMidCrossoverHz, 20.0f, Nyquist);
-    const float MidHigh = FMath::Clamp(AirAbsorptionMidHighCrossoverHz, LowMid, Nyquist);
+    constexpr float DefaultLowMidCrossoverHz = 500.0f;
+    constexpr float DefaultMidHighCrossoverHz = 4000.0f;
+    const float RequestedLowMid = FMath::IsFinite(AirAbsorptionLowMidCrossoverHz)
+        ? AirAbsorptionLowMidCrossoverHz
+        : DefaultLowMidCrossoverHz;
+    const float RequestedMidHigh = FMath::IsFinite(AirAbsorptionMidHighCrossoverHz)
+        ? AirAbsorptionMidHighCrossoverHz
+        : DefaultMidHighCrossoverHz;
+    const float LowMid = FMath::Clamp(RequestedLowMid, 20.0f, Nyquist);
+    const float MidHigh = FMath::Clamp(RequestedMidHigh, LowMid, Nyquist);
     return FVector2f(LowMid, MidHigh);
 }
 

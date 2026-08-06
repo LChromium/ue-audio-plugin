@@ -227,6 +227,10 @@ FORBIDDEN_PATTERNS = (
             r"GetDefault|GetMutableDefault)\s*(?:<|\()"
         ),
     ),
+    (
+        "logging",
+        re.compile(r"\b(?:UE_LOG|UE_CLOG|UE_LOGFMT|UE_CLOGFMT)\s*\("),
+    ),
 )
 
 COMMENTS_AND_LITERALS = re.compile(
@@ -245,6 +249,36 @@ def strip_comments_and_literals(source: str) -> str:
 def _selector_pattern(qualified_name: str) -> re.Pattern[str]:
     pieces = tuple(re.escape(piece) for piece in qualified_name.split("::"))
     return re.compile(r"::\s*".join(pieces) + r"\s*\(")
+
+
+FUNCTION_SELECTOR = re.compile(
+    r"(?P<qualified>(?:~?[A-Za-z_]\w*::)*~?[A-Za-z_]\w*)\s*\("
+)
+
+CALL_SELECTOR = re.compile(r"(?<![:~\w.>])(?P<name>[A-Za-z_]\w*)\s*\(")
+
+NON_TRANSITIVE_CALLS = frozenset(
+    {
+        "alignas",
+        "alignof",
+        "case",
+        "catch",
+        "decltype",
+        "delete",
+        "for",
+        "if",
+        "new",
+        "return",
+        "sizeof",
+        "static_cast",
+        "reinterpret_cast",
+        "const_cast",
+        "dynamic_cast",
+        "switch",
+        "throw",
+        "while",
+    }
+)
 
 
 def _find_matching(
@@ -307,6 +341,60 @@ def extract_function_bodies(source: str, qualified_name: str) -> tuple[str, ...]
     return tuple(bodies)
 
 
+def extract_named_function_bodies(source: str) -> dict[str, tuple[str, ...]]:
+    bodies_by_name: dict[str, list[str]] = {}
+    for match in FUNCTION_SELECTOR.finditer(source):
+        opening_parenthesis = source.find("(", match.start())
+        try:
+            closing_parenthesis = _find_matching(
+                source,
+                opening_parenthesis,
+                "(",
+                ")",
+            )
+        except RuntimeError:
+            continue
+
+        cursor = closing_parenthesis + 1
+        while cursor < len(source) and source[cursor].isspace():
+            cursor += 1
+        if cursor < len(source) and source[cursor] == ":":
+            opening_brace = source.find("{", cursor + 1)
+            semicolon = source.find(";", cursor + 1)
+        else:
+            opening_brace = source.find("{", cursor)
+            semicolon = source.find(";", cursor)
+        if opening_brace < 0 or (semicolon >= 0 and semicolon < opening_brace):
+            continue
+
+        try:
+            closing_brace = _find_matching(source, opening_brace, "{", "}")
+        except RuntimeError:
+            continue
+
+        qualified_name = match.group("qualified")
+        body = source[opening_brace + 1 : closing_brace]
+        bodies_by_name.setdefault(qualified_name, []).append(body)
+        unqualified_name = qualified_name.split("::")[-1]
+        if unqualified_name != qualified_name:
+            bodies_by_name.setdefault(unqualified_name, []).append(body)
+
+    return {
+        name: tuple(bodies)
+        for name, bodies in bodies_by_name.items()
+    }
+
+
+def extract_same_file_calls(body: str) -> tuple[str, ...]:
+    stripped_body = strip_comments_and_literals(body)
+    calls: list[str] = []
+    for match in CALL_SELECTOR.finditer(stripped_body):
+        name = match.group("name")
+        if name not in NON_TRANSITIVE_CALLS:
+            calls.append(name)
+    return tuple(calls)
+
+
 def audit_body(
     relative_path: str,
     qualified_name: str,
@@ -354,13 +442,54 @@ def audit_body(
     return tuple(violations)
 
 
-def audit_repo(repo_root: Path) -> AuditReport:
+def audit_body_and_same_file_helpers(
+    relative_path: str,
+    qualified_name: str,
+    body: str,
+    *,
+    allow_bounded_resize: bool,
+    same_file_bodies: dict[str, tuple[str, ...]],
+    visited: set[tuple[str, int]],
+) -> tuple[AuditViolation, ...]:
+    violations = list(
+        audit_body(
+            relative_path,
+            qualified_name,
+            body,
+            allow_bounded_resize=allow_bounded_resize,
+        )
+    )
+    for call_name in extract_same_file_calls(body):
+        for called_body in same_file_bodies.get(call_name, ()):
+            visit_key = (call_name, id(called_body))
+            if visit_key in visited:
+                continue
+            visited.add(visit_key)
+            violations.extend(
+                audit_body_and_same_file_helpers(
+                    relative_path,
+                    call_name,
+                    called_body,
+                    allow_bounded_resize=False,
+                    same_file_bodies=same_file_bodies,
+                    visited=visited,
+                )
+            )
+    return tuple(violations)
+
+
+def audit_repo(
+    repo_root: Path,
+    specs: tuple[AuditSpec, ...] | None = None,
+) -> AuditReport:
     repo_root = repo_root.resolve()
+    audit_specs = AUDIO_CALLBACK_SPECS if specs is None else specs
     violations: list[AuditViolation] = []
     audited_bodies = 0
     audited_lines = 0
     cache: dict[str, str] = {}
-    for spec in AUDIO_CALLBACK_SPECS:
+    function_cache: dict[str, dict[str, tuple[str, ...]]] = {}
+    for spec in audit_specs:
         path = repo_root / spec.relative_path
         if not path.is_file():
             violations.append(
@@ -375,6 +504,10 @@ def audit_repo(repo_root: Path) -> AuditReport:
         source = cache.setdefault(
             spec.relative_path,
             path.read_text(encoding="utf-8"),
+        )
+        same_file_bodies = function_cache.setdefault(
+            spec.relative_path,
+            extract_named_function_bodies(source),
         )
         bodies = extract_function_bodies(source, spec.qualified_name)
         if len(bodies) < spec.minimum_bodies:
@@ -391,13 +524,23 @@ def audit_repo(repo_root: Path) -> AuditReport:
             audited_bodies += 1
             audited_lines += body.count("\n") + 1
             violations.extend(
-                audit_body(
+                audit_body_and_same_file_helpers(
                     spec.relative_path,
                     spec.qualified_name,
                     body,
                     allow_bounded_resize=spec.allow_bounded_resize,
+                    same_file_bodies=same_file_bodies,
+                    visited={(spec.qualified_name, id(body))},
                 )
             )
+
+    if specs is not None:
+        return AuditReport(
+            audited_functions=len(audit_specs),
+            audited_bodies=audited_bodies,
+            audited_lines=audited_lines,
+            violations=tuple(violations),
+        )
 
     bridge_source = cache.get(
         "Source/UERayTracingAudio/Private/Audio/UERayTracingAudioIndirectAudioBridge.cpp",
@@ -514,7 +657,7 @@ def audit_repo(repo_root: Path) -> AuditReport:
             )
 
     return AuditReport(
-        audited_functions=len(AUDIO_CALLBACK_SPECS),
+        audited_functions=len(audit_specs),
         audited_bodies=audited_bodies,
         audited_lines=audited_lines,
         violations=tuple(violations),

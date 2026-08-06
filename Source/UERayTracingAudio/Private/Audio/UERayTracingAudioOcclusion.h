@@ -47,6 +47,11 @@ public:
     virtual void OnReleaseSource(const uint32 SourceId) override;
     virtual void ProcessAudio(const FAudioPluginSourceInputData& InputData, FAudioPluginSourceOutputData& OutputData) override;
 
+    FVector2f GetCrossoversForTesting() const
+    {
+        return CrossoversHz;
+    }
+
 private:
     TArray<FUERayTracingAudioOcclusionSource> Sources;
     TSharedRef<

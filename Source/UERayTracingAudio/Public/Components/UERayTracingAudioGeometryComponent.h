@@ -34,6 +34,9 @@ public:
     bool bAffectsDirectSound;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Geometry)
+    bool bAffectsIndirectSound;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Geometry)
     EUERayTracingAudioGeometryExportMode ExportMode;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Acoustic Material", meta = (ClampMin = "0.0", ClampMax = "1.0"))

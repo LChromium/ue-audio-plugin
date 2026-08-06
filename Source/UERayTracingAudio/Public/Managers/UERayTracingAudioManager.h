@@ -16,6 +16,10 @@ class UUERayTracingAudioListenerComponent;
 class UUERayTracingAudioSourceComponent;
 class UWorld;
 
+#if WITH_DEV_AUTOMATION_TESTS
+struct FUERayTracingAudioManagerTestAccess;
+#endif
+
 struct UERAYTRACINGAUDIO_API FUERayTracingAudioSourceSimulationResult
 {
     FUERayTracingAudioDirectSimulationResult DirectResult;
@@ -76,6 +80,10 @@ public:
         UUERayTracingAudioListenerComponent* Listener,
         const FUERayTracingAudioBakeSettings& Settings,
         bool bCaptureCpuReference = false);
+
+#if WITH_DEV_AUTOMATION_TESTS
+    friend struct FUERayTracingAudioManagerTestAccess;
+#endif
 
 private:
     struct FWorldAcousticState

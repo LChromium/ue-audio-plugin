@@ -9,6 +9,22 @@ namespace
         return 1.0f - FMath::Exp(
             -2.0f * PI * CutoffHz / SampleRate);
     }
+
+    float SaturateToFiniteFloat(const double Value)
+    {
+        constexpr float MaximumFloat = TNumericLimits<float>::Max();
+        if (Value > static_cast<double>(MaximumFloat))
+        {
+            return MaximumFloat;
+        }
+        if (Value < -static_cast<double>(MaximumFloat))
+        {
+            return -MaximumFloat;
+        }
+        return FMath::IsFinite(Value)
+            ? static_cast<float>(Value)
+            : 0.0f;
+    }
 }
 
 void FUERayTracingAudioThreeBandAirAbsorption::Initialize(
@@ -66,7 +82,17 @@ float FUERayTracingAudioThreeBandAirAbsorption::ProcessSample(
     const float Low = State.LowMid;
     const float Mid = State.MidHigh - State.LowMid;
     const float High = Input - State.MidHigh;
-    return Low * BandGains.X
-        + Mid * BandGains.Y
-        + High * BandGains.Z;
+    const float LowGain = FMath::IsFinite(BandGains.X)
+        ? BandGains.X
+        : 1.0f;
+    const float MidGain = FMath::IsFinite(BandGains.Y)
+        ? BandGains.Y
+        : 1.0f;
+    const float HighGain = FMath::IsFinite(BandGains.Z)
+        ? BandGains.Z
+        : 1.0f;
+    return SaturateToFiniteFloat(
+        static_cast<double>(Low) * static_cast<double>(LowGain)
+        + static_cast<double>(Mid) * static_cast<double>(MidGain)
+        + static_cast<double>(High) * static_cast<double>(HighGain));
 }

@@ -566,20 +566,20 @@ void FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer(
         ClearCountersForWriter(GDirectStats);
     }
 
-    ++GDirectStats.BufferCount;
+    AddSaturating(GDirectStats.BufferCount, 1);
     const bool bInputPresent =
         NumFrames > 0
         && FMath::IsFinite(PeakAbsoluteInput)
         && PeakAbsoluteInput > RmsPresenceThreshold;
     if (bInputPresent)
     {
-        ++GDirectStats.NonSilentInputBufferCount;
+        AddSaturating(GDirectStats.NonSilentInputBufferCount, 1);
         const bool bDirectPresent =
             FMath::IsFinite(DirectRms)
             && DirectRms > RmsPresenceThreshold;
         if (bDirectPresent)
         {
-            ++GDirectStats.DirectPresentInputBufferCount;
+            AddSaturating(GDirectStats.DirectPresentInputBufferCount, 1);
             GDirectStats.CurrentConsecutiveSilentDirectBufferCount.Store(0);
         }
         else
@@ -619,6 +619,41 @@ void FUERayTracingAudioAudioDiagnosticsInternal::RecordDirectBuffer(
     }
     GDirectStats.SnapshotSequence.Store(WriteSequence + 1);
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FUERayTracingAudioAudioDiagnosticsInternal::
+    SeedDirectCountersForTesting(
+        const uint64 BufferCount,
+        const uint64 NonSilentInputBufferCount,
+        const uint64 DirectPresentInputBufferCount,
+        const uint64 CurrentConsecutiveSilentDirectBufferCount,
+        const uint64 MaxConsecutiveSilentDirectBufferCount,
+        const uint64 NonFiniteDirectSampleCount,
+        const uint64 OverUnitDirectSampleCount)
+{
+    const uint64 StableSequence =
+        GDirectStats.SnapshotSequence.Load();
+    const uint64 WriteSequence =
+        (StableSequence & 1ULL) == 0
+            ? StableSequence + 1
+            : StableSequence;
+    GDirectStats.SnapshotSequence.Store(WriteSequence);
+    GDirectStats.BufferCount.Store(BufferCount);
+    GDirectStats.NonSilentInputBufferCount.Store(
+        NonSilentInputBufferCount);
+    GDirectStats.DirectPresentInputBufferCount.Store(
+        DirectPresentInputBufferCount);
+    GDirectStats.CurrentConsecutiveSilentDirectBufferCount.Store(
+        CurrentConsecutiveSilentDirectBufferCount);
+    GDirectStats.MaxConsecutiveSilentDirectBufferCount.Store(
+        MaxConsecutiveSilentDirectBufferCount);
+    GDirectStats.NonFiniteDirectSampleCount.Store(
+        NonFiniteDirectSampleCount);
+    GDirectStats.OverUnitDirectSampleCount.Store(
+        OverUnitDirectSampleCount);
+    GDirectStats.SnapshotSequence.Store(WriteSequence + 1);
+}
+#endif
 
 FUERayTracingAudioDirectAudioStats
 FUERayTracingAudioAudioDiagnostics::ReadDirect()

@@ -35,3 +35,18 @@ bool FUERayTracingAudioScene::IsEmpty() const
 {
     return StaticGeometry.IsEmpty();
 }
+
+bool FUERayTracingAudioScene::HasInvalidGeometryForUsage(
+    const EUERayTracingAudioGeometryUsage Usage) const
+{
+    for (const FUERayTracingAudioGeometryExport& Geometry : StaticGeometry)
+    {
+        if (Geometry.IsVisibleForUsage(Usage)
+            && !Geometry.HasBuildableGeometry())
+        {
+            return true;
+        }
+    }
+
+    return false;
+}

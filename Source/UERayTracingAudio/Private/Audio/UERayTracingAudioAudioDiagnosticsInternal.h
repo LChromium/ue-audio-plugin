@@ -32,4 +32,15 @@ public:
         float MaxBandGainStep,
         uint64 NonFiniteDirectSampleCount,
         uint64 OverUnitDirectSampleCount);
+
+#if WITH_DEV_AUTOMATION_TESTS
+    static void SeedDirectCountersForTesting(
+        uint64 BufferCount,
+        uint64 NonSilentInputBufferCount,
+        uint64 DirectPresentInputBufferCount,
+        uint64 CurrentConsecutiveSilentDirectBufferCount,
+        uint64 MaxConsecutiveSilentDirectBufferCount,
+        uint64 NonFiniteDirectSampleCount,
+        uint64 OverUnitDirectSampleCount);
+#endif
 };

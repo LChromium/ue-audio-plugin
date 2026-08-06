@@ -16,6 +16,7 @@
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
+#include "Listening/UERayTracingAudioHumanAcceptance.h"
 #include "Managers/UERayTracingAudioManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
@@ -796,6 +797,7 @@ bool FUERayTracingAudioEditorValidationFixtureNormalizationTest::RunTest(
     {
         Geometry->bExportToAcousticScene = false;
         Geometry->bAffectsDirectSound = false;
+        Geometry->bAffectsIndirectSound = false;
         Geometry->Absorption = FVector(0.99f);
         Geometry->Transmission = FVector(0.75f);
         Geometry->Scattering = 0.95f;
@@ -905,6 +907,7 @@ bool FUERayTracingAudioEditorValidationFixtureNormalizationTest::RunTest(
         IsValid(NormalizedGeometry)
             && NormalizedGeometry->bExportToAcousticScene
             && NormalizedGeometry->bAffectsDirectSound
+            && NormalizedGeometry->bAffectsIndirectSound
             && NormalizedGeometry->ExportMode
                 == EUERayTracingAudioGeometryExportMode::BoundingBox
             && NormalizedGeometry->Absorption.Equals(
@@ -1899,6 +1902,260 @@ bool FUERayTracingAudioOfflineComparisonHardOcclusionTest::RunTest(const FString
     TestTrue(TEXT("Hard-occluded automatic checks pass"), Result.bAutomaticChecksPassed);
 
     IFileManager::Get().DeleteDirectory(*FPaths::GetPath(Result.ManifestFilename), false, true);
+    return true;
+}
+
+namespace
+{
+    FString MakeHumanAcceptanceManifestJson()
+    {
+        return TEXT(R"JSON({
+            "input_asset": "/Game/Automation/TestInput.TestInput",
+            "source_actor": "/Game/Automation/TestMap.TestMap:PersistentLevel.Source",
+            "listener_actor": "/Game/Automation/TestMap.TestMap:PersistentLevel.Listener",
+            "scene_signature": "acceptance-scene",
+            "direct_preset": "clear",
+            "reflection_environment": "enclosed",
+            "automatic_checks_passed": true,
+            "direct_to_reference_rms_ratio": 0.5,
+            "wet_to_reference_rms_ratio": 0.25,
+            "direct_wet_normalized_difference": 1.25,
+            "modes_are_distinct": true
+        })JSON");
+    }
+
+    FUERayTracingAudioHumanAcceptanceRequest MakeHumanAcceptanceRequest()
+    {
+        FUERayTracingAudioHumanAcceptanceRequest Request;
+        Request.RecordedAtUtc = TEXT("2026-08-06T12:00:00.000Z");
+        Request.TargetListeningDevice = TEXT("  Reference Studio Headphones  ");
+        Request.ListeningNotes = TEXT("No click/pop while switching modes.");
+        Request.LastPreviewedMode = TEXT("Full");
+        Request.bHumanListeningPassed = true;
+        Request.bPreviewedReference = true;
+        Request.bPreviewedDirect = true;
+        Request.bPreviewedWet = true;
+        Request.bPreviewedFull = true;
+        Request.bRecognizableDirectConfirmed = true;
+        Request.bAudibleWetFullDifferenceConfirmed = true;
+        Request.bMovingOcclusionContinuityConfirmed = true;
+        Request.bModeSwitchingContinuityConfirmed = true;
+        Request.bEnvironmentDifferenceConfirmed = true;
+        return Request;
+    }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioHumanAcceptanceRejectsBlankDeviceTest,
+    "UERayTracingAudio.Editor.HumanAcceptance.RejectsBlankDevice",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioHumanAcceptanceRejectsBlankDeviceTest::RunTest(
+    const FString& Parameters)
+{
+    FUERayTracingAudioHumanAcceptanceRequest Request =
+        MakeHumanAcceptanceRequest();
+    Request.TargetListeningDevice = TEXT("  \t");
+    FString Json;
+    FString Error;
+
+    TestFalse(
+        TEXT("Blank target listening device is rejected"),
+        FUERayTracingAudioHumanAcceptance::BuildRecordJson(
+            TEXT("C:/Acceptance/Comparison_Manifest.json"),
+            MakeHumanAcceptanceManifestJson(),
+            Request,
+            Json,
+            Error));
+    TestTrue(
+        TEXT("Blank device error tells the user what to enter"),
+        Error.Contains(TEXT("headphones or speakers")));
+    TestTrue(TEXT("Rejected record emits no JSON"), Json.IsEmpty());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioHumanAcceptancePassRequiresAllModesTest,
+    "UERayTracingAudio.Editor.HumanAcceptance.PassRequiresAllModes",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioHumanAcceptancePassRequiresAllModesTest::RunTest(
+    const FString& Parameters)
+{
+    FUERayTracingAudioHumanAcceptanceRequest Request =
+        MakeHumanAcceptanceRequest();
+    Request.bPreviewedWet = false;
+    FString Json;
+    FString Error;
+
+    TestFalse(
+        TEXT("PASS without Wet preview is rejected"),
+        FUERayTracingAudioHumanAcceptance::BuildRecordJson(
+            TEXT("C:/Acceptance/Comparison_Manifest.json"),
+            MakeHumanAcceptanceManifestJson(),
+            Request,
+            Json,
+            Error));
+    TestTrue(
+        TEXT("Missing preview error names Wet"),
+        Error.Contains(TEXT("Wet")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioHumanAcceptancePassRequiresStructuredConfirmationsTest,
+    "UERayTracingAudio.Editor.HumanAcceptance.PassRequiresStructuredConfirmations",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioHumanAcceptancePassRequiresStructuredConfirmationsTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+    FUERayTracingAudioHumanAcceptanceRequest Request =
+        MakeHumanAcceptanceRequest();
+    Request.bModeSwitchingContinuityConfirmed = false;
+    FString Json;
+    FString Error;
+
+    TestFalse(
+        TEXT("PASS without clean runtime mode-switching confirmation is rejected"),
+        FUERayTracingAudioHumanAcceptance::BuildRecordJson(
+            TEXT("C:/Acceptance/Comparison_Manifest.json"),
+            MakeHumanAcceptanceManifestJson(),
+            Request,
+            Json,
+            Error));
+    TestTrue(
+        TEXT("Missing confirmation error names mode switching"),
+        Error.Contains(TEXT("mode_switching_continuity")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioHumanAcceptanceSerializesProvenanceTest,
+    "UERayTracingAudio.Editor.HumanAcceptance.SerializesProvenance",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioHumanAcceptanceSerializesProvenanceTest::RunTest(
+    const FString& Parameters)
+{
+    FString Json;
+    FString Error;
+    TestTrue(
+        TEXT("Complete PASS record serializes"),
+        FUERayTracingAudioHumanAcceptance::BuildRecordJson(
+            TEXT("C:/Acceptance/Comparison_Manifest.json"),
+            MakeHumanAcceptanceManifestJson(),
+            MakeHumanAcceptanceRequest(),
+            Json,
+            Error));
+    TestTrue(TEXT("Successful serialization reports no error"), Error.IsEmpty());
+
+    TSharedPtr<FJsonObject> Root;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+    TestTrue(
+        TEXT("Serialized record is valid JSON"),
+        FJsonSerializer::Deserialize(Reader, Root) && Root.IsValid());
+    if (!Root.IsValid())
+    {
+        return false;
+    }
+
+    TestEqual(
+        TEXT("Record uses schema version 3"),
+        Root->GetIntegerField(TEXT("schema_version")),
+        3);
+    TestEqual(
+        TEXT("Target device is trimmed"),
+        Root->GetStringField(TEXT("target_listening_device")),
+        FString(TEXT("Reference Studio Headphones")));
+    TestEqual(
+        TEXT("Input provenance comes from manifest"),
+        Root->GetStringField(TEXT("input_asset")),
+        FString(TEXT("/Game/Automation/TestInput.TestInput")));
+    TestEqual(
+        TEXT("Source provenance comes from manifest"),
+        Root->GetStringField(TEXT("source_actor")),
+        FString(TEXT("/Game/Automation/TestMap.TestMap:PersistentLevel.Source")));
+    TestEqual(
+        TEXT("Listener provenance comes from manifest"),
+        Root->GetStringField(TEXT("listener_actor")),
+        FString(TEXT("/Game/Automation/TestMap.TestMap:PersistentLevel.Listener")));
+    TestEqual(
+        TEXT("Scene signature comes from manifest"),
+        Root->GetStringField(TEXT("scene_signature")),
+        FString(TEXT("acceptance-scene")));
+    TestEqual(
+        TEXT("All four preview modes are recorded"),
+        Root->GetArrayField(TEXT("previewed_modes")).Num(),
+        4);
+    TestTrue(
+        TEXT("Human PASS verdict is recorded"),
+        Root->GetBoolField(TEXT("human_listening_passed")));
+    const TSharedPtr<FJsonObject>* HumanConfirmations = nullptr;
+    TestTrue(
+        TEXT("Record contains structured human confirmations"),
+        Root->TryGetObjectField(
+            TEXT("human_confirmations"),
+            HumanConfirmations)
+            && HumanConfirmations != nullptr
+            && HumanConfirmations->IsValid());
+    if (HumanConfirmations && HumanConfirmations->IsValid())
+    {
+        TestTrue(
+            TEXT("Mode-switching continuity confirmation is recorded"),
+            (*HumanConfirmations)->GetBoolField(
+                TEXT("mode_switching_continuity")));
+        TestTrue(
+            TEXT("Environment difference confirmation is recorded"),
+            (*HumanConfirmations)->GetBoolField(
+                TEXT("environment_difference")));
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioHumanAcceptanceAllowsEarlyFailTest,
+    "UERayTracingAudio.Editor.HumanAcceptance.AllowsEarlyFail",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioHumanAcceptanceAllowsEarlyFailTest::RunTest(
+    const FString& Parameters)
+{
+    FUERayTracingAudioHumanAcceptanceRequest Request =
+        MakeHumanAcceptanceRequest();
+    Request.bHumanListeningPassed = false;
+    Request.LastPreviewedMode = TEXT("Reference");
+    Request.bPreviewedDirect = false;
+    Request.bPreviewedWet = false;
+    Request.bPreviewedFull = false;
+    FString Json;
+    FString Error;
+
+    TestTrue(
+        TEXT("A listener can record FAIL immediately after hearing a problem"),
+        FUERayTracingAudioHumanAcceptance::BuildRecordJson(
+            TEXT("C:/Acceptance/Comparison_Manifest.json"),
+            MakeHumanAcceptanceManifestJson(),
+            Request,
+            Json,
+            Error));
+
+    TSharedPtr<FJsonObject> Root;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+    TestTrue(
+        TEXT("Early FAIL record is valid JSON"),
+        FJsonSerializer::Deserialize(Reader, Root) && Root.IsValid());
+    if (Root.IsValid())
+    {
+        TestFalse(
+            TEXT("Early problem record keeps FAIL verdict"),
+            Root->GetBoolField(TEXT("human_listening_passed")));
+        TestEqual(
+            TEXT("Early FAIL records actual preview coverage"),
+            Root->GetArrayField(TEXT("previewed_modes")).Num(),
+            1);
+    }
     return true;
 }
 

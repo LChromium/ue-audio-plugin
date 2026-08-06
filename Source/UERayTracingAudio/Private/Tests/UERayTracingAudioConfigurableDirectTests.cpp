@@ -32,6 +32,31 @@
 #include <limits>
 #include <type_traits>
 
+struct FUERayTracingAudioManagerTestAccess
+{
+    static int32 GetPendingSimulationSourceCount(
+        const FUERayTracingAudioManager& Manager)
+    {
+        return Manager.PendingSimulationSources.Num();
+    }
+
+    static bool IsSourceQueued(
+        const FUERayTracingAudioManager& Manager,
+        const UUERayTracingAudioSourceComponent* Source)
+    {
+        const FUERayTracingAudioManager::FSourceSimulationState* State =
+            Manager.SourceSimulationStates.Find(Source);
+        return State && State->bQueued;
+    }
+
+    static void InvalidateWorldSources(
+        FUERayTracingAudioManager& Manager,
+        UWorld* World)
+    {
+        Manager.InvalidateWorldSources(World);
+    }
+};
+
 namespace
 {
     FUERayTracingAudioDirectSweepMetrics MakeDirectSweepMetrics(
@@ -650,12 +675,32 @@ bool FUERayTracingAudioRuntimeSetterReflectionTest::RunTest(
         TEXT("SetIndirectDataSource"));
     UFunction* BakedAssetSetter = SourceClass->FindFunctionByName(
         TEXT("SetBakedImpulseResponseAsset"));
+    UFunction* DirectOcclusionSetter = SourceClass->FindFunctionByName(
+        TEXT("SetDirectOcclusionSettings"));
+    UFunction* IndirectModeSetter = SourceClass->FindFunctionByName(
+        TEXT("SetIndirectMode"));
+    UFunction* ReflectionSettingsSetter = SourceClass->FindFunctionByName(
+        TEXT("SetReflectionSimulationSettings"));
+    UFunction* IndirectMixSetter = SourceClass->FindFunctionByName(
+        TEXT("SetIndirectMix"));
     TestNotNull(
         TEXT("SetIndirectDataSource is exposed as a UFUNCTION"),
         DataSourceSetter);
     TestNotNull(
         TEXT("SetBakedImpulseResponseAsset is exposed as a UFUNCTION"),
         BakedAssetSetter);
+    TestNotNull(
+        TEXT("SetDirectOcclusionSettings is exposed as a UFUNCTION"),
+        DirectOcclusionSetter);
+    TestNotNull(
+        TEXT("SetIndirectMode is exposed as a UFUNCTION"),
+        IndirectModeSetter);
+    TestNotNull(
+        TEXT("SetReflectionSimulationSettings is exposed as a UFUNCTION"),
+        ReflectionSettingsSetter);
+    TestNotNull(
+        TEXT("SetIndirectMix is exposed as a UFUNCTION"),
+        IndirectMixSetter);
     if (DataSourceSetter)
     {
         TestTrue(
@@ -670,6 +715,158 @@ bool FUERayTracingAudioRuntimeSetterReflectionTest::RunTest(
             BakedAssetSetter->HasAnyFunctionFlags(
                 FUNC_BlueprintCallable));
     }
+    if (DirectOcclusionSetter)
+    {
+        TestTrue(
+            TEXT("SetDirectOcclusionSettings is Blueprint-callable"),
+            DirectOcclusionSetter->HasAnyFunctionFlags(
+                FUNC_BlueprintCallable));
+    }
+    if (IndirectModeSetter)
+    {
+        TestTrue(
+            TEXT("SetIndirectMode is Blueprint-callable"),
+            IndirectModeSetter->HasAnyFunctionFlags(
+                FUNC_BlueprintCallable));
+    }
+    if (ReflectionSettingsSetter)
+    {
+        TestTrue(
+            TEXT("SetReflectionSimulationSettings is Blueprint-callable"),
+            ReflectionSettingsSetter->HasAnyFunctionFlags(
+                FUNC_BlueprintCallable));
+    }
+    if (IndirectMixSetter)
+    {
+        TestTrue(
+            TEXT("SetIndirectMix is Blueprint-callable"),
+            IndirectMixSetter->HasAnyFunctionFlags(
+                FUNC_BlueprintCallable));
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioSourceSetterNormalizationTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.SourceSetterNormalization",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioSourceSetterNormalizationTest::RunTest(
+    const FString&)
+{
+    UUERayTracingAudioSourceComponent* Source =
+        NewObject<UUERayTracingAudioSourceComponent>();
+    TestNotNull(TEXT("Source component exists"), Source);
+    if (!Source)
+    {
+        return false;
+    }
+
+    Source->SetDirectOcclusionSettings(
+        2.0f,
+        -10.0f,
+        0,
+        false,
+        true,
+        FVector(
+            std::numeric_limits<float>::quiet_NaN(),
+            -1.0f,
+            std::numeric_limits<float>::infinity()));
+    TestEqual(
+        TEXT("Occluded gain clamps to one"),
+        Source->GetOccludedGain(),
+        1.0f);
+    TestEqual(
+        TEXT("Source radius clamps to zero"),
+        Source->GetSourceRadiusCm(),
+        0.0f);
+    TestEqual(
+        TEXT("Occlusion sample count clamps to one"),
+        Source->GetNumOcclusionSamples(),
+        1);
+    TestFalse(
+        TEXT("Volumetric flag follows setter"),
+        Source->ShouldUseVolumetricOcclusion());
+    TestTrue(
+        TEXT("Hard-occlusion flag follows setter"),
+        Source->ShouldUseHardOcclusion());
+    TestTrue(
+        TEXT("Non-finite and negative air absorption clamp to zero"),
+        Source->GetAirAbsorptionPerMeter().Equals(
+            FVector::ZeroVector));
+
+    Source->SetReflectionSimulationSettings(
+        512,
+        32,
+        2.5f,
+        24,
+        0.5f);
+    TestEqual(
+        TEXT("32 reflection bounces are preserved by the public setter"),
+        Source->GetMaxReflectionBounces(),
+        32);
+    TestEqual(
+        TEXT("Reflection rays follow the public setter"),
+        Source->GetNumReflectionRays(),
+        512);
+    TestEqual(
+        TEXT("Indirect duration follows the public setter"),
+        Source->GetIndirectDurationSeconds(),
+        2.5f);
+    TestEqual(
+        TEXT("Early reflection taps follow the public setter"),
+        Source->GetMaxEarlyReflectionTaps(),
+        24);
+    TestEqual(
+        TEXT("Hybrid transition follows the public setter"),
+        Source->GetHybridTransitionRatio(),
+        0.5f);
+
+    Source->SetReflectionSimulationSettings(
+        0,
+        128,
+        -1.0f,
+        128,
+        2.0f);
+    TestEqual(
+        TEXT("Reflection rays clamp to one"),
+        Source->GetNumReflectionRays(),
+        1);
+    TestEqual(
+        TEXT("Reflection bounces clamp to the validation maximum"),
+        Source->GetMaxReflectionBounces(),
+        64);
+    TestEqual(
+        TEXT("Indirect duration clamps to the minimum"),
+        Source->GetIndirectDurationSeconds(),
+        0.05f);
+    TestEqual(
+        TEXT("Early reflection taps clamp to the maximum"),
+        Source->GetMaxEarlyReflectionTaps(),
+        64);
+    TestEqual(
+        TEXT("Hybrid transition clamps to the maximum"),
+        Source->GetHybridTransitionRatio(),
+        0.95f);
+
+    Source->SetIndirectMode(
+        EUERayTracingAudioIndirectMode::HybridReverb);
+    TestEqual(
+        TEXT("Indirect mode follows the public setter"),
+        Source->GetIndirectMode(),
+        EUERayTracingAudioIndirectMode::HybridReverb);
+    Source->SetIndirectMix(99.0f);
+    TestEqual(
+        TEXT("Indirect mix clamps to the maximum wet send"),
+        Source->GetIndirectMix(),
+        4.0f);
+    Source->SetIndirectMix(
+        std::numeric_limits<float>::quiet_NaN());
+    TestEqual(
+        TEXT("Non-finite indirect mix falls back to zero"),
+        Source->GetIndirectMix(),
+        0.0f);
+
     return true;
 }
 
@@ -824,6 +1021,104 @@ bool FUERayTracingAudioDirectResetGenerationTest::RunTest(
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioDirectDiagnosticsSaturatingCountersTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.DirectDiagnosticsSaturatingCounters",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioDirectDiagnosticsSaturatingCountersTest::RunTest(
+    const FString&)
+{
+    const uint64 AudioComponentId = 0xD1A60010ULL;
+    const uint64 MaxCounter = TNumericLimits<uint64>::Max();
+
+    FUERayTracingAudioAudioDiagnostics::SetTargetAudioComponentId(
+        AudioComponentId);
+    FUERayTracingAudioAudioDiagnostics::ResetDirect();
+    FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer(
+        AudioComponentId,
+        64,
+        1.0f,
+        0.5f,
+        0.001f,
+        0,
+        0);
+    FUERayTracingAudioAudioDiagnosticsInternal::
+        SeedDirectCountersForTesting(
+            MaxCounter,
+            MaxCounter,
+            MaxCounter,
+            0,
+            0,
+            MaxCounter - 4,
+            MaxCounter - 8);
+    FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer(
+        AudioComponentId,
+        64,
+        1.0f,
+        0.5f,
+        0.001f,
+        8,
+        16);
+    const FUERayTracingAudioDirectAudioStats SaturatedIncrementStats =
+        FUERayTracingAudioAudioDiagnostics::ReadDirect();
+    TestEqual(
+        TEXT("Direct buffer count saturates instead of wrapping"),
+        SaturatedIncrementStats.BufferCount,
+        MaxCounter);
+    TestEqual(
+        TEXT("Direct non-silent input count saturates instead of wrapping"),
+        SaturatedIncrementStats.NonSilentInputBufferCount,
+        MaxCounter);
+    TestEqual(
+        TEXT("Direct-present input count saturates instead of wrapping"),
+        SaturatedIncrementStats.DirectPresentInputBufferCount,
+        MaxCounter);
+    TestEqual(
+        TEXT("Non-finite Direct sample count remains saturated"),
+        SaturatedIncrementStats.NonFiniteDirectSampleCount,
+        MaxCounter);
+    TestEqual(
+        TEXT("Over-unit Direct sample count remains saturated"),
+        SaturatedIncrementStats.OverUnitDirectSampleCount,
+        MaxCounter);
+
+    FUERayTracingAudioAudioDiagnostics::ResetDirect();
+    FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer(
+        AudioComponentId,
+        64,
+        1.0f,
+        0.5f,
+        0.001f,
+        0,
+        0);
+    FUERayTracingAudioAudioDiagnosticsInternal::
+        SeedDirectCountersForTesting(
+            0,
+            0,
+            0,
+            MaxCounter - 1,
+            MaxCounter - 1,
+            0,
+            0);
+    FUERayTracingAudioAudioDiagnostics::RecordDirectBuffer(
+        AudioComponentId,
+        64,
+        1.0f,
+        0.0f,
+        0.001f,
+        0,
+        0);
+    const FUERayTracingAudioDirectAudioStats SaturatedSilentStats =
+        FUERayTracingAudioAudioDiagnostics::ReadDirect();
+    TestEqual(
+        TEXT("Consecutive silent Direct count saturates instead of wrapping"),
+        SaturatedSilentStats.MaxConsecutiveSilentDirectBufferCount,
+        MaxCounter);
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUERayTracingAudioProjectSettingsTest,
     "UERayTracingAudio.Audio.ConfigurableDirect.ProjectSettings",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -866,6 +1161,21 @@ bool FUERayTracingAudioProjectSettingsTest::RunTest(const FString&)
         Settings->GetValidatedAirAbsorptionCrossoversHz(48000.0f);
     TestEqual(TEXT("valid low-mid crossover retained"), OrderedCrossovers.X, 1000.0f);
     TestEqual(TEXT("mid-high crossover follows low-mid"), OrderedCrossovers.Y, 1000.0f);
+
+    Settings->AirAbsorptionLowMidCrossoverHz =
+        std::numeric_limits<float>::quiet_NaN();
+    Settings->AirAbsorptionMidHighCrossoverHz =
+        std::numeric_limits<float>::infinity();
+    const FVector2f NonFiniteCrossovers =
+        Settings->GetValidatedAirAbsorptionCrossoversHz(48000.0f);
+    TestEqual(
+        TEXT("non-finite low-mid crossover falls back to the default"),
+        NonFiniteCrossovers.X,
+        500.0f);
+    TestEqual(
+        TEXT("non-finite mid-high crossover falls back to the default"),
+        NonFiniteCrossovers.Y,
+        4000.0f);
 
     FUERayTracingAudioContext Context(Valid);
     TestEqual(
@@ -996,6 +1306,227 @@ bool FUERayTracingAudioWorldScopedListenerTest::RunTest(const FString&)
     {
         WorldB->DestroyWorld(false);
     }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioIgnoredListenerRemovalIdentityTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.IgnoredListenerRemovalIdentity",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioIgnoredListenerRemovalIdentityTest::RunTest(
+    const FString&)
+{
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::Game,
+        false,
+        TEXT("UERayTracingAudioIgnoredListenerRemoval"));
+    TestNotNull(TEXT("World exists"), World);
+
+    if (World)
+    {
+        AActor* PrimaryActor = World->SpawnActor<AActor>();
+        AActor* IgnoredActor = World->SpawnActor<AActor>();
+        UUERayTracingAudioListenerComponent* PrimaryListener =
+            NewObject<UUERayTracingAudioListenerComponent>(PrimaryActor);
+        UUERayTracingAudioListenerComponent* IgnoredListener =
+            NewObject<UUERayTracingAudioListenerComponent>(IgnoredActor);
+
+        FUERayTracingAudioManager Manager;
+        Manager.AddListener(PrimaryListener);
+        AddExpectedError(
+            TEXT("already has a Ray Tracing Audio Listener"),
+            EAutomationExpectedErrorFlags::Contains,
+            1);
+        Manager.AddListener(IgnoredListener);
+        TestTrue(
+            TEXT("The first listener owns the World"),
+            Manager.GetCurrentListener(World) == PrimaryListener);
+
+        Manager.RemoveListener(IgnoredListener);
+        TestTrue(
+            TEXT("Removing an ignored duplicate Listener cannot remove the owning Listener"),
+            Manager.GetCurrentListener(World) == PrimaryListener);
+
+        Manager.RemoveListener(PrimaryListener);
+        TestNull(
+            TEXT("Removing the owning Listener clears the World Listener"),
+            Manager.GetCurrentListener(World));
+    }
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioSceneAddressStabilityTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.SceneAddressStability",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioSceneAddressStabilityTest::RunTest(const FString&)
+{
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::Game,
+        false,
+        TEXT("UERayTracingAudioSceneAddressStability"));
+    TestNotNull(TEXT("World exists"), World);
+
+    if (World)
+    {
+        FUERayTracingAudioManager Manager;
+        const FUERayTracingAudioScene* InitialScene = &Manager.GetScene(World);
+        TestEqual(
+            TEXT("Initial empty scene signature"),
+            Manager.GetCurrentSceneSignature(World),
+            FString(TEXT("00000000")));
+
+        AActor* GeometryActor = World->SpawnActor<AActor>();
+        UBoxComponent* Box = NewObject<UBoxComponent>(GeometryActor);
+        GeometryActor->SetRootComponent(Box);
+        Box->SetBoxExtent(FVector(50.0, 60.0, 70.0));
+        UUERayTracingAudioGeometryComponent* Geometry =
+            NewObject<UUERayTracingAudioGeometryComponent>(GeometryActor);
+        Manager.AddGeometry(Geometry);
+
+        const FUERayTracingAudioScene* RebuiltScene = &Manager.GetScene(World);
+        TestTrue(
+            TEXT("Scene object address remains stable across dirty rebuilds"),
+            RebuiltScene == InitialScene);
+        TestNotEqual(
+            TEXT("Rebuilt scene signature reflects the registered geometry"),
+            Manager.GetCurrentSceneSignature(World),
+            FString(TEXT("00000000")));
+
+        Manager.MarkSceneDirty(World);
+        const FUERayTracingAudioScene* RebuiltAgainScene =
+            &Manager.GetScene(World);
+        TestTrue(
+            TEXT("Scene object address remains stable across explicit dirty rebuilds"),
+            RebuiltAgainScene == InitialScene);
+    }
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioPendingWorldCleanupTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.PendingWorldCleanup",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioPendingWorldCleanupTest::RunTest(const FString&)
+{
+    UWorld* World = UWorld::CreateWorld(
+        EWorldType::Game,
+        false,
+        TEXT("UERayTracingAudioPendingWorldCleanup"));
+    TestNotNull(TEXT("World exists"), World);
+
+    if (World)
+    {
+        AActor* SourceActor = World->SpawnActor<AActor>();
+        AActor* ListenerActor = World->SpawnActor<AActor>();
+        UUERayTracingAudioSourceComponent* Source =
+            NewObject<UUERayTracingAudioSourceComponent>(SourceActor);
+        UUERayTracingAudioListenerComponent* Listener =
+            NewObject<UUERayTracingAudioListenerComponent>(ListenerActor);
+
+        FUERayTracingAudioManager Manager;
+        Manager.AddSource(Source);
+        Manager.AddListener(Listener);
+        Manager.RequestSourceSimulation(Source, true, true);
+        TestEqual(
+            TEXT("A valid source request enters the pending queue"),
+            FUERayTracingAudioManagerTestAccess::GetPendingSimulationSourceCount(
+                Manager),
+            1);
+        TestTrue(
+            TEXT("The source state records the queued request"),
+            FUERayTracingAudioManagerTestAccess::IsSourceQueued(
+                Manager,
+                Source));
+
+        FUERayTracingAudioManagerTestAccess::InvalidateWorldSources(
+            Manager,
+            World);
+        TestEqual(
+            TEXT("World invalidation removes queued pending requests"),
+            FUERayTracingAudioManagerTestAccess::GetPendingSimulationSourceCount(
+                Manager),
+            0);
+        TestFalse(
+            TEXT("World invalidation clears the source queued flag"),
+            FUERayTracingAudioManagerTestAccess::IsSourceQueued(
+                Manager,
+                Source));
+
+        FUERayTracingAudioSourceSimulationResult InvalidatedResult;
+        TestTrue(
+            TEXT("World invalidation publishes a replacement simulation snapshot"),
+            Manager.GetLatestSourceSimulation(Source, InvalidatedResult));
+        TestTrue(
+            TEXT("World invalidation publishes no-listener Direct and Wet results"),
+            InvalidatedResult.bHasDirectResult
+                && !InvalidatedResult.DirectResult.bHasListener
+                && InvalidatedResult.bHasIndirectResult
+                && !InvalidatedResult.IndirectResult.bHasListener);
+    }
+
+    if (World)
+    {
+        World->DestroyWorld(false);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioRuntimeCrossoverSampleRateTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.RuntimeCrossoverSampleRate",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioRuntimeCrossoverSampleRateTest::RunTest(
+    const FString&)
+{
+    const TSharedRef<
+        FUERayTracingAudioSimulationSnapshotRegistry,
+        ESPMode::ThreadSafe> SnapshotRegistry =
+        MakeShared<
+            FUERayTracingAudioSimulationSnapshotRegistry,
+            ESPMode::ThreadSafe>();
+    const TSharedRef<
+        FUERayTracingAudioIndirectAudioBridge,
+        ESPMode::ThreadSafe> Bridge =
+        MakeShared<
+            FUERayTracingAudioIndirectAudioBridge,
+            ESPMode::ThreadSafe>();
+    FUERayTracingAudioOcclusionPlugin Plugin(
+        SnapshotRegistry,
+        Bridge,
+        FVector2f(500.0f, 30000.0f));
+
+    FAudioPluginInitializationParams InitializationParams;
+    InitializationParams.NumSources = 1;
+    InitializationParams.NumOutputChannels = 1;
+    InitializationParams.SampleRate = 44100;
+    InitializationParams.BufferLength = 256;
+    Plugin.Initialize(InitializationParams);
+
+    const FVector2f EffectiveCrossovers =
+        Plugin.GetCrossoversForTesting();
+    TestEqual(
+        TEXT("Runtime low-mid crossover remains configured"),
+        EffectiveCrossovers.X,
+        500.0f);
+    TestEqual(
+        TEXT("Runtime mid-high crossover is clamped to the actual Nyquist"),
+        EffectiveCrossovers.Y,
+        22050.0f);
     return true;
 }
 
@@ -1246,6 +1777,65 @@ bool FUERayTracingAudioStereoIsolationTest::RunTest(
     TestTrue(
         TEXT("A left impulse does not alter right-channel filter state"),
         RightChannelPeak < 1.0e-7f);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioNonFiniteBandGainRecoveryTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.NonFiniteBandGainRecovery",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioNonFiniteBandGainRecoveryTest::RunTest(
+    const FString&)
+{
+    FUERayTracingAudioThreeBandAirAbsorption SanitizedProcessor;
+    FUERayTracingAudioThreeBandAirAbsorption UnityProcessor;
+    SanitizedProcessor.Initialize(48000, 1, 500.0f, 4000.0f);
+    UnityProcessor.Initialize(48000, 1, 500.0f, 4000.0f);
+
+    const float NonFiniteOutput = SanitizedProcessor.ProcessSample(
+        1.0f,
+        0,
+        FVector(
+            std::numeric_limits<float>::quiet_NaN(),
+            1.0f,
+            1.0f));
+    const float UnityOutput = UnityProcessor.ProcessSample(
+        1.0f,
+        0,
+        FVector::OneVector);
+
+    TestTrue(
+        TEXT("Non-finite band gains cannot produce a non-finite output"),
+        FMath::IsFinite(NonFiniteOutput));
+    TestTrue(
+        TEXT("Each non-finite band gain falls back to unity"),
+        FMath::IsNearlyEqual(NonFiniteOutput, UnityOutput, 1.0e-6f));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioFiniteInputOverflowRecoveryTest,
+    "UERayTracingAudio.Audio.ConfigurableDirect.FiniteInputOverflowRecovery",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioFiniteInputOverflowRecoveryTest::RunTest(
+    const FString&)
+{
+    FUERayTracingAudioThreeBandAirAbsorption Processor;
+    Processor.Initialize(48000, 1, 500.0f, 4000.0f);
+
+    const float Output = Processor.ProcessSample(
+        std::numeric_limits<float>::max(),
+        0,
+        FVector(4.0f, 4.0f, 4.0f));
+
+    TestTrue(
+        TEXT("Finite Direct input overflow saturates instead of emitting Inf"),
+        FMath::IsFinite(Output));
+    TestTrue(
+        TEXT("Positive saturated Direct output keeps its sign"),
+        Output > 0.0f);
     return true;
 }
 

@@ -115,11 +115,15 @@ def make_interactive_smoke_summary(
     ab_restart_count: int = 0,
     f3_source_preserved: int = 1,
     rendered_components: str = "direct_early_late",
+    origin_return_error_cm: float = 0.0,
+    post_return_moved_cm: float = 0.0,
 ) -> str:
     return (
         f"UERayTracingAudio interactive smoke: passed={passed} "
         f"moved_cm={moved_cm:.3f} "
-        "listener_camera_error_cm=0.000 origin_error_cm=0.000 "
+        "listener_camera_error_cm=0.000 "
+        f"origin_return_error_cm={origin_return_error_cm:.3f} "
+        f"post_return_moved_cm={post_return_moved_cm:.3f} "
         "realtime=1 baked=1 hybrid=1 rendered_ab=1 reference_ab=1 "
         "fixed_view=1 interactive_view=1 audio_playing=1 reference_playing=1 "
         "ab_base_levels_matched=1 "
@@ -157,6 +161,19 @@ def make_editor_ab_artifact_marker(
         "hw_gain=0.2 direct_level=0.5 wet_level=0.2 full_level=0.6 "
         "direct_wet_difference=0.4 wet_stereo_difference=0.2 "
         "directional_wet=1 common_scale=1.000000."
+    )
+
+
+def make_editor_listening_ui_marker(
+    *,
+    manifest: str = "C:/Artifacts/manifest.json",
+) -> str:
+    return (
+        "UERayTracingAudioEditor listening acceptance ready: "
+        "controls=1 imported_assets=4 waveforms=ready "
+        f'manifest="{manifest}" human_verdict=enabled '
+        "human_record_schema=3 device_required=1 "
+        "pass_requires_all_modes=1 pass_requires_confirmations=5."
     )
 
 
@@ -658,7 +675,7 @@ class RuntimeValidationTests(unittest.TestCase):
             reflection_environment="near_wall",
         )
         values = launch_runtime_validation.validate_editor_ab_artifacts_marker(
-            marker,
+            marker + "\n" + make_editor_listening_ui_marker(),
             expected_direct_preset="clear",
             expected_reflection_environment="near_wall",
             expected_reflection_bounces=32,
@@ -669,6 +686,58 @@ class RuntimeValidationTests(unittest.TestCase):
         self.assertEqual(values["reflection_rays"], 4096)
         self.assertEqual(values["reflection_bounces"], 32)
         self.assertEqual(values["common_scale"], 1.0)
+        self.assertEqual(values["waveforms"], "ready")
+        self.assertEqual(values["human_record_schema"], 3)
+        self.assertEqual(values["device_required"], 1)
+        self.assertEqual(values["pass_requires_all_modes"], 1)
+        self.assertEqual(values["pass_requires_confirmations"], 5)
+
+    def test_editor_ab_artifacts_reject_missing_ready_waveforms(self) -> None:
+        log_text = (
+            make_editor_ab_artifact_marker()
+            + "\nUERayTracingAudioEditor listening acceptance ready: "
+            "controls=1 imported_assets=4 "
+            'manifest="C:/Artifacts/manifest.json" '
+            "human_verdict=enabled."
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "waveform"):
+            launch_runtime_validation.validate_editor_ab_artifacts_marker(
+                log_text,
+                expected_direct_preset="clear",
+                expected_reflection_environment="enclosed",
+                expected_reflection_bounces=32,
+            )
+
+    def test_editor_ab_artifacts_reject_legacy_human_record_contract(self) -> None:
+        log_text = (
+            make_editor_ab_artifact_marker()
+            + "\nUERayTracingAudioEditor listening acceptance ready: "
+            "controls=1 imported_assets=4 waveforms=ready "
+            'manifest="C:/Artifacts/manifest.json" '
+            "human_verdict=enabled."
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "listening waveform"):
+            launch_runtime_validation.validate_editor_ab_artifacts_marker(
+                log_text,
+                expected_direct_preset="clear",
+                expected_reflection_environment="enclosed",
+                expected_reflection_bounces=32,
+            )
+
+    def test_editor_ab_artifacts_reject_schema_two_human_record_contract(self) -> None:
+        legacy_marker = make_editor_listening_ui_marker().replace(
+            "human_record_schema=3",
+            "human_record_schema=2",
+        )
+        with self.assertRaisesRegex(RuntimeError, "listening waveform"):
+            launch_runtime_validation.validate_editor_ab_artifacts_marker(
+                make_editor_ab_artifact_marker() + "\n" + legacy_marker,
+                expected_direct_preset="clear",
+                expected_reflection_environment="enclosed",
+                expected_reflection_bounces=32,
+            )
 
     def test_editor_ready_waits_for_complete_ab_artifact_marker(
         self,
@@ -708,9 +777,18 @@ class RuntimeValidationTests(unittest.TestCase):
         self,
     ) -> None:
         marker = make_editor_ab_artifact_marker()
+        listening_ui_marker = make_editor_listening_ui_marker()
         for rejected, reason in (
-            (marker + "\n" + marker, "exactly one strict"),
-            (marker.replace("distance_cm=200.000", "distance_cm=bad"), "strict"),
+            (
+                marker + "\n" + marker + "\n" + listening_ui_marker,
+                "exactly one strict",
+            ),
+            (
+                marker.replace("distance_cm=200.000", "distance_cm=bad")
+                + "\n"
+                + listening_ui_marker,
+                "strict",
+            ),
         ):
             with self.subTest(reason=reason):
                 with self.assertRaisesRegex(RuntimeError, reason):
@@ -722,7 +800,7 @@ class RuntimeValidationTests(unittest.TestCase):
                     )
         with self.assertRaisesRegex(RuntimeError, "reflection environment"):
             launch_runtime_validation.validate_editor_ab_artifacts_marker(
-                marker,
+                marker + "\n" + listening_ui_marker,
                 expected_direct_preset="clear",
                 expected_reflection_environment="open_space",
                 expected_reflection_bounces=32,
@@ -730,7 +808,9 @@ class RuntimeValidationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "reflection bounces"):
             launch_runtime_validation.validate_editor_ab_artifacts_marker(
-                make_editor_ab_artifact_marker(reflection_bounces=8),
+                make_editor_ab_artifact_marker(reflection_bounces=8)
+                + "\n"
+                + listening_ui_marker,
                 expected_direct_preset="clear",
                 expected_reflection_environment="enclosed",
                 expected_reflection_bounces=32,
@@ -762,12 +842,19 @@ class RuntimeValidationTests(unittest.TestCase):
         artifact_marker = make_editor_ab_artifact_marker(
             reflection_environment="near_wall",
         )
+        listening_ui_marker = make_editor_listening_ui_marker()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             status, error, result_path, output, command = (
                 run_visible_editor_helper(
                     root,
-                    log_text=scene_marker + "\n" + artifact_marker,
+                    log_text=(
+                        scene_marker
+                        + "\n"
+                        + artifact_marker
+                        + "\n"
+                        + listening_ui_marker
+                    ),
                 )
             )
 
@@ -816,6 +903,7 @@ class RuntimeValidationTests(unittest.TestCase):
         artifact_marker = make_editor_ab_artifact_marker(
             reflection_environment="near_wall",
         )
+        listening_ui_marker = make_editor_listening_ui_marker()
         cases = (
             (
                 "timeout",
@@ -845,7 +933,11 @@ class RuntimeValidationTests(unittest.TestCase):
             ),
             (
                 "black frame",
-                scene_marker + "\n" + artifact_marker,
+                scene_marker
+                + "\n"
+                + artifact_marker
+                + "\n"
+                + listening_ui_marker,
                 45.0,
                 (1280, 720, 0.75, 0.0, 0.0),
                 1,
@@ -1477,6 +1569,23 @@ class RuntimeValidationTests(unittest.TestCase):
                 "Game",
                 require_interactive_smoke=True,
             )
+
+    def test_interactive_smoke_uses_immediate_origin_return_measurement(self) -> None:
+        log_text = make_interactive_smoke_summary(
+            post_return_moved_cm=50.900,
+        )
+        with redirect_stdout(io.StringIO()):
+            try:
+                launch_runtime_validation.print_audio_path_summary(
+                    log_text,
+                    "Game",
+                    require_interactive_smoke=True,
+                )
+            except RuntimeError as error:
+                self.fail(
+                    "an immediate successful F4 return must remain valid after "
+                    f"later interactive movement: {error}"
+                )
 
     def test_interactive_smoke_summary_rejects_stationary_pawn(self) -> None:
         log_text = make_interactive_smoke_summary(

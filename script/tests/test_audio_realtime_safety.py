@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import inspect
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -57,6 +59,7 @@ class AudioRealtimeSafetyAuditTests(unittest.TestCase):
             TSharedPtr<FThing> Thing;
             FlushRenderingCommands();
             GetWorld();
+            UE_LOG(LogTemp, Display, TEXT("audio callback"));
         """
         violations = validate_audio_realtime_safety.audit_body(
             "Synthetic.cpp",
@@ -72,7 +75,60 @@ class AudioRealtimeSafetyAuditTests(unittest.TestCase):
                 "shared-ownership",
                 "blocking",
                 "uobject",
+                "logging",
             },
+        )
+
+    def test_audits_same_file_helpers_called_from_callback_entries(self) -> None:
+        if "specs" not in inspect.signature(
+            validate_audio_realtime_safety.audit_repo
+        ).parameters:
+            self.fail(
+                "audit_repo must accept focused specs so transitive helper "
+                "audit coverage can be tested without mirroring the whole repo"
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            repo_root = Path(directory)
+            source_path = (
+                repo_root
+                / "Source"
+                / "UERayTracingAudio"
+                / "Private"
+                / "Audio"
+                / "Synthetic.cpp"
+            )
+            source_path.parent.mkdir(parents=True)
+            source_path.write_text(
+                """
+                void UnsafeCallbackHelper()
+                {
+                    UE_LOG(LogTemp, Display, TEXT("transitive logging"));
+                }
+
+                void FExample::ProcessAudio()
+                {
+                    UnsafeCallbackHelper();
+                }
+                """,
+                encoding="utf-8",
+            )
+            report = validate_audio_realtime_safety.audit_repo(
+                repo_root,
+                specs=(
+                    validate_audio_realtime_safety.AuditSpec(
+                        "Source/UERayTracingAudio/Private/Audio/Synthetic.cpp",
+                        "FExample::ProcessAudio",
+                    ),
+                ),
+            )
+
+        self.assertEqual(
+            {
+                (violation.qualified_name, violation.category)
+                for violation in report.violations
+            },
+            {("UnsafeCallbackHelper", "logging")},
         )
 
     def test_bounded_bridge_resize_requires_capacity_guard(self) -> None:

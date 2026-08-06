@@ -31,18 +31,19 @@ FUERayTracingAudioManager& FUERayTracingAudioModule::GetManager()
 
 void FUERayTracingAudioModule::StartupModule()
 {
-    constexpr float StartupSampleRate = 48000.0f;
+    constexpr float ConfigurationValidationSampleRate = 48000.0f;
     const UUERayTracingAudioProjectSettings* ProjectSettings =
         GetDefault<UUERayTracingAudioProjectSettings>();
     const FUERayTracingAudioContextSettings ContextSettings =
         ProjectSettings->GetValidatedContextSettings();
     AirAbsorptionCrossoversHz =
-        ProjectSettings->GetValidatedAirAbsorptionCrossoversHz(StartupSampleRate);
+        ProjectSettings->GetValidatedAirAbsorptionCrossoversHz(
+            ConfigurationValidationSampleRate);
     Manager = MakeShared<FUERayTracingAudioManager>(ContextSettings);
     UE_LOG(
         LogUERayTracingAudio,
         Display,
-        TEXT("Acoustic physics on Game Thread: reference=%.2f cm maximum=%.2f cm speed=%.2f cm/s crossovers=%.2f/%.2f Hz."),
+        TEXT("Acoustic physics on Game Thread: reference=%.2f cm maximum=%.2f cm speed=%.2f cm/s configured crossovers=%.2f/%.2f Hz (runtime audio-device Nyquist clamp applied on Initialize)."),
         ContextSettings.ReferenceDistanceCm,
         ContextSettings.MaxDistanceCm,
         ContextSettings.SpeedOfSoundCmPerSecond,

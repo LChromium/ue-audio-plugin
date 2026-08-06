@@ -12,13 +12,13 @@
 #include "Components/UERayTracingAudioGeometryComponent.h"
 #include "Components/UERayTracingAudioListenerComponent.h"
 #include "Components/UERayTracingAudioSourceComponent.h"
-#include "Dom/JsonObject.h"
 #include "Editor.h"
 #include "Containers/Ticker.h"
 #include "Engine/Selection.h"
 #include "EngineUtils.h"
 #include "HAL/PlatformTime.h"
 #include "LevelEditor.h"
+#include "Listening/UERayTracingAudioHumanAcceptance.h"
 #include "Managers/UERayTracingAudioManager.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/CommandLine.h"
@@ -28,8 +28,6 @@
 #include "Misc/Paths.h"
 #include "PropertyCustomizationHelpers.h"
 #include "Sound/SoundWave.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
 #include "ScopedTransaction.h"
 #include "Rendering/DrawElements.h"
 #include "ToolMenus.h"
@@ -39,6 +37,7 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -690,7 +689,16 @@ namespace
                 *ArtifactResult.InputAssetPath);
             LastComparisonRender = ArtifactResult.OfflineRender;
             CurrentListeningMode = EUERayTracingAudioListeningMode::None;
-            LastHumanVerdict = TEXT("not recorded");
+            ResetHumanAcceptanceProgress();
+            bComparisonWaveformsLoaded =
+                LoadComparisonWaveforms(LastComparisonRender);
+            if (!bComparisonWaveformsLoaded)
+            {
+                LastStatus = FString::Printf(
+                    TEXT("Hardware A/B assets loaded, but aligned waveforms could not be displayed: %s"),
+                    *WaveformLoadError);
+                return false;
+            }
             LastStatus = FString::Printf(
                 TEXT("Hardware A/B artifacts are loaded into the listening controls. Reference, Direct, Wet, and Full loop from sample zero until switched or stopped. Manifest: %s"),
                 *LastComparisonRender.ManifestFilename);
@@ -830,6 +838,141 @@ namespace
                 ]
                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
                 [
+                    SNew(SGridPanel)
+                    + SGridPanel::Slot(0, 0).Padding(0.0f, 3.0f, 12.0f, 3.0f)
+                    [
+                        SNew(STextBlock)
+                        .Text(FText::FromString(TEXT("Target headphones / speakers (required)")))
+                    ]
+                    + SGridPanel::Slot(1, 0).Padding(0.0f, 3.0f)
+                    [
+                        SAssignNew(TargetListeningDeviceTextBox, SEditableTextBox)
+                        .HintText(FText::FromString(TEXT("e.g. HD 650 via RME Fireface UCX II")))
+                        .MinDesiredWidth(420.0f)
+                    ]
+                    + SGridPanel::Slot(0, 1).Padding(0.0f, 3.0f, 12.0f, 3.0f)
+                    [
+                        SNew(STextBlock)
+                        .Text(FText::FromString(TEXT("Listening notes (optional)")))
+                    ]
+                    + SGridPanel::Slot(1, 1).Padding(0.0f, 3.0f)
+                    [
+                        SAssignNew(ListeningNotesTextBox, SEditableTextBox)
+                        .HintText(FText::FromString(TEXT("Environment, movement, click/pop, or failure details")))
+                    ]
+                ]
+                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                [
+                    SNew(STextBlock)
+                    .Text(FText::FromString(TEXT("Human Pass requires this artifact's four previews plus every structured target-device confirmation below. Human Fail can be recorded after the first heard problem.")))
+                    .AutoWrapText(true)
+                ]
+                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
+                [
+                    SNew(STextBlock)
+                    .Text(FText::FromString(TEXT("Required human confirmations (check only after actually listening):")))
+                ]
+                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                [
+                    SNew(SGridPanel)
+                    + SGridPanel::Slot(0, 0).Padding(0.0f, 2.0f, 18.0f, 2.0f)
+                    [
+                        SNew(SCheckBox)
+                        .IsEnabled_Lambda([this]() { return HasComparisonAudio(); })
+                        .IsChecked_Lambda([this]()
+                        {
+                            return bRecognizableDirectConfirmed
+                                ? ECheckBoxState::Checked
+                                : ECheckBoxState::Unchecked;
+                        })
+                        .OnCheckStateChanged_Lambda([this](const ECheckBoxState State)
+                        {
+                            bRecognizableDirectConfirmed = State == ECheckBoxState::Checked;
+                        })
+                        [
+                            SNew(STextBlock)
+                            .Text(FText::FromString(TEXT("Direct / Full retain recognizable source content")))
+                        ]
+                    ]
+                    + SGridPanel::Slot(1, 0).Padding(0.0f, 2.0f)
+                    [
+                        SNew(SCheckBox)
+                        .IsEnabled_Lambda([this]() { return HasComparisonAudio(); })
+                        .IsChecked_Lambda([this]()
+                        {
+                            return bAudibleWetFullDifferenceConfirmed
+                                ? ECheckBoxState::Checked
+                                : ECheckBoxState::Unchecked;
+                        })
+                        .OnCheckStateChanged_Lambda([this](const ECheckBoxState State)
+                        {
+                            bAudibleWetFullDifferenceConfirmed = State == ECheckBoxState::Checked;
+                        })
+                        [
+                            SNew(STextBlock)
+                            .Text(FText::FromString(TEXT("Wet is spatial tail and audibly differs from Direct / Full")))
+                        ]
+                    ]
+                    + SGridPanel::Slot(0, 1).Padding(0.0f, 2.0f, 18.0f, 2.0f)
+                    [
+                        SNew(SCheckBox)
+                        .IsEnabled_Lambda([this]() { return HasComparisonAudio(); })
+                        .IsChecked_Lambda([this]()
+                        {
+                            return bMovingOcclusionContinuityConfirmed
+                                ? ECheckBoxState::Checked
+                                : ECheckBoxState::Unchecked;
+                        })
+                        .OnCheckStateChanged_Lambda([this](const ECheckBoxState State)
+                        {
+                            bMovingOcclusionContinuityConfirmed = State == ECheckBoxState::Checked;
+                        })
+                        [
+                            SNew(STextBlock)
+                            .Text(FText::FromString(TEXT("Moving occlusion / distance is continuous; no click/pop or dropout")))
+                        ]
+                    ]
+                    + SGridPanel::Slot(1, 1).Padding(0.0f, 2.0f)
+                    [
+                        SNew(SCheckBox)
+                        .IsEnabled_Lambda([this]() { return HasComparisonAudio(); })
+                        .IsChecked_Lambda([this]()
+                        {
+                            return bModeSwitchingContinuityConfirmed
+                                ? ECheckBoxState::Checked
+                                : ECheckBoxState::Unchecked;
+                        })
+                        .OnCheckStateChanged_Lambda([this](const ECheckBoxState State)
+                        {
+                            bModeSwitchingContinuityConfirmed = State == ECheckBoxState::Checked;
+                        })
+                        [
+                            SNew(STextBlock)
+                            .Text(FText::FromString(TEXT("F1/F2/F5 and F3 switching is continuous; no click/pop or timing jump")))
+                        ]
+                    ]
+                    + SGridPanel::Slot(0, 2).ColumnSpan(2).Padding(0.0f, 2.0f)
+                    [
+                        SNew(SCheckBox)
+                        .IsEnabled_Lambda([this]() { return HasComparisonAudio(); })
+                        .IsChecked_Lambda([this]()
+                        {
+                            return bEnvironmentDifferenceConfirmed
+                                ? ECheckBoxState::Checked
+                                : ECheckBoxState::Unchecked;
+                        })
+                        .OnCheckStateChanged_Lambda([this](const ECheckBoxState State)
+                        {
+                            bEnvironmentDifferenceConfirmed = State == ECheckBoxState::Checked;
+                        })
+                        [
+                            SNew(STextBlock)
+                            .Text(FText::FromString(TEXT("Open / near-wall / enclosed Wet / Full differences sound reasonable")))
+                        ]
+                    ]
+                ]
+                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                [
                     SNew(STextBlock)
                     .Text(FText::FromString(TEXT("Aligned waveforms, shared full-scale axis: Reference (gray) | Direct (blue) | Wet (purple) | Full (green)")))
                     .AutoWrapText(true)
@@ -840,7 +983,7 @@ namespace
                     .Padding(4.0f)
                     [
                         SNew(SBox)
-                        .HeightOverride(240.0f)
+                        .HeightOverride(180.0f)
                         [
                             SAssignNew(WaveformPanel, SUERayTracingAudioComparisonWaveforms)
                         ]
@@ -912,14 +1055,16 @@ namespace
                     [
                         SNew(SButton)
                         .Text(FText::FromString(TEXT("Human Pass")))
-                        .IsEnabled_Lambda([this]() { return HasComparisonAudio(); })
+                        .ToolTipText(FText::FromString(TEXT("Requires a target device, all four successful previews, and all five structured human confirmations.")))
+                        .IsEnabled_Lambda([this]() { return CanRecordHumanVerdict(true); })
                         .OnClicked_Lambda([this]() { return RecordListeningVerdict(true); })
                     ]
                     + SHorizontalBox::Slot().AutoWidth()
                     [
                         SNew(SButton)
                         .Text(FText::FromString(TEXT("Human Fail")))
-                        .IsEnabled_Lambda([this]() { return HasComparisonAudio(); })
+                        .ToolTipText(FText::FromString(TEXT("Requires a target device and at least one successfully started preview.")))
+                        .IsEnabled_Lambda([this]() { return CanRecordHumanVerdict(false); })
                         .OnClicked_Lambda([this]() { return RecordListeningVerdict(false); })
                     ]
                 ];
@@ -1563,7 +1708,7 @@ namespace
 
             LastComparisonRender = RenderResult;
             CurrentListeningMode = EUERayTracingAudioListeningMode::None;
-            LastHumanVerdict = TEXT("not recorded");
+            ResetHumanAcceptanceProgress();
             bComparisonWaveformsLoaded = LoadComparisonWaveforms(RenderResult);
             LastStatus = FString::Printf(
                 TEXT("Imported four aligned comparison assets. Auto checks: %s. Waveforms: %s. Direct correlation %.4f, Direct level %.4f, Wet level %.4f, Direct/Wet difference %.4f, Full correlation %.4f, common scale %.6f. Manifest: %s"),
@@ -1660,6 +1805,127 @@ namespace
             CurrentListeningMode = EUERayTracingAudioListeningMode::None;
         }
 
+        void ResetHumanAcceptanceProgress()
+        {
+            LastPreviewedListeningMode =
+                EUERayTracingAudioListeningMode::None;
+            bPreviewedReference = false;
+            bPreviewedDirect = false;
+            bPreviewedWet = false;
+            bPreviewedFull = false;
+            bRecognizableDirectConfirmed = false;
+            bAudibleWetFullDifferenceConfirmed = false;
+            bMovingOcclusionContinuityConfirmed = false;
+            bModeSwitchingContinuityConfirmed = false;
+            bEnvironmentDifferenceConfirmed = false;
+            LastHumanVerdict = TEXT("not recorded");
+            if (ListeningNotesTextBox.IsValid())
+            {
+                ListeningNotesTextBox->SetText(FText::GetEmpty());
+            }
+        }
+
+        void MarkListeningModePreviewed(
+            const EUERayTracingAudioListeningMode Mode)
+        {
+            LastPreviewedListeningMode = Mode;
+            switch (Mode)
+            {
+            case EUERayTracingAudioListeningMode::Reference:
+                bPreviewedReference = true;
+                break;
+            case EUERayTracingAudioListeningMode::Direct:
+                bPreviewedDirect = true;
+                break;
+            case EUERayTracingAudioListeningMode::Wet:
+                bPreviewedWet = true;
+                break;
+            case EUERayTracingAudioListeningMode::Full:
+                bPreviewedFull = true;
+                break;
+            default:
+                break;
+            }
+        }
+
+        FString GetTargetListeningDevice() const
+        {
+            if (!TargetListeningDeviceTextBox.IsValid())
+            {
+                return FString();
+            }
+            FString Device = TargetListeningDeviceTextBox->GetText().ToString();
+            Device.TrimStartAndEndInline();
+            return Device;
+        }
+
+        bool HasAnyPreviewedMode() const
+        {
+            return bPreviewedReference
+                || bPreviewedDirect
+                || bPreviewedWet
+                || bPreviewedFull;
+        }
+
+        bool HasPreviewedAllModes() const
+        {
+            return bPreviewedReference
+                && bPreviewedDirect
+                && bPreviewedWet
+                && bPreviewedFull;
+        }
+
+        bool HasAllHumanConfirmations() const
+        {
+            return bRecognizableDirectConfirmed
+                && bAudibleWetFullDifferenceConfirmed
+                && bMovingOcclusionContinuityConfirmed
+                && bModeSwitchingContinuityConfirmed
+                && bEnvironmentDifferenceConfirmed;
+        }
+
+        int32 GetHumanConfirmationCount() const
+        {
+            return static_cast<int32>(bRecognizableDirectConfirmed)
+                + static_cast<int32>(bAudibleWetFullDifferenceConfirmed)
+                + static_cast<int32>(bMovingOcclusionContinuityConfirmed)
+                + static_cast<int32>(bModeSwitchingContinuityConfirmed)
+                + static_cast<int32>(bEnvironmentDifferenceConfirmed);
+        }
+
+        bool CanRecordHumanVerdict(const bool bPassed) const
+        {
+            return HasComparisonAudio()
+                && !GetTargetListeningDevice().IsEmpty()
+                && (bPassed
+                    ? HasPreviewedAllModes() && HasAllHumanConfirmations()
+                    : HasAnyPreviewedMode());
+        }
+
+        FString GetPreviewedModesSummary() const
+        {
+            TArray<FString> Modes;
+            if (bPreviewedReference)
+            {
+                Modes.Add(TEXT("Reference"));
+            }
+            if (bPreviewedDirect)
+            {
+                Modes.Add(TEXT("Direct"));
+            }
+            if (bPreviewedWet)
+            {
+                Modes.Add(TEXT("Wet"));
+            }
+            if (bPreviewedFull)
+            {
+                Modes.Add(TEXT("Full"));
+            }
+            return Modes.IsEmpty()
+                ? FString(TEXT("none"))
+                : FString::Join(Modes, TEXT(","));
+        }
+
         void StopListeningPreviewAudioIfOwned()
         {
             UAudioComponent* PreviewAudio = ListeningPreviewAudioComponent.Get();
@@ -1747,6 +2013,7 @@ namespace
             ListeningPreviewAudioComponent = PreviewAudio;
             CurrentListeningMode = Mode;
             ListeningPreviewRestartCount = 0;
+            MarkListeningModePreviewed(Mode);
             LastStatus = FString::Printf(
                 TEXT("Looping %s from sample zero at the shared comparison scale %.6f; press Stop to end playback."),
                 GetListeningModeName(Mode),
@@ -1781,12 +2048,17 @@ namespace
                 return TEXT("A/B controls are waiting for a complete Reference / Direct / Wet / Full set.");
             }
 
+            const FString Device = GetTargetListeningDevice();
+            const FString PreviewedModes = GetPreviewedModesSummary();
             return FString::Printf(
-                TEXT("Ready | Auto=%s | Hardware=%s | Waveforms=%s | Common scale %.6f | Current=%s | Human=%s"),
+                TEXT("Ready | Auto=%s | Hardware=%s | Waveforms=%s | Common scale %.6f | Device=%s | Previewed=%s | Confirmed=%d/5 | Current=%s | Human=%s"),
                 LastComparisonRender.bAutomaticChecksPassed ? TEXT("PASS") : TEXT("FAIL"),
                 LastComparisonRender.bUsedHardwareRayTracing ? TEXT("yes") : TEXT("no"),
                 bComparisonWaveformsLoaded ? TEXT("ready") : *WaveformLoadError,
                 LastComparisonRender.CommonOutputScale,
+                Device.IsEmpty() ? TEXT("required") : *Device,
+                *PreviewedModes,
+                GetHumanConfirmationCount(),
                 GetListeningModeName(CurrentListeningMode),
                 *LastHumanVerdict);
         }
@@ -1827,27 +2099,39 @@ namespace
                 return FReply::Handled();
             }
 
-            TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
-            Root->SetStringField(TEXT("recorded_at_utc"), FDateTime::UtcNow().ToIso8601());
-            Root->SetStringField(TEXT("comparison_manifest"), LastComparisonRender.ManifestFilename);
-            Root->SetBoolField(TEXT("automatic_checks_passed"), LastComparisonRender.bAutomaticChecksPassed);
-            Root->SetBoolField(TEXT("human_listening_passed"), bPassed);
-            Root->SetNumberField(TEXT("direct_to_reference_rms_ratio"), LastComparisonRender.DirectToReferenceRmsRatio);
-            Root->SetNumberField(TEXT("wet_to_reference_rms_ratio"), LastComparisonRender.WetToReferenceRmsRatio);
-            Root->SetNumberField(TEXT("direct_wet_normalized_difference"), LastComparisonRender.DirectWetNormalizedDifference);
-            Root->SetBoolField(TEXT("modes_are_distinct"), LastComparisonRender.bModesAreDistinct);
-            Root->SetStringField(TEXT("last_previewed_mode"), GetListeningModeName(CurrentListeningMode));
-            Root->SetStringField(TEXT("requirement"), TEXT("Direct and Full retain recognizable source content; Wet is spatial tail only; no clipping, dropout, noise, or timing jump."));
+            FUERayTracingAudioHumanAcceptanceRequest Request;
+            Request.RecordedAtUtc = FDateTime::UtcNow().ToIso8601();
+            Request.TargetListeningDevice = GetTargetListeningDevice();
+            Request.ListeningNotes = ListeningNotesTextBox.IsValid()
+                ? ListeningNotesTextBox->GetText().ToString()
+                : FString();
+            Request.LastPreviewedMode =
+                GetListeningModeName(LastPreviewedListeningMode);
+            Request.bHumanListeningPassed = bPassed;
+            Request.bPreviewedReference = bPreviewedReference;
+            Request.bPreviewedDirect = bPreviewedDirect;
+            Request.bPreviewedWet = bPreviewedWet;
+            Request.bPreviewedFull = bPreviewedFull;
+            Request.bRecognizableDirectConfirmed =
+                bRecognizableDirectConfirmed;
+            Request.bAudibleWetFullDifferenceConfirmed =
+                bAudibleWetFullDifferenceConfirmed;
+            Request.bMovingOcclusionContinuityConfirmed =
+                bMovingOcclusionContinuityConfirmed;
+            Request.bModeSwitchingContinuityConfirmed =
+                bModeSwitchingContinuityConfirmed;
+            Request.bEnvironmentDifferenceConfirmed =
+                bEnvironmentDifferenceConfirmed;
 
-            FString JsonText;
-            TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
-            const FString VerdictFilename = FPaths::ChangeExtension(
-                LastComparisonRender.ManifestFilename,
-                TEXT("HumanAcceptance.json"));
-            if (!FJsonSerializer::Serialize(Root, Writer)
-                || !FFileHelper::SaveStringToFile(JsonText, *VerdictFilename))
+            FString VerdictFilename;
+            FString Error;
+            if (!FUERayTracingAudioHumanAcceptance::SaveRecord(
+                    LastComparisonRender.ManifestFilename,
+                    Request,
+                    VerdictFilename,
+                    Error))
             {
-                LastStatus = FString::Printf(TEXT("Could not save human listening record: %s"), *VerdictFilename);
+                LastStatus = Error;
                 return FReply::Handled();
             }
 
@@ -1863,6 +2147,8 @@ namespace
         TSharedPtr<FUERayTracingAudioBakeJob> Job;
         TSharedPtr<SEditableTextBox> AssetPackageTextBox;
         TSharedPtr<SEditableTextBox> BakedAudioDestinationTextBox;
+        TSharedPtr<SEditableTextBox> TargetListeningDeviceTextBox;
+        TSharedPtr<SEditableTextBox> ListeningNotesTextBox;
         TSharedPtr<SUERayTracingAudioComparisonWaveforms> WaveformPanel;
         TSoftObjectPtr<USoundWave> InputSoundWave;
         TWeakObjectPtr<UUERayTracingAudioSourceComponent> SelectedSource;
@@ -1891,6 +2177,8 @@ namespace
         TFuture<FUERayTracingAudioOfflineRenderResult> OfflineRenderFuture;
         FUERayTracingAudioOfflineRenderResult LastComparisonRender;
         EUERayTracingAudioListeningMode CurrentListeningMode = EUERayTracingAudioListeningMode::None;
+        EUERayTracingAudioListeningMode LastPreviewedListeningMode =
+            EUERayTracingAudioListeningMode::None;
         int32 ListeningPreviewRestartCount = 0;
         FString PendingImportDestination;
         FString LastStatus = TEXT("Ready.");
@@ -1899,6 +2187,15 @@ namespace
         bool bOfflineRenderActive = false;
         bool bHandledTerminalState = false;
         bool bComparisonWaveformsLoaded = false;
+        bool bPreviewedReference = false;
+        bool bPreviewedDirect = false;
+        bool bPreviewedWet = false;
+        bool bPreviewedFull = false;
+        bool bRecognizableDirectConfirmed = false;
+        bool bAudibleWetFullDifferenceConfirmed = false;
+        bool bMovingOcclusionContinuityConfirmed = false;
+        bool bModeSwitchingContinuityConfirmed = false;
+        bool bEnvironmentDifferenceConfirmed = false;
     };
 
     TWeakPtr<SUERayTracingAudioBakePanel> GActiveBakePanel;
@@ -1996,7 +2293,7 @@ bool FUERayTracingAudioEditorModule::TickValidationScene(const float DeltaTime)
         UE_LOG(
             LogTemp,
             Display,
-            TEXT("UERayTracingAudioEditor listening acceptance ready: controls=1 imported_assets=4 manifest=\"%s\" human_verdict=enabled."),
+            TEXT("UERayTracingAudioEditor listening acceptance ready: controls=1 imported_assets=4 waveforms=ready manifest=\"%s\" human_verdict=enabled human_record_schema=3 device_required=1 pass_requires_all_modes=1 pass_requires_confirmations=5."),
             *Offline.ManifestFilename);
         UE_LOG(
             LogTemp,

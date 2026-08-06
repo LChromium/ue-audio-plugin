@@ -462,6 +462,7 @@ namespace
             const bool bChanged =
                 !Existing->bExportToAcousticScene
                 || !Existing->bAffectsDirectSound
+                || !Existing->bAffectsIndirectSound
                 || Existing->ExportMode
                     != EUERayTracingAudioGeometryExportMode::BoundingBox
                 || !Existing->Absorption.Equals(
@@ -479,6 +480,7 @@ namespace
             }
             Existing->bExportToAcousticScene = true;
             Existing->bAffectsDirectSound = true;
+            Existing->bAffectsIndirectSound = true;
             Existing->ExportMode =
                 EUERayTracingAudioGeometryExportMode::BoundingBox;
             Existing->Absorption = Definition.Absorption;
@@ -499,6 +501,7 @@ namespace
             {
                 Geometry.bExportToAcousticScene = true;
                 Geometry.bAffectsDirectSound = true;
+                Geometry.bAffectsIndirectSound = true;
                 Geometry.ExportMode =
                     EUERayTracingAudioGeometryExportMode::BoundingBox;
                 Geometry.Absorption = Definition.Absorption;
@@ -767,22 +770,26 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
     {
         Source->Modify();
     }
-    Source->OccludedGain = 0.35f;
-    Source->SourceRadiusCm = 30.0f;
-    Source->NumOcclusionSamples = 8;
-    Source->bUseVolumetricOcclusion = true;
-    Source->bHardOcclusion = DirectPreset == EUERayTracingAudioEditorDirectPreset::HardOccluded;
-    Source->AirAbsorptionPerMeter = Result.AirAbsorptionPerMeter;
-    Source->NumReflectionRays = 4096;
-    Source->MaxReflectionBounces = Result.ReflectionBounces;
-    Source->IndirectDurationSeconds = 2.0f;
-    Source->IndirectMode = EUERayTracingAudioIndirectMode::HybridReverb;
+    Source->SetDirectOcclusionSettings(
+        0.35f,
+        30.0f,
+        8,
+        true,
+        DirectPreset == EUERayTracingAudioEditorDirectPreset::HardOccluded,
+        Result.AirAbsorptionPerMeter);
+    Source->SetReflectionSimulationSettings(
+        4096,
+        Result.ReflectionBounces,
+        2.0f,
+        Source->GetMaxEarlyReflectionTaps(),
+        Source->GetHybridTransitionRatio());
+    Source->SetIndirectMode(EUERayTracingAudioIndirectMode::HybridReverb);
     Source->SetIndirectDataSource(
         EUERayTracingAudioIndirectDataSource::Realtime);
     // This tagged listening fixture keeps reflections readily audible while
     // retaining a recognizable dry cue in the Full artifact. This does not
     // change the product default or ordinary Source components.
-    Source->IndirectMix = ValidationWetMix;
+    Source->SetIndirectMix(ValidationWetMix);
     bMutatedActors |= bSourceSettingsChanged;
     UAudioComponent* ValidationAudio =
         SourceActor->FindComponentByClass<UAudioComponent>();
@@ -995,6 +1002,7 @@ FUERayTracingAudioEditorValidationSceneResult FUERayTracingAudioEditorValidation
             && IsValid(Geometry)
             && Geometry->bExportToAcousticScene
             && Geometry->bAffectsDirectSound
+            && Geometry->bAffectsIndirectSound
             && Geometry->ExportMode
                 == EUERayTracingAudioGeometryExportMode::BoundingBox
             && Geometry->Absorption.Equals(

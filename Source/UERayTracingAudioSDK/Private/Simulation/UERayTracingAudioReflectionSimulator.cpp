@@ -204,7 +204,7 @@ namespace UERayTracingAudioReflectionSimulatorPrivate
 
         for (const FUERayTracingAudioGeometryExport& GeometryExport : Scene.GetStaticGeometry())
         {
-            if (!GeometryExport.bVisibleForDirectSound)
+            if (!GeometryExport.bVisibleForIndirectSound)
             {
                 continue;
             }
@@ -293,6 +293,11 @@ void FUERayTracingAudioReflectionSimulator::Simulate(
     OutEnergyField.EarliestArrivalSeconds = 0.0f;
 
     if (!Input.Scene || Input.Scene->IsEmpty() || Input.NumReflectionRays <= 0 || Input.MaxReflectionBounces <= 0 || Input.DurationSeconds <= 0.0f)
+    {
+        return;
+    }
+    if (Input.Scene->HasInvalidGeometryForUsage(
+        EUERayTracingAudioGeometryUsage::Indirect))
     {
         return;
     }

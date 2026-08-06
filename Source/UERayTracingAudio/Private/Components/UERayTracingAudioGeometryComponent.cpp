@@ -12,6 +12,7 @@
 UUERayTracingAudioGeometryComponent::UUERayTracingAudioGeometryComponent()
     : bExportToAcousticScene(true)
     , bAffectsDirectSound(true)
+    , bAffectsIndirectSound(true)
     , ExportMode(EUERayTracingAudioGeometryExportMode::BoundingBox)
     , Absorption(0.2f, 0.3f, 0.4f)
     , Transmission(FVector::ZeroVector)
@@ -52,6 +53,7 @@ bool UUERayTracingAudioGeometryComponent::BuildGeometryExport(FUERayTracingAudio
     OutGeometryExport.Transmission = Transmission.ComponentMax(FVector::ZeroVector).ComponentMin(FVector::OneVector);
     OutGeometryExport.Scattering = FMath::Clamp(Scattering, 0.0f, 1.0f);
     OutGeometryExport.bVisibleForDirectSound = bAffectsDirectSound;
+    OutGeometryExport.bVisibleForIndirectSound = bAffectsIndirectSound;
 
     if (ExportMode == EUERayTracingAudioGeometryExportMode::StaticMeshTriangles)
     {

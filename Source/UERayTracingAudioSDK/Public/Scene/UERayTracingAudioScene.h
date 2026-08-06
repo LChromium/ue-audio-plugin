@@ -2,6 +2,12 @@
 
 #include "CoreMinimal.h"
 
+enum class EUERayTracingAudioGeometryUsage : uint8
+{
+    Direct,
+    Indirect
+};
+
 struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioGeometryExport
 {
     FTransform Transform;
@@ -11,6 +17,7 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioGeometryExport
     FVector Transmission = FVector::ZeroVector;
     float Scattering = 0.35f;
     bool bVisibleForDirectSound = true;
+    bool bVisibleForIndirectSound = true;
     bool bUseStaticMeshTriangles = false;
     bool bVerticesAreLocalSpace = false;
     FString StaticMeshCacheKey;
@@ -21,7 +28,37 @@ struct UERAYTRACINGAUDIOSDK_API FUERayTracingAudioGeometryExport
 
     bool HasTriangleMesh() const
     {
-        return Vertices.Num() > 0 && Indices.Num() >= 3;
+        if (Vertices.Num() <= 0 || Indices.Num() < 3 || (Indices.Num() % 3) != 0)
+        {
+            return false;
+        }
+
+        for (const uint32 Index : Indices)
+        {
+            if (!Vertices.IsValidIndex(static_cast<int32>(Index)))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool HasBuildableGeometry() const
+    {
+        return HasTriangleMesh() || Bounds.IsValid;
+    }
+
+    bool IsVisibleForUsage(const EUERayTracingAudioGeometryUsage Usage) const
+    {
+        return Usage == EUERayTracingAudioGeometryUsage::Direct
+            ? bVisibleForDirectSound
+            : bVisibleForIndirectSound;
+    }
+
+    bool IsBuildableForUsage(const EUERayTracingAudioGeometryUsage Usage) const
+    {
+        return IsVisibleForUsage(Usage) && HasBuildableGeometry();
     }
 
     bool HasCachedStaticMeshSource() const
@@ -68,6 +105,7 @@ public:
     int32 GetVersion() const;
     uint64 GetCacheKey() const;
     bool IsEmpty() const;
+    bool HasInvalidGeometryForUsage(EUERayTracingAudioGeometryUsage Usage) const;
 
 private:
     TArray<FUERayTracingAudioGeometryExport> StaticGeometry;

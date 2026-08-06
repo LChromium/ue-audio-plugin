@@ -75,12 +75,14 @@ private:
         float FirstBakeBinDurationSeconds = 0.0f;
         FVector FixedListenerLocation = FVector::ZeroVector;
         FVector InteractiveSmokeStartPawnLocation = FVector::ZeroVector;
+        FVector InteractiveSmokeOriginReturnPawnLocation = FVector::ZeroVector;
         FRotator InteractiveStartRotation = FRotator::ZeroRotator;
         float DirectSweepSavedOccludedGain = 0.0f;
         float DirectSweepSavedIndirectMix = 0.0f;
         float DirectSweepRestoredDistanceCm = 0.0f;
         float InteractiveSmokeMovementDistanceCm = 0.0f;
         float InteractiveSmokeMaxListenerCameraErrorCm = 0.0f;
+        float InteractiveSmokeOriginReturnErrorCm = 0.0f;
         uint64 DirectSweepGenerationFloor = 0;
         int32 SourceCount = 0;
         int32 GeometryCount = 0;
@@ -122,6 +124,7 @@ private:
         bool bInteractiveSmokeSawReferenceAB = false;
         bool bInteractiveSmokeF3SourcePreserved = false;
         bool bInteractiveSmokeRenderedComponents = false;
+        bool bInteractiveSmokeOriginReturned = false;
         bool bResultLogged = false;
         bool bDataSourceDiagnosticsArmed = false;
         bool bDataSourceValidationLogged = false;

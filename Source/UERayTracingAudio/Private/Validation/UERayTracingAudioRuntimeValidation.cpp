@@ -838,17 +838,23 @@ void FUERayTracingAudioRuntimeValidation::CreateScenario(UWorld* World)
         // A soft wall should remain clearly audible in the validation scene.
         // At the shared 2 m distance this produces approximately 0.175 linear
         // Direct gain; Hard Occlusion remains the explicit silence case.
-        Source->OccludedGain = SourceIndex == 0 ? 0.35f : 0.2f;
-        Source->bHardOcclusion =
-            SourceIndex == 0 && bHardDirectPreset;
-        Source->NumOcclusionSamples = 8;
-        Source->NumReflectionRays = SourceIndex == 0 ? 256 : 96;
-        Source->MaxReflectionBounces = SourceIndex == 0 ? 4 : 2;
-        Source->IndirectDurationSeconds = SourceIndex == 0 ? 1.5f : 0.75f;
-        Source->IndirectMode = EUERayTracingAudioIndirectMode::HybridReverb;
+        Source->SetDirectOcclusionSettings(
+            SourceIndex == 0 ? 0.35f : 0.2f,
+            Source->GetSourceRadiusCm(),
+            8,
+            Source->ShouldUseVolumetricOcclusion(),
+            SourceIndex == 0 && bHardDirectPreset,
+            Source->GetAirAbsorptionPerMeter());
+        Source->SetReflectionSimulationSettings(
+            SourceIndex == 0 ? 256 : 96,
+            SourceIndex == 0 ? 4 : 2,
+            SourceIndex == 0 ? 1.5f : 0.75f,
+            Source->GetMaxEarlyReflectionTaps(),
+            Source->GetHybridTransitionRatio());
+        Source->SetIndirectMode(EUERayTracingAudioIndirectMode::HybridReverb);
         Source->SetIndirectDataSource(
             EUERayTracingAudioIndirectDataSource::Realtime);
-        Source->IndirectMix = SourceIndex == 0 ? 1.75f : 0.4f;
+        Source->SetIndirectMix(SourceIndex == 0 ? 1.75f : 0.4f);
         Source->RegisterComponent();
         AddVisualMarker(
             *SourceActor,
@@ -1150,10 +1156,14 @@ bool FUERayTracingAudioRuntimeValidation::StartDirectSweep(
         false,
         nullptr,
         ETeleportType::TeleportPhysics);
-    Source->bHardOcclusion = false;
-    Source->OccludedGain =
-        ValidationDirectSweepSoftOccludedGain;
-    Source->IndirectMix = 0.0f;
+    Source->SetDirectOcclusionSettings(
+        ValidationDirectSweepSoftOccludedGain,
+        Source->GetSourceRadiusCm(),
+        Source->GetNumOcclusionSamples(),
+        Source->ShouldUseVolumetricOcclusion(),
+        false,
+        Source->GetAirAbsorptionPerMeter());
+    Source->SetIndirectMix(0.0f);
     Source->SetIndirectDataSource(
         EUERayTracingAudioIndirectDataSource::Realtime);
 
@@ -1217,12 +1227,15 @@ void FUERayTracingAudioRuntimeValidation::
                 false,
                 nullptr,
                 ETeleportType::TeleportPhysics);
-            Source->bHardOcclusion =
-                State.bDirectSweepSavedHardOcclusion;
-            Source->OccludedGain =
-                State.DirectSweepSavedOccludedGain;
-            Source->IndirectMix =
-                State.DirectSweepSavedIndirectMix;
+            Source->SetDirectOcclusionSettings(
+                State.DirectSweepSavedOccludedGain,
+                Source->GetSourceRadiusCm(),
+                Source->GetNumOcclusionSamples(),
+                Source->ShouldUseVolumetricOcclusion(),
+                State.bDirectSweepSavedHardOcclusion,
+                Source->GetAirAbsorptionPerMeter());
+            Source->SetIndirectMix(
+                State.DirectSweepSavedIndirectMix);
             Source->SetIndirectDataSource(
                 State.DirectSweepSavedDataSource);
         }
@@ -2167,6 +2180,8 @@ bool FUERayTracingAudioRuntimeValidation::PlaceInteractiveViewAtBakedOrigin(
     APlayerController& PlayerController,
     APawn& Pawn)
 {
+    const FVector BeforePawnLocation = Pawn.GetActorLocation();
+    const FVector BeforeViewLocation = Pawn.GetPawnViewLocation();
     PlayerController.SetControlRotation(State.InteractiveStartRotation);
     PlayerController.SetViewTarget(&Pawn);
 
@@ -2200,6 +2215,46 @@ bool FUERayTracingAudioRuntimeValidation::PlaceInteractiveViewAtBakedOrigin(
     {
         MovementComponent->StopMovementImmediately();
     }
+    const FVector AfterPawnLocation = Pawn.GetActorLocation();
+    const FVector AfterViewLocation = Pawn.GetPawnViewLocation();
+    const UCharacterMovementComponent* CharacterMovement =
+        Cast<UCharacterMovementComponent>(Pawn.GetMovementComponent());
+    const FVector Velocity = IsValid(Pawn.GetMovementComponent())
+        ? Pawn.GetMovementComponent()->Velocity
+        : FVector::ZeroVector;
+    const FVector PendingInput = Pawn.GetPendingMovementInputVector();
+    UE_LOG(
+        LogUERayTracingAudio,
+        Display,
+        TEXT("UERayTracingAudio interactive origin placement: phase=%d moved=%d before_pawn=(%.3f,%.3f,%.3f) before_view=(%.3f,%.3f,%.3f) after_pawn=(%.3f,%.3f,%.3f) after_view=(%.3f,%.3f,%.3f) target_view=(%.3f,%.3f,%.3f) immediate_error_cm=%.3f movement_mode=%d falling=%d velocity=(%.3f,%.3f,%.3f) pending_input=(%.3f,%.3f,%.3f)."),
+        State.InteractiveSmokePhase,
+        bMoved ? 1 : 0,
+        BeforePawnLocation.X,
+        BeforePawnLocation.Y,
+        BeforePawnLocation.Z,
+        BeforeViewLocation.X,
+        BeforeViewLocation.Y,
+        BeforeViewLocation.Z,
+        AfterPawnLocation.X,
+        AfterPawnLocation.Y,
+        AfterPawnLocation.Z,
+        AfterViewLocation.X,
+        AfterViewLocation.Y,
+        AfterViewLocation.Z,
+        State.FixedListenerLocation.X,
+        State.FixedListenerLocation.Y,
+        State.FixedListenerLocation.Z,
+        FVector::Distance(AfterViewLocation, State.FixedListenerLocation),
+        CharacterMovement
+            ? static_cast<int32>(CharacterMovement->MovementMode)
+            : -1,
+        CharacterMovement && CharacterMovement->IsFalling() ? 1 : 0,
+        Velocity.X,
+        Velocity.Y,
+        Velocity.Z,
+        PendingInput.X,
+        PendingInput.Y,
+        PendingInput.Z);
     return bMoved;
 }
 
@@ -2882,10 +2937,16 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
             State.bInteractiveSmokeSawReferenceAB
             && State.bInteractiveSmokeSawRenderedAB
             && PrimarySource->IndirectDataSource == DataSourceBeforeF3;
-        PlaceInteractiveViewAtBakedOrigin(
-            State,
-            *PlayerController,
-            *Pawn);
+        State.bInteractiveSmokeOriginReturned =
+            PlaceInteractiveViewAtBakedOrigin(
+                State,
+                *PlayerController,
+                *Pawn);
+        State.InteractiveSmokeOriginReturnPawnLocation =
+            Pawn->GetActorLocation();
+        State.InteractiveSmokeOriginReturnErrorCm = FVector::Distance(
+            Pawn->GetPawnViewLocation(),
+            State.FixedListenerLocation);
         State.InteractiveSmokePhase = 5;
         State.InteractiveSmokePhaseStartTimeSeconds = NowSeconds;
         return;
@@ -2897,9 +2958,9 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
         return;
     }
 
-    const float OriginErrorCm = FVector::Distance(
-        Pawn->GetPawnViewLocation(),
-        State.FixedListenerLocation);
+    const float PostReturnMovedCm = FVector::Distance(
+        Pawn->GetActorLocation(),
+        State.InteractiveSmokeOriginReturnPawnLocation);
     const bool bFixedView =
         SetInteractiveMode(State, false)
         && PlayerController->GetViewTarget() == State.CameraActor.Get();
@@ -2929,7 +2990,8 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
     const bool bPassed =
         State.InteractiveSmokeMovementDistanceCm >= 25.0f
         && State.InteractiveSmokeMaxListenerCameraErrorCm <= 1.0f
-        && OriginErrorCm <= 1.0f
+        && State.bInteractiveSmokeOriginReturned
+        && State.InteractiveSmokeOriginReturnErrorCm <= 1.0f
         && State.bInteractiveSmokeSawRealtime
         && State.bInteractiveSmokeSawBaked
         && State.bInteractiveSmokeSawHybrid
@@ -2948,11 +3010,12 @@ void FUERayTracingAudioRuntimeValidation::TickInteractiveSmoke(
     UE_LOG(
         LogUERayTracingAudio,
         Display,
-        TEXT("UERayTracingAudio interactive smoke: passed=%d moved_cm=%.3f listener_camera_error_cm=%.3f origin_error_cm=%.3f realtime=%d baked=%d hybrid=%d rendered_ab=%d reference_ab=%d fixed_view=%d interactive_view=%d audio_playing=%d reference_playing=%d ab_base_levels_matched=%d ab_restart_count=%d f3_source_preserved=%d rendered_components=%s foreign_audio_playing=%d muted_foreign_audio=%d."),
+        TEXT("UERayTracingAudio interactive smoke: passed=%d moved_cm=%.3f listener_camera_error_cm=%.3f origin_return_error_cm=%.3f post_return_moved_cm=%.3f realtime=%d baked=%d hybrid=%d rendered_ab=%d reference_ab=%d fixed_view=%d interactive_view=%d audio_playing=%d reference_playing=%d ab_base_levels_matched=%d ab_restart_count=%d f3_source_preserved=%d rendered_components=%s foreign_audio_playing=%d muted_foreign_audio=%d."),
         bPassed ? 1 : 0,
         State.InteractiveSmokeMovementDistanceCm,
         State.InteractiveSmokeMaxListenerCameraErrorCm,
-        OriginErrorCm,
+        State.InteractiveSmokeOriginReturnErrorCm,
+        PostReturnMovedCm,
         State.bInteractiveSmokeSawRealtime ? 1 : 0,
         State.bInteractiveSmokeSawBaked ? 1 : 0,
         State.bInteractiveSmokeSawHybrid ? 1 : 0,
@@ -3273,7 +3336,8 @@ void FUERayTracingAudioRuntimeValidation::TickDataSourceValidation(
             Result.BinDurationSeconds,
             MoveTemp(Result.Samples));
         Source->SetBakedImpulseResponseAsset(RuntimeAsset);
-        Source->IndirectMode = EUERayTracingAudioIndirectMode::MinimalConvolution;
+        Source->SetIndirectMode(
+            EUERayTracingAudioIndirectMode::MinimalConvolution);
         Source->SetIndirectDataSource(
             EUERayTracingAudioIndirectDataSource::Baked);
         State.DataSourceBakeJob.Reset();
@@ -3362,8 +3426,8 @@ void FUERayTracingAudioRuntimeValidation::TickDataSourceValidation(
             // Baked convolution intentionally has no parametric tail. Restore
             // HybridReverb before validating realtime so reflected energy and
             // the late parametric tail remain continuously audible.
-            Source->IndirectMode =
-                EUERayTracingAudioIndirectMode::HybridReverb;
+            Source->SetIndirectMode(
+                EUERayTracingAudioIndirectMode::HybridReverb);
             Source->SetIndirectDataSource(
                 EUERayTracingAudioIndirectDataSource::Realtime);
             State.DataSourceValidationPhase = 3;
@@ -3428,11 +3492,11 @@ void FUERayTracingAudioRuntimeValidation::TickDataSourceValidation(
             // F3 is defined as Original versus realtime Full rendering. Leave
             // the interactive scene in that stable mode after the Baked and
             // Hybrid validation phases have completed.
-            Source->IndirectMode =
-                EUERayTracingAudioIndirectMode::HybridReverb;
+            Source->SetIndirectMode(
+                EUERayTracingAudioIndirectMode::HybridReverb);
             Source->SetIndirectDataSource(
                 EUERayTracingAudioIndirectDataSource::Realtime);
-            Source->IndirectMix = 1.75f;
+            Source->SetIndirectMix(1.75f);
             LogResult(
                 true,
                 TEXT("hardware stereo Bake and all continuously audible runtime IR modes passed"));

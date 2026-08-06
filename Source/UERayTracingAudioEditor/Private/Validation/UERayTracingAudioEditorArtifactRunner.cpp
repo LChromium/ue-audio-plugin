@@ -324,8 +324,9 @@ void FUERayTracingAudioEditorArtifactRunner::FinishBake()
         }
     }
 
-    SourceComponent->BakedImpulseResponseAsset = ImpulseResponseAsset;
-    SourceComponent->IndirectDataSource = EUERayTracingAudioIndirectDataSource::Hybrid;
+    SourceComponent->SetBakedImpulseResponseAsset(ImpulseResponseAsset);
+    SourceComponent->SetIndirectDataSource(
+        EUERayTracingAudioIndirectDataSource::Hybrid);
     Result.bSucceeded = true;
     bComplete = true;
     BakeJob.Reset();

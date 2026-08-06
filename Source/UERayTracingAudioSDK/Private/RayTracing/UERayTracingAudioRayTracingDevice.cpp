@@ -1054,6 +1054,7 @@ namespace
     bool BuildRayTracingSceneFromGeometry(
         FRHICommandListImmediate& RHICmdList,
         const TArray<FUERayTracingAudioGeometryExport>& Geometry,
+        const EUERayTracingAudioGeometryUsage Usage,
         FRHIShaderResourceView*& OutSceneView,
         FRayTracingSceneRHIRef& OutRayTracingScene,
         TArray<FBufferRHIRef>& OutVertexBuffers,
@@ -1080,9 +1081,13 @@ namespace
         for (int32 GeometryIndex = 0; GeometryIndex < Geometry.Num(); ++GeometryIndex)
         {
             const FUERayTracingAudioGeometryExport& GeometryExport = Geometry[GeometryIndex];
-            if (!GeometryExport.bVisibleForDirectSound)
+            if (!GeometryExport.IsVisibleForUsage(Usage))
             {
                 continue;
+            }
+            if (!GeometryExport.HasBuildableGeometry())
+            {
+                return false;
             }
 
             FRayTracingGeometryRHIRef RayTracingGeometry;
@@ -1140,11 +1145,6 @@ namespace
 
         if (Instances.IsEmpty())
         {
-            if (!Geometry.IsEmpty())
-            {
-                return false;
-            }
-
             // DXR needs a TLAS to execute a ray dispatch even when the logical
             // acoustic scene is empty. Keep this sentinel out of Geometry and
             // give it an all-zero instance mask so no plugin ray can intersect
@@ -1284,6 +1284,22 @@ namespace
     constexpr int32 SceneTLASCacheMaxEntries = 4;
     constexpr uint64 SceneTLASCacheMaxUnusedSerials = 240;
 
+    uint64 GetSceneTLASCacheKey(
+        const uint64 SceneCacheKey,
+        const EUERayTracingAudioGeometryUsage Usage)
+    {
+        if (SceneCacheKey == 0)
+        {
+            return 0;
+        }
+
+        constexpr uint64 DirectUsageSalt = 0xD1EC7A5B4C3D291Full;
+        constexpr uint64 IndirectUsageSalt = 0x9E3779B97F4A7C15ull;
+        return Usage == EUERayTracingAudioGeometryUsage::Direct
+            ? (SceneCacheKey ^ DirectUsageSalt)
+            : (SceneCacheKey ^ IndirectUsageSalt);
+    }
+
     void TrimSceneTLASCache_RenderThread()
     {
         check(IsInRenderingThread());
@@ -1320,14 +1336,18 @@ namespace
     TSharedPtr<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe> GetOrBuildSceneTLAS_RenderThread(
         FRHICommandListImmediate& RHICmdList,
         uint64 SceneCacheKey,
-        const TArray<FUERayTracingAudioGeometryExport>& Geometry)
+        const TArray<FUERayTracingAudioGeometryExport>& Geometry,
+        const EUERayTracingAudioGeometryUsage Usage)
     {
         check(IsInRenderingThread());
         ++GSceneTLASCacheSerial;
+        const uint64 TLASCacheKey = GetSceneTLASCacheKey(
+            SceneCacheKey,
+            Usage);
 
-        if (SceneCacheKey != 0)
+        if (TLASCacheKey != 0)
         {
-            if (TSharedPtr<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe>* Existing = GSceneTLASCache.Find(SceneCacheKey))
+            if (TSharedPtr<FCachedRayTracingAudioSceneResources, ESPMode::ThreadSafe>* Existing = GSceneTLASCache.Find(TLASCacheKey))
             {
                 if (Existing->IsValid())
                 {
@@ -1344,6 +1364,7 @@ namespace
         if (!BuildRayTracingSceneFromGeometry(
             RHICmdList,
             Geometry,
+            Usage,
             SceneView,
             Resources->RayTracingScene,
             Resources->VertexBuffers,
@@ -1363,9 +1384,9 @@ namespace
 
         Resources->SceneView = SceneView;
         Resources->LastUsedSerial = GSceneTLASCacheSerial;
-        if (SceneCacheKey != 0)
+        if (TLASCacheKey != 0)
         {
-            GSceneTLASCache.Add(SceneCacheKey, Resources);
+            GSceneTLASCache.Add(TLASCacheKey, Resources);
             TrimSceneTLASCache_RenderThread();
         }
         return Resources;
@@ -1604,6 +1625,7 @@ namespace
         if (!BuildRayTracingSceneFromGeometry(
             RHICmdList,
             Geometry,
+            EUERayTracingAudioGeometryUsage::Direct,
             SceneView,
             RayTracingScene,
             VertexBuffers,
@@ -1741,6 +1763,7 @@ namespace
         if (!BuildRayTracingSceneFromGeometry(
             RHICmdList,
             Geometry,
+            EUERayTracingAudioGeometryUsage::Indirect,
             SceneView,
             RayTracingScene,
             VertexBuffers,
@@ -1839,6 +1862,7 @@ namespace
         if (!BuildRayTracingSceneFromGeometry(
             RHICmdList,
             Geometry,
+            EUERayTracingAudioGeometryUsage::Indirect,
             SceneView,
             RayTracingScene,
             VertexBuffers,
@@ -2281,7 +2305,8 @@ void FUERayTracingAudioAsyncEnergyFieldQuery::BeginHardwareBatchReadback_RenderT
     State->SceneResources = GetOrBuildSceneTLAS_RenderThread(
         RHICmdList,
         SceneCacheKey,
-        State->Geometry);
+        State->Geometry,
+        EUERayTracingAudioGeometryUsage::Indirect);
     if (!State->SceneResources.IsValid())
     {
         for (FReadbackState::FItem& Item : State->Items)
@@ -2779,7 +2804,8 @@ void FUERayTracingAudioAsyncRayQuery::BeginHardwareBatchReadback_RenderThread(
     State->SceneResources = GetOrBuildSceneTLAS_RenderThread(
         RHICmdList,
         SceneCacheKey,
-        Geometry);
+        Geometry,
+        EUERayTracingAudioGeometryUsage::Direct);
     if (!State->SceneResources.IsValid())
     {
         for (const TSharedPtr<FUERayTracingAudioAsyncRayQuery, ESPMode::ThreadSafe>& Query : Queries)

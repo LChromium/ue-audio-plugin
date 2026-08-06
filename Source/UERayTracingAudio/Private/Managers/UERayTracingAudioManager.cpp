@@ -1189,6 +1189,7 @@ FString FUERayTracingAudioManager::BuildSceneSignature(
         GeometryHash = FCrc::MemCrc32(&Geometry.Transmission, sizeof(Geometry.Transmission), GeometryHash);
         GeometryHash = FCrc::MemCrc32(&Geometry.Scattering, sizeof(Geometry.Scattering), GeometryHash);
         GeometryHash = HashCombineFast(GeometryHash, GetTypeHash(Geometry.bVisibleForDirectSound));
+        GeometryHash = HashCombineFast(GeometryHash, GetTypeHash(Geometry.bVisibleForIndirectSound));
         GeometryHash = HashCombineFast(GeometryHash, GetTypeHash(Geometry.bUseStaticMeshTriangles));
         if (!Geometry.Vertices.IsEmpty())
         {

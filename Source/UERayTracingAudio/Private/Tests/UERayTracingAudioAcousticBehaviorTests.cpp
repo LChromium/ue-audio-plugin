@@ -1499,6 +1499,112 @@ bool FUERayTracingAudioCpuFallbackIndirectTest::RunTest(const FString& Parameter
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioIndirectOnlyGeometryTest,
+    "UERayTracingAudio.Acoustics.IndirectOnlyGeometry",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioIndirectOnlyGeometryTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    TArray<FUERayTracingAudioGeometryExport> Room;
+    auto AddIndirectOnlyWall = [&Room](const FVector& Min, const FVector& Max)
+    {
+        FUERayTracingAudioGeometryExport& Wall = Room.AddDefaulted_GetRef();
+        Wall.Bounds = FBox(Min, Max);
+        Wall.Absorption = FVector(0.15f, 0.2f, 0.3f);
+        Wall.Scattering = 0.35f;
+        Wall.bVisibleForDirectSound = false;
+        Wall.bVisibleForIndirectSound = true;
+    };
+
+    constexpr float HalfExtent = 500.0f;
+    constexpr float Thickness = 10.0f;
+    AddIndirectOnlyWall(FVector(HalfExtent - Thickness, -HalfExtent, -HalfExtent), FVector(HalfExtent, HalfExtent, HalfExtent));
+    AddIndirectOnlyWall(FVector(-HalfExtent, -HalfExtent, -HalfExtent), FVector(-HalfExtent + Thickness, HalfExtent, HalfExtent));
+    AddIndirectOnlyWall(FVector(-HalfExtent, HalfExtent - Thickness, -HalfExtent), FVector(HalfExtent, HalfExtent, HalfExtent));
+    AddIndirectOnlyWall(FVector(-HalfExtent, -HalfExtent, -HalfExtent), FVector(HalfExtent, -HalfExtent + Thickness, HalfExtent));
+    AddIndirectOnlyWall(FVector(-HalfExtent, -HalfExtent, HalfExtent - Thickness), FVector(HalfExtent, HalfExtent, HalfExtent));
+    AddIndirectOnlyWall(FVector(-HalfExtent, -HalfExtent, -HalfExtent), FVector(HalfExtent, HalfExtent, -HalfExtent + Thickness));
+
+    FUERayTracingAudioScene Scene;
+    Scene.SetStaticGeometry(MoveTemp(Room));
+
+    FUERayTracingAudioContext Context;
+    FUERayTracingAudioRayTracingDevice Device;
+    FUERayTracingAudioSimulator Simulator(Context);
+    FUERayTracingAudioIndirectSimulationInput Input;
+    Input.Scene = &Scene;
+    Input.ListenerLocation = FVector::ZeroVector;
+    Input.ListenerForward = FVector::ForwardVector;
+    Input.SourceLocation = FVector(100.0f, 0.0f, 0.0f);
+    Input.NumReflectionRays = 64;
+    Input.MaxReflectionBounces = 2;
+    Input.NumDelayBins = 16000;
+    Input.DurationSeconds = 1.0f;
+
+    const FUERayTracingAudioIndirectSimulationResult Result =
+        Simulator.SimulateIndirectSound(Device, Input);
+    TestTrue(
+        TEXT("Geometry excluded from Direct visibility can still produce Indirect reflections"),
+        Result.bHasValidPaths);
+    TestTrue(
+        TEXT("Indirect-only geometry emits finite positive Wet gain"),
+        FMath::IsFinite(Result.IndirectGain) && Result.IndirectGain > 0.0f);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUERayTracingAudioMixedInvalidIndirectGeometryRejectedTest,
+    "UERayTracingAudio.Acoustics.MixedInvalidIndirectGeometryRejected",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUERayTracingAudioMixedInvalidIndirectGeometryRejectedTest::RunTest(
+    const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    TArray<FUERayTracingAudioGeometryExport> Geometry;
+    FUERayTracingAudioGeometryExport& ValidWall = Geometry.AddDefaulted_GetRef();
+    ValidWall.Bounds = FBox(FVector(90.0f, -500.0f, -500.0f), FVector(100.0f, 500.0f, 500.0f));
+    ValidWall.Absorption = FVector(0.1f);
+    ValidWall.bVisibleForIndirectSound = true;
+
+    FUERayTracingAudioGeometryExport& InvalidWall = Geometry.AddDefaulted_GetRef();
+    InvalidWall.Bounds = FBox(ForceInit);
+    InvalidWall.bUseStaticMeshTriangles = false;
+    InvalidWall.bVisibleForIndirectSound = true;
+
+    FUERayTracingAudioScene Scene;
+    Scene.SetStaticGeometry(MoveTemp(Geometry));
+
+    FUERayTracingAudioContext Context;
+    FUERayTracingAudioRayTracingDevice Device;
+    FUERayTracingAudioSimulator Simulator(Context);
+    FUERayTracingAudioIndirectSimulationInput Input;
+    Input.Scene = &Scene;
+    Input.ListenerLocation = FVector::ZeroVector;
+    Input.ListenerForward = FVector::ForwardVector;
+    Input.SourceLocation = FVector(25.0f, 0.0f, 0.0f);
+    Input.NumReflectionRays = 64;
+    Input.MaxReflectionBounces = 2;
+    Input.NumDelayBins = 16000;
+    Input.DurationSeconds = 1.0f;
+
+    const FUERayTracingAudioIndirectSimulationResult Result =
+        Simulator.SimulateIndirectSound(Device, Input);
+    TestFalse(
+        TEXT("A mixed valid/invalid Indirect scene is rejected instead of partially rendered"),
+        Result.bHasValidPaths);
+    TestEqual(
+        TEXT("Rejected mixed-invalid Indirect scene emits no Wet gain"),
+        Result.IndirectGain,
+        0.0f);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUERayTracingAudioLowEnergyImpulseReconstructionTest,
     "UERayTracingAudio.Acoustics.LowEnergyImpulseReconstruction",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
