@@ -1,5 +1,39 @@
 # Progress Log
 
+## 2026-08-06 - HumanAcceptance schema-v3 结构化人工门禁
+
+- 发现历史 HumanAcceptance PASS 缺少目标设备、完整来源和四模式试听证据，不能证明最终人工验收；未删除或冒充这些历史记录。
+- Editor 新增必填目标监听设备、可选备注、按 artifact 重置的试听进度，以及 Direct 保真、Wet/Full 差异、移动遮挡、模式切换、环境差异五项人工确认；Human Pass 仅在四模式均成功启动且 `Confirmed=5/5` 后启用，Human Fail 可在首个问题后提前记录。
+- 新记录使用 schema v3，并从 comparison manifest 固化输入/场景/预设/环境和音频指标，另存五项结构化确认；严格 Python 校验器拒绝旧 schema、空设备、缺模式、缺/假确认和来源不一致。
+- 规定构建通过；Python `175/175`、HumanAcceptance Automation `5/5`、插件全量 Automation `81/81`、音频回调审计 `39/40/0` 均通过。最终固定硬件运行 Direct `223` generations、三种 IR Wet `24/24`、hard realtime `1578/0/0`、交互 smoke 通过；Game/Editor 日志为 `UERayTracingAudioValidation-Game-1786018541593742800.log` / `UERayTracingAudioValidation-Editor-1786018587178540700.log`，A/B Editor PID `12672` 已保留。
+- 可见截图 `Saved/Validation/human-acceptance-schema-v3.png` 已确认设备/备注、五项确认、`Previewed=none`、`Confirmed=0/5`、四轨波形和未试听时禁用的 verdict；仍未完成目标耳机/扬声器 Human Pass，五项确认未由代理代勾。
+
+## 2026-08-06 - 当前工作树 32-bounce 环境矩阵
+
+- 运行 `uv run script\validate_reflection_environment_matrix.py`，OpenSpace / NearWall / Enclosed 三个独立硬件 Editor case 全部通过；汇总为 `TestProject/UeVersion1/Saved/UERayTracingAudio/ListeningAcceptance/ReflectionEnvironmentMatrix/20260806-192007/ReflectionEnvironmentMatrix_Manifest.json`。
+- 有效路径为 `0/618/20351`，Wet/Reference RMS 为 `0/0.219827/0.567596`；OpenSpace Wet 精确静音，NearWall 有方向性早期反射，Enclosed early 更强且 late reverb 非零。硬件/CPU reference 一致性门禁通过。
+- 独立核对 12/12 WAV 的 SHA-256 与 manifest 一致，格式均为 16 kHz / stereo / PCM16 / 144006 帧；目视三张 `Waveforms=ready` 截图确认 Wet 波形由 OpenSpace 直线、NearWall 小幅到 Enclosed 明显增大。
+- 矩阵后固定交互 smoke 退出 `0`：Direct `212` generations、dropout `0`，三种 IR Wet `24/24`，hard realtime `1589/0/0`，F4 即时误差 `0 cm`；Game/Editor 日志分别为 `UERayTracingAudioValidation-Game-1786015496645186200.log` 和 `UERayTracingAudioValidation-Editor-1786015542200797800.log`，Editor PID `44260` 已保留。
+- 该结果刷新 T2 自动证据，不代表目标耳机/扬声器 Human Pass；环境听感、移动遮挡和 click/pop 仍待人工结论。
+
+## 2026-08-06 - 交互 F4 测量闭环
+
+- 交互 smoke 复现间歇性 `origin_error_cm=380.551`。按 `workflow/crash-debugging.md` 检查确认无 crash；Direct/Indirect、三种 IR、音频链路和 hard realtime 均已通过，唯一失败是 F4 原点检查。
+- 诊断日志证明 F4 phase 4 放置即时误差为 `0 cm`。根因是旧 smoke 到 17 秒 A/B 观察结束才读取 Pawn 位置，把窗口内合法 WASD 输入误当作 F4 漂移。
+- RED 要求严格 marker 接受“即时返回成功、之后继续移动”。实现把门禁字段改为 phase 4 立即采样的 `origin_return_error_cm`，后续位移只记录为 `post_return_moved_cm`；完整 Python `163/163` 转为 GREEN。
+- 受控硬件复验在 F4 后注入 800 ms 前进输入，结果为 `origin_return_error_cm=0.000`、`post_return_moved_cm=50.900`、smoke `passed=1`。日志：`TestProject/UeVersion1/Saved/Logs/UERayTracingAudioValidation-Game-1786014660179327100.log`。
+- 规定构建通过，音频回调审计 `39/40/0`；无参数固定运行 Direct `209` generations、三种 IR Wet `24/24`、hard realtime `1581/0/0`；插件全量 Automation `76/76`。仍未完成目标耳机/扬声器 Human Pass 与 click/pop 人工结论。
+
+## 2026-08-06 - 可见 A/B 波形闭环
+
+- 盘点并验证当前工作树：Python 初始 `161/161`、ConfigurableDirect `23/23`、插件全量 Automation `76/76`、UE 5.7 项目/插件构建和固定硬件运行均通过。
+- 重跑真实 `MarchingBand` Clear/Soft/Hard 等距配对：Reference SHA-256 一致，距离/衰减差为 `0`，Direct gain 为 `0.499334/0.174767/0`，配对 manifest 为 `TestProject/UeVersion1/Saved/UERayTracingAudio/ListeningAcceptance/DirectOcclusionPair/20260806-174518/DirectOcclusionPair_Manifest.json`。
+- 目视截图发现 artifact runner 导入四个资产后仍显示空波形。RED 证明旧门禁会误接收缺失 `waveforms=ready` 的 UI；根因是 `AdoptValidationArtifactResult()` 未调用现有 waveform loader。
+- 修复 artifact adoption，使四条 PCM16 envelope 装入可见面板后才成功，并把同一 manifest 的 `waveforms=ready` 加入严格 Python 门禁。新截图 `Saved/Validation/direct-clear-waveforms-ready.png` 已目视确认灰/蓝/紫/绿四条波形实际绘制。
+- 首次重建因固定脚本留下的测试工程 Editor 启用 Live Coding 而被 UBT 拒绝；按 `workflow/crash-debugging.md` 确认无新 crash，只关闭已核对命令行的 PID 后重跑成功。
+- 最终验证：Python `162/162`、插件 Automation `76/76`、音频审计 `39 functions / 40 bodies / 0 forbidden operations`、规定构建通过。固定硬件运行 Direct sweep `214` generations、dropout `0`，三种 IR Wet 均 `24/24`，hard realtime `1589/0/0`。
+- 未完成：目标耳机/扬声器 Human Pass，以及移动穿墙、模式切换 click/pop、开放空间/靠墙的人工试听结论。
+
 ## 2026-07-30
 
 - 完成 hard-real-time 收敛：模拟快照改为 lock-free 生命周期；卷积 kernel/crossfade 状态改为非音频线程 Prepare、音频线程 adopt；Bridge 使用有界轮转服务和预备池切换余量。
@@ -166,44 +200,35 @@
 - Exact default launcher passed: paths `171/171`, Direct `215` generations with no dropout and restored/hardware `1/1`, all data sources passed, hard realtime `1581/0/0`. Game `UERayTracingAudioValidation-Game-1785502210674966300.log`; Editor `UERayTracingAudioValidation-Editor-1785502391254800900.log`.
 - Editor PID `13228` responded for the historical 2026-07-31 run and is superseded by PID `500`. Oversized-callback P3, prior Task 1-4 minors, Human/R3 listening, and true multi-PIE hardware isolation remain open; duplicate tagged-Source ambiguity is closed by exact-one normalization.
 
-## 2026-08-01 - Final Self-Review Addendum
+## 2026-08-01 - Acoustic geometry readiness
 
-- Found a remaining false-ready case: the retained tagged Geometry actor could own two acoustic Geometry components, so runtime exported overlapping surfaces while readiness inspected only the first component.
-- RED failed exactly at expected count `1`, actual `2`. Added deterministic safe-component retention, transactional duplicate-instance destruction, rejection of multiple non-removable native components, and final exact-one validation.
-- Prescribed Development build passed; realtime audit `39/40/1775` with zero violations; Python `70/70`; Automation passed ConfigurableDirect `15/15`, Audio `40/40`, Editor `9/9`, and full plugin `62/62`.
-- Fresh artifact flow passed hardware/automatic/distinct/imported/directional/common-scale `1/1/1/4/1/1`, with Wet/reference `0.567596`, Full/reference `0.549702`, and Direct/Wet difference `1.615526`.
-- Fresh default launcher passed paths `171/171`, Direct `199` generations with zero dropout and restored/hardware `1/1`, all three data sources, and hard realtime `1596/0/0`. Game `UERayTracingAudioValidation-Game-1785594301982190200.log`; Editor `UERayTracingAudioValidation-Editor-1785594482652644800.log`.
-- Editor PID `36896` responded and was left open for that historical run; it is superseded by PID `500`. Human A/B, click/pop/audible-quality judgment, moving-player/occlusion and target-device R3 listening, true multi-PIE hardware isolation, oversized-callback P3, and prior minors remain open.
+- 修复声学 Geometry Actor 同时持有多个 Geometry Component 时的 false-ready：运行时不再导出重叠表面，并确保验证场景只保留一个可用组件。
+- 重新验证 Reference/Direct/Wet/Full 产物，Wet/reference 为 `0.567596`、Full/reference 为 `0.549702`，Direct/Wet 差异为 `1.615526`。
 
-## 2026-08-02 - R3 32-Bounce Reflection Matrix
+## 2026-08-02 - R3 32-bounce indirect matrix
 
-- Implemented the initial strict OpenSpace/NearWall/Enclosed 0/1/7-Geometry matrix with one validated 32-bounce setting, same-origin MarchingBand Reference/Direct/Wet/Full artifacts, hardware/CPU evidence, and physical-zero OpenSpace Wet.
-- Final review repair now rejects enabled geometry export failures atomically and permits the masked DXR sentinel only for a logically empty scene; focused Manager and real-DX12 regressions passed.
-- The provisional gates passed Python `156/156`, realtime audit `39/40/1775`, prescribed build, Automation `1/1, 11/11, 65/65`, and matrix `20260802-063000`. Completion audit later reopened this claim for missing IR/Wet provenance and ambiguous-role preflight.
-- Fixed runtime launch passed and left Editor PID `42028` responding for that historical run; PID `42028` was later stopped and is superseded by PID `500`. Human Pass, click/pop judgment, true multi-PIE, and other open work remained unchecked.
+- 完成 OpenSpace/NearWall/Enclosed 的 `0/1/7` Geometry、32-bounce 矩阵，使用同源 MarchingBand 生成 Reference/Direct/Wet/Full 产物，并验证 OpenSpace Wet 为物理零输出。
+- Geometry 导出失败改为原子拒绝；仅逻辑空场景允许 masked DXR sentinel，避免不完整场景产生错误反射结果。
+- 补齐实际 IR 帧数、时长和 Wet provenance，拒绝歧义验证角色，并明确证据比较容差。
+- 最终矩阵 `20260802-074606` 生成 27 个非空产物、12/12 匹配 WAV hash、12 个导入 SoundWave 和 3 个 IR Asset；格式统一为 16 kHz、stereo、16000 帧、1 秒、Wet `0.8`。
 
-## 2026-08-02 - Final R3 Audit Closure
+## 2026-08-02 - Source mode and rendered path
 
-- Commits `84830a3`, `26dcf11`, and `94b3537` added actual IR frames/duration/Wet provenance, mutation-free validation-role rejection, and explicit `1e-6` / `1e-9` evidence tolerances.
-- Final gates passed: Python `158/158`, realtime audit `39/40/1775`, prescribed project/plugin build, and Automation `1/1, 1/1, 12/12, 66/66` with clean prohibited-marker scans.
-- Authoritative matrix `20260802-074606` passed with 27 non-empty artifacts, 12/12 matching WAV hashes, 12 imported SoundWaves, 3 IR assets, and strict 16 kHz/stereo/16000-frame/1-second/Wet-0.8 provenance.
-- Fixed launcher passed paths/gain `171/171` and `0.001625/0.001625`, Direct `221` generations, hard realtime `1579/0/0`, and all data sources; responding Editor PID `500` is intentionally left open. Human listening, click/pop judgment, moving listening, and true multi-PIE remain open.
+- F3 现在只切换同步的 Original/Rendered A/B，不再把 F2 Baked 或 F5 Hybrid 静默重置为 Realtime。
+- Rendered Source 显式报告实际 Direct、Early Reflection 和 Late Reverb 增益，输出路径标记为 `DIRECT+EARLY+LATE`。
+- 交互验证确认 Realtime/Baked/Hybrid 与 A/B 状态保持，`f3_source_preserved=1`，并确认 Rendered 路径同时具有有限且非零的 Direct/Early/Late 输出。
 
-## 2026-08-02 - F3 data-source preservation
+## 2026-08-02 - Direct three-band robustness
 
-- Fixed the F3 branch so it only toggles synchronized Original/Rendered A/B playback; F2 Baked and F5 Hybrid selections are no longer silently reset to Realtime.
-- Added a RED parser regression for `f3_source_preserved=0`; the interactive smoke gate now requires `f3_source_preserved=1`.
-- Cleared stale generated plugin intermediates and reran the prescribed build: project/plugin build exited `0`, `49/49` actions succeeded.
-- Interactive smoke launcher exited `0`: `passed=1`, movement `50.900 cm`, Listener/camera/origin errors `0 cm`, Realtime/Baked/Hybrid `1/1/1`, A/B `1/1`, `f3_source_preserved=1`, foreign audio `0`, muted foreign audio `1`. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785658912589354300.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785659093247713500.log`.
-- Exact default launcher exited `0`: paths/gain `171/171` and `0.001625/0.001625`, Direct `170` generations with zero dropout and restored/hardware `1/1`, hard realtime `1605/0/0`, all three data sources passed. Game log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Game-1785659135823809400.log`; Editor log: `D:\Labs\2602-unreal\ue-audio-plugin\TestProject\UeVersion1\Saved\Logs\UERayTracingAudioValidation-Editor-1785659316441313300.log`.
-- Human target-device PIE listening, click/pop/audible-quality judgment, moving-player/moving-occlusion listening, true multi-PIE hardware isolation, and target-device R3 listening remain open.
-- Final post-change checks passed: Python validation scripts `61/61`, realtime safety `39 functions / 40 bodies / 1775 lines` with all forbidden-operation counters `0`, and `git diff --check` clean.
+- 三频空气吸收 crossover 在音频设备初始化时按实际采样率/Nyquist 约束；NaN/Inf 或乱序配置回退到 `500 Hz / 4000 Hz`。
+- 非有限 low/mid/high band gain 在 Direct 重建前回退到 unity；重建使用 double precision，并在返回音频路径前饱和为有限 float。
+- 回归覆盖非有限 band gain、运行时采样率 crossover、有限输入溢出和无效 Project Settings crossover；硬件运行中 Direct 持续输出且无 dropout。
 
-## 2026-08-02 - Rendered Direct/Early/Late runtime gate
+## 2026-08-02 - World and Listener lifecycle
 
-- Added HUD reporting for the selected Rendered Source's actual Direct, Early Reflection, and Late Reverb gains; renamed the rendered path to `DIRECT+EARLY+LATE`.
-- Added a RED parser regression for `rendered_components=missing`; the interactive smoke gate now requires finite/non-zero Direct/Indirect/Early/Late state and `HybridReverb` after F3.
-- Full Python validation passed `62/62`; realtime safety passed `39 functions / 40 bodies / 1775 lines` with lock/heap/shared-ownership/blocking/UObject counts all `0`; `git diff --check` passed.
-- Prescribed `uv run script\\build_and_validate.py` exited `0` with `49/49` build actions. Interactive launcher exited `0` with marker `passed=1 moved_cm=50.998 ... f3_source_preserved=1 rendered_components=direct_early_late foreign_audio_playing=0 muted_foreign_audio=1`. Game log: `UERayTracingAudioValidation-Game-1785660205992184900.log`.
-- Exact default launcher exited `0`: paths/gain `171/171` and `0.001625/0.001625`, Direct `206` generations, zero dropout, restored/hardware `1/1`, all data sources passed, hard realtime `1584/0/0`. Game log: `UERayTracingAudioValidation-Game-1785660431487845600.log`; Editor log: `UERayTracingAudioValidation-Editor-1785660612831773000.log`.
-- Human PIE listening, click/pop/audible quality, moving-player/occlusion, true multi-PIE, target-device R3, and deferred technical ledger remain open; the new marker is runtime-path evidence, not Human Pass.
+- 补充重复 Listener 移除身份、声学 Scene 地址稳定性和 World 失效时 pending request 清理回归，确认 Direct/Indirect 状态不会跨 World 串扰或遗留。
+
+## 2026-08-02 - Public Source configuration
+
+- Runtime validation、Editor scene 和 artifact flow 统一通过公开 Source setter 配置 Direct occlusion、Indirect mode、reflection settings、Wet Send、data source 和 baked asset。
+- Blueprint-callable setter 对外部输入做有限值与范围归一化，同时保留 32-bounce 间接声验证配置。
